@@ -5,6 +5,8 @@
 ![LTX](https://img.shields.io/badge/LTX-2.5-C8FF32?labelColor=111417)
 ![Local first](https://img.shields.io/badge/data-local%20only-C8FF32?labelColor=111417)
 
+![LTX Watch dashboard showing active generation progress, queued jobs, output history, and live activity](docs/images/ltx-watch-dashboard.png)
+
 **LTX / Watch** is a private, local-first dashboard for monitoring LTX Video jobs running through ComfyUI. It turns generator logs, queue data, output folders, and worker telemetry into one live interface—with playable video history and a reversible pause/resume orchestrator.
 
 The app runs entirely on your computer. It does not upload prompts, videos, logs, or credentials.
