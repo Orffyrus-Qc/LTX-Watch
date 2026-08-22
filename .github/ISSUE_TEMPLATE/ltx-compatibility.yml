@@ -1,0 +1,64 @@
+name: LTX / ComfyUI compatibility update
+description: Report a new upstream version or an adapter break without sharing private generation data.
+title: "[Compatibility]: "
+labels:
+  - compatibility
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not attach prompts, generated media, tokens, personal paths, or unsanitized logs.
+  - type: input
+    id: ltx-version
+    attributes:
+      label: LTX version or checkpoint
+      placeholder: LTX 2.x / checkpoint filename
+    validations:
+      required: true
+  - type: input
+    id: comfy-version
+    attributes:
+      label: ComfyUI version or commit
+      placeholder: Commit SHA or release
+    validations:
+      required: true
+  - type: dropdown
+    id: layer
+    attributes:
+      label: Broken compatibility layer
+      options:
+        - Model label only
+        - ComfyUI queue API
+        - Output folders or filenames
+        - Progress log
+        - Supervisor status JSON
+        - Queue plan JSON
+        - Pause/resume worker detection
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: sanitized-sample
+    attributes:
+      label: Sanitized sample
+      description: Replace paths, usernames, prompts, IDs, and project names before pasting.
+      render: text
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy confirmation
+      options:
+        - label: I removed prompts, local usernames/paths, tokens, job IDs, and generated media.
+          required: true

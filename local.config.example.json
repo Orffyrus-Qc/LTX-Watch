@@ -1,0 +1,14 @@
+{
+  "displayName": "Creator",
+  "modelLabel": "LTX Video 2.5",
+  "workerCommandFragment": "run_full_album_auto.py",
+  "comfyRoot": "C:\\ComfyUI",
+  "finalsDirectory": "C:\\ComfyUI\\output\\assembled",
+  "clipsDirectory": "C:\\ComfyUI\\output\\video",
+  "logFile": "C:\\ComfyUI\\full_album_auto_run.log",
+  "statusFile": "C:\\ComfyUI\\dual_gpu_status.json",
+  "planFile": "C:\\ComfyUI\\dual_gpu_split.json",
+  "comfyUrl": "http://127.0.0.1:8188",
+  "refreshSeconds": 5,
+  "maxVideos": 120
+}
