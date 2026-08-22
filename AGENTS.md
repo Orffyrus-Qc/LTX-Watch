@@ -77,6 +77,12 @@ Owns Windows-native process-tree suspension and resumption. It must verify the r
 
 `local.config.json` stores user-local settings. `orchestrator.state.json` stores pause state and timing adjustments. Both are ignored and must remain local.
 
+### Windows installer
+
+`scripts/build-msi.ps1` is the installer source of truth. It runs the production build, stages only runtime files, bundles the current Node.js executable and license, generates WiX source, and builds a per-user MSI with WiX Toolset 6.0.2. `scripts/serve-production.mjs` serves the bundled Vinext output without `node_modules`, while `scripts/run-installed.mjs` coordinates the installed UI and local bridge.
+
+When a framework or LTX compatibility update changes runtime files, rebuild the MSI with `npm run build:msi`. Never commit `installer/.build`, `installer/.tools`, or `release`; publish the MSI as a release artifact instead.
+
 ## `/api/state` compatibility contract
 
 Do not rename or remove existing fields without updating the dashboard and documenting a contract version change. Important fields include:
@@ -114,7 +120,10 @@ Always run:
 ```powershell
 node --check local-server.mjs
 node --check scripts/run-local.mjs
+node --check scripts/run-installed.mjs
+node --check scripts/serve-production.mjs
 npm run build
+npm run build:msi
 ```
 
 With the local bridge running, validate only non-destructive routes:
@@ -149,4 +158,3 @@ Do not click or call the real pause button as part of validation.
 - Update `CHANGELOG.md` for user-visible behavior.
 - Keep `package.json` and the root package entry in `package-lock.json` at the same version.
 - Before a public push, scan tracked files for credentials, personal paths, generated media, runtime state, and build output.
-

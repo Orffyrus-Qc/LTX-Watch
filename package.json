@@ -22,6 +22,7 @@
     "dev": "node scripts/run-local.mjs dev",
     "site:dev": "vinext dev",
     "build": "vinext build",
+    "build:msi": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-msi.ps1",
     "start": "node scripts/run-local.mjs start",
     "site:start": "vinext start",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"

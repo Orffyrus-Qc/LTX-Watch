@@ -64,6 +64,21 @@ Copy-Item local.config.example.json local.config.json
 
 Then edit `local.config.json`. It is intentionally ignored by Git.
 
+## Windows installer
+
+The prebuilt MSI is self-contained: it bundles a production build and a private Node.js runtime, so end users do not need to install Node or npm. It installs per-user under `%LOCALAPPDATA%\Programs\LTX Watch` and creates Desktop and Start Menu shortcuts.
+
+To build the installer from source:
+
+```powershell
+npm install
+npm run build:msi
+```
+
+The build requires Node.js, npm, the .NET SDK, and internet access on its first run. It restores **WiX Toolset 6.0.2** into `installer/.tools`, bundles the current `node.exe` plus its official license, and writes the result to `release/LTX-Watch-<version>-x64.msi`. Build and release folders are intentionally ignored by Git.
+
+The generated MSI is not code-signed. Windows may show an unknown-publisher warning until the package is signed with a trusted Authenticode certificate.
+
 ## Configuration
 
 | Field | Purpose | Typical value |

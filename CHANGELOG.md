@@ -14,3 +14,4 @@ All notable changes to LTX / Watch are documented here.
 - Legacy `/queue` and newer `/api/queue` ComfyUI route support.
 - Configurable model label and worker command fragment for future LTX releases.
 - Public documentation, compatibility contract, and AI maintainer instructions.
+- Self-contained per-user MSI packaging with a bundled Node.js runtime and Windows shortcuts.
