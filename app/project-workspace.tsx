@@ -335,6 +335,7 @@ export default function ProjectWorkspace({ token, apiBase, refreshSeconds = 5, o
   const visibleShots = useMemo(() => filteredShots.slice(0, visibleCount), [filteredShots, visibleCount]);
   const selectedMapped = selectedShots.filter((key) => project?.shots.find((shot) => shot.shotKey === key)?.regeneratable);
   const selectedUnmapped = selectedShots.filter((key) => !project?.shots.find((shot) => shot.shotKey === key)?.regeneratable);
+  const activeRegeneration = project?.queue.find((item) => item.status === 'generating');
 
   function toggleShot(shotKey: string) {
     setSelectedShots((current) => current.includes(shotKey) ? current.filter((key) => key !== shotKey) : [...current, shotKey]);
@@ -390,6 +391,18 @@ export default function ProjectWorkspace({ token, apiBase, refreshSeconds = 5, o
       <section className="project-stats">
         <div><small>INDEXED ASSETS</small><b>{project.counts.assets}</b></div><div><small>DISCOVERED SHOTS</small><b>{project.counts.shots}</b></div><div><small>LTX MAPPED</small><b>{project.counts.mapped}</b></div><div><small>REGEN QUEUE</small><b>{project.counts.queued + project.counts.generating}</b></div>
       </section>
+
+      {activeRegeneration && activeRegeneration.progress != null && <section className="project-active-render">
+        <div className="project-active-render-shot">
+          <span className="project-active-render-icon"><LoaderCircle size={16} className="spinning" /></span>
+          <span><small>REGENERATING NOW</small><b>{displayName(activeRegeneration.track)} · SHOT {activeRegeneration.shot}</b></span>
+        </div>
+        <div className="project-active-render-progress">
+          <div><span>{activeRegeneration.stage || 'Generating shot'}</span><b>{activeRegeneration.progress}%</b></div>
+          <div className="project-active-render-track" role="progressbar" aria-label={`Shot ${activeRegeneration.shot} regeneration progress`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={activeRegeneration.progress}><span style={{ width: `${activeRegeneration.progress}%` }} /></div>
+        </div>
+        <div className="project-active-render-time"><span><small>ELAPSED</small><b>{formatQueueTime(activeRegeneration.elapsedSeconds)}</b></span><span><small>EST. REMAINING</small><b>~{formatQueueTime(activeRegeneration.remainingSeconds)}</b></span></div>
+      </section>}
 
       <section className="project-layout">
         <div className="project-library">
