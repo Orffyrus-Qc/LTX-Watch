@@ -7,7 +7,7 @@
 
 ![LTX Watch dashboard showing active generation progress, queued jobs, output history, and live activity](docs/images/ltx-watch-dashboard.png)
 
-**LTX / Watch** is a private, local-first dashboard for monitoring LTX Video jobs running through ComfyUI. It turns generator logs, queue data, output folders, and worker telemetry into one live interface—with playable video history and a reversible pause/resume orchestrator.
+**LTX / Watch** is a private, local-first dashboard for monitoring LTX Video jobs running through ComfyUI. The Studio branch adds a human-in-the-loop workspace where each shot is generated, reviewed, corrected, and explicitly accepted before moving forward.
 
 The app runs entirely on your computer. It does not upload prompts, videos, logs, or credentials.
 
@@ -25,6 +25,9 @@ The app runs entirely on your computer. It does not upload prompts, videos, logs
 - Auto-refreshing activity timeline parsed from generator events
 - Editable source paths, model label, worker match, and refresh interval
 - Loopback-only local bridge with an ephemeral control token
+- Optional **LTX Watch Studio** shot-by-shot review mode
+- Per-attempt correction notes and preserved regeneration history
+- Selectable Studio scene queue with one-click **Move first** ordering
 
 ## Requirements
 
@@ -47,6 +50,18 @@ npm run dev
 ```
 
 Open <http://localhost:3000>. On Windows, you can also double-click **Start LTX Watch.bat** after installing dependencies.
+
+### Studio branch test launch
+
+Studio is developed on the `feature/ltx-watch-studio` branch and can run beside the normal dashboard without replacing it:
+
+```powershell
+git switch feature/ltx-watch-studio
+npm install
+npm run dev:studio
+```
+
+Open <http://localhost:3001>. Its local bridge uses `127.0.0.1:4312`; the normal Watch ports remain 3000/4311. Studio can be browsed while a batch is active, but its Generate button remains safely locked until the album worker and configured ComfyUI port are idle.
 
 LTX / Watch searches common ComfyUI locations automatically:
 
@@ -87,6 +102,9 @@ The generated MSI is not code-signed. Windows may show an unknown-publisher warn
 | `modelLabel` | Model/version label shown in the UI | `LTX Video 2.5` |
 | `workerCommandFragment` | Text used to verify the worker before process control | `run_full_album_auto.py` |
 | `recoveryScript` | Supervisor script used to retry an interrupted shot after reboot | `run_dual_gpu_album.py` |
+| `studioSourceRunner` | Compatible album runner reused for single-shot generation | `C:\ComfyUI\run_full_album_auto.py` |
+| `studioGpu` | CUDA device used by Studio | `0` |
+| `studioPort` | Temporary ComfyUI port used by Studio | `8188` |
 | `comfyRoot` | ComfyUI installation root | `C:\ComfyUI` |
 | `finalsDirectory` | Finished/assembled videos | `C:\ComfyUI\output\assembled` |
 | `clipsDirectory` | Raw generated clips | `C:\ComfyUI\output\video` |
@@ -108,6 +126,35 @@ npm run dev
 ```
 
 Saved dashboard settings in `local.config.json` take precedence over auto-detected defaults.
+
+## LTX Watch Studio workflow
+
+Studio is a deliberate review loop rather than an unattended batch:
+
+1. Open **Studio** from the sidebar.
+2. Select any waiting scene. Use **Move first** to put it at the front of Studio's persistent queue.
+3. Generate the current shot, or review an existing compatible output.
+4. If the result needs work, describe the correction and press **Regenerate shot**.
+5. Studio archives the previous attempt locally and generates the same shot from frame one with the correction appended to its prompt.
+6. Press **Accept & next shot** only when satisfied. Studio records the accepted attempt and advances to the next unaccepted shot.
+7. After the final shot is accepted, Studio advances to the next queued scene. The normal album runner can later skip the accepted clip files and assemble the scene.
+
+Correction notes and Studio state are stored only in ignored local runtime files. Prompt text is passed through a private JSON job file, not a process command line or URL. Rejected videos are preserved under `.ltx-watch-studio/attempts` and remain playable from the review history.
+
+### Queue behavior
+
+**Move first** changes Studio's own queue overlay; it does not rewrite `dual_gpu_split.json` or mutate the command line of a supervisor that is already running. This is intentional: changing a live batch assignment could duplicate work or compete for a GPU. Once the batch worker finishes, Studio processes scenes in the saved Studio order.
+
+### Generation safety
+
+Studio refuses to launch a shot when any of these are true:
+
+- A worker PID from the configured status file is alive.
+- The configured ComfyUI port is responding.
+- Another Studio shot is active.
+- The source runner or ComfyUI Python environment cannot be validated.
+
+The Python adapter also acquires the source runner's port lock before starting ComfyUI. Automated tests use a fake runner and never invoke a real model.
 
 ## How it works
 
@@ -176,6 +223,7 @@ The bridge is an implementation detail, but these endpoints define the dashboard
 | `GET` | `/api/config` | Effective local configuration |
 | `POST` | `/api/config` | Save local configuration |
 | `POST` | `/api/control` | Pause or resume the verified worker tree |
+| `POST` | `/api/studio` | Select/reorder scenes, generate one shot, or accept the reviewed output |
 | `POST` | `/api/open` | Open a configured file/folder in Explorer |
 | `GET` | `/media/:id` | Range-enabled local video stream |
 
@@ -190,8 +238,11 @@ app/
   layout.tsx                 Page metadata and fonts
 local-server.mjs             Local aggregation, streaming, and control API
 scripts/
+  ltx-studio-runner.py       One-shot adapter for a compatible local runner
   process-orchestrator.ps1   Windows process-tree suspend/resume
   run-local.mjs              Starts the dashboard and bridge together
+  run-studio.mjs             Starts isolated Studio development ports
+studio-core.mjs              Queue and review-state invariants
 docs/
   AI_MAINTAINER_GUIDE.md     Safe workflow for coding agents
   LTX_COMPATIBILITY.md       Adapter contract and upgrade checklist

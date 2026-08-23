@@ -33,6 +33,7 @@ Do not rely on blog posts or copied endpoint lists when the upstream source or O
 ## Hard safety rules
 
 - Never call the real `/api/control` pause/resume action during an automated check.
+- Never call a real `/api/studio` generate action during an automated check. Use the fixture runner under `tests/fixtures`.
 - Never suspend, interrupt, terminate, restart, or clear a real ComfyUI/LTX job unless the user explicitly asks for that action.
 - Test `process-orchestrator.ps1` only against a temporary process created for the test.
 - Never replace pause/resume with process termination or ComfyUI `/interrupt` without explicit user approval and a documented migration.
@@ -40,6 +41,7 @@ Do not rely on blog posts or copied endpoint lists when the upstream source or O
 - Preserve the per-session `X-LTX-Control-Token` check.
 - Validate decoded media and Explorer paths against configured roots before access.
 - Keep `local.config.json`, `.env*`, generated media, logs, status files, queue plans, and `orchestrator.state.json` out of Git.
+- Keep `studio.state.json`, `.ltx-watch-studio`, Studio prompt jobs, corrections, and attempt media out of Git.
 - Never commit absolute paths, usernames, tokens, prompts, generated media, or real job IDs from a user's machine.
 - Do not expose the control token in logs, persistent files, URLs, or error messages.
 - Preserve HTTP range support in `/media/:id`; browser playback depends on it.
@@ -68,6 +70,12 @@ Compatibility-sensitive functions:
 - `controlGenerator`
 
 Prefer changing one adapter function over changing the dashboard contract.
+
+### Studio adapter
+
+`studio-core.mjs` owns pure queue/range/review-state invariants. `scripts/ltx-studio-runner.py` is the only layer allowed to translate a Studio job into calls on a compatible local album runner. The browser must never submit prompts directly to ComfyUI.
+
+Studio must refuse generation while the normal worker is alive, the configured ComfyUI port is online, another Studio job is active, or the runner contract cannot be validated. Queue promotion changes only Studio's ignored local ordering overlay; never rewrite a live supervisor plan.
 
 ### `scripts/process-orchestrator.ps1`
 
@@ -122,10 +130,12 @@ Always run:
 ```powershell
 node --check local-server.mjs
 node --check scripts/run-local.mjs
+node --check scripts/run-studio.mjs
 node --check scripts/run-installed.mjs
 node --check scripts/serve-production.mjs
 npm run build
 npm run build:msi
+npm run test:studio
 ```
 
 With the local bridge running, validate only non-destructive routes:

@@ -2,6 +2,18 @@
 
 All notable changes to LTX / Watch are documented here.
 
+## 1.1.0 — Studio branch
+
+### Added
+
+- LTX Watch Studio workspace for sequential, human-reviewed shot generation.
+- Per-shot correction notes, regenerate-until-accepted workflow, and automatic advance after acceptance.
+- Playable attempt history with rejected outputs archived instead of deleted.
+- Persistent Studio queue ordering with a **Move first** action for any waiting scene.
+- A dedicated single-shot Python adapter that reuses a compatible local album runner without placing prompt text in process command lines.
+- Separate `npm run dev:studio` launch on ports 3001/4312 for isolated testing beside Watch.
+- Safety locks that refuse Studio generation while the album worker, ComfyUI port, or another Studio job is active.
+
 ## 1.0.2 — 2026-08-23
 
 ### Fixed

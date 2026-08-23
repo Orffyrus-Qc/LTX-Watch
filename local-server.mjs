@@ -6,16 +6,30 @@ import { randomBytes } from 'node:crypto';
 import { homedir, uptime, userInfo } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  cleanCorrection,
+  ensureSceneRecord,
+  moveSceneFirst,
+  nextUnacceptedShot,
+  normalizeQueueOrder,
+  normalizeStudioRecord,
+  parseShotRange,
+  sceneKey,
+} from './studio-core.mjs';
 
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = path.join(APP_ROOT, 'local.config.json');
 const ORCHESTRATOR_STATE_PATH = path.join(APP_ROOT, 'orchestrator.state.json');
 const ORCHESTRATOR_SCRIPT_PATH = path.join(APP_ROOT, 'scripts', 'process-orchestrator.ps1');
+const STUDIO_STATE_PATH = path.join(APP_ROOT, 'studio.state.json');
+const STUDIO_RUNTIME_ROOT = path.join(APP_ROOT, '.ltx-watch-studio');
+const STUDIO_RUNNER_PATH = path.join(APP_ROOT, 'scripts', 'ltx-studio-runner.py');
 const PORT = Number(process.env.LTX_WATCH_API_PORT || 4311);
 const CONTROL_TOKEN = randomBytes(24).toString('hex');
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.webm', '.mov', '.mkv']);
 const probeCache = new Map();
 let recoveryInFlight = false;
+let studioMutationInFlight = false;
 
 function defaultConfig(comfyRoot) {
   return {
@@ -23,6 +37,9 @@ function defaultConfig(comfyRoot) {
     modelLabel: process.env.LTX_WATCH_MODEL_LABEL || 'LTX Video 2.5',
     workerCommandFragment: 'run_full_album_auto.py',
     recoveryScript: 'run_dual_gpu_album.py',
+    studioSourceRunner: path.join(comfyRoot, 'run_full_album_auto.py'),
+    studioGpu: 0,
+    studioPort: 8188,
     comfyRoot,
     finalsDirectory: path.join(comfyRoot, 'output', 'assembled'),
     clipsDirectory: path.join(comfyRoot, 'output', 'video'),
@@ -60,7 +77,7 @@ async function getConfig() {
 
 function cleanConfig(input) {
   const next = {};
-  for (const key of ['displayName', 'modelLabel', 'workerCommandFragment', 'recoveryScript', 'comfyRoot', 'finalsDirectory', 'clipsDirectory', 'logFile', 'statusFile', 'planFile', 'comfyUrl']) {
+  for (const key of ['displayName', 'modelLabel', 'workerCommandFragment', 'recoveryScript', 'studioSourceRunner', 'comfyRoot', 'finalsDirectory', 'clipsDirectory', 'logFile', 'statusFile', 'planFile', 'comfyUrl']) {
     if (typeof input[key] === 'string') {
       const value = input[key].trim();
       if (key === 'workerCommandFragment' && value.length < 4) throw new Error('Worker command match must contain at least four characters.');
@@ -70,6 +87,8 @@ function cleanConfig(input) {
   }
   next.refreshSeconds = Math.min(60, Math.max(2, Number(input.refreshSeconds) || 5));
   next.maxVideos = Math.min(500, Math.max(20, Number(input.maxVideos) || 120));
+  next.studioGpu = Math.min(15, Math.max(0, Math.trunc(Number(input.studioGpu) || 0)));
+  next.studioPort = Math.min(65_535, Math.max(1_024, Math.trunc(Number(input.studioPort) || 8188)));
   return next;
 }
 
@@ -614,6 +633,402 @@ async function controlGenerator(action) {
   return getControlView(next, status, config);
 }
 
+async function getStudioRecord() {
+  return normalizeStudioRecord(await readJson(STUDIO_STATE_PATH, null));
+}
+
+async function writeStudioRecord(record) {
+  record.updatedAt = new Date().toISOString();
+  await writeFile(STUDIO_STATE_PATH, `${JSON.stringify(record, null, 2)}\n`, 'utf8');
+}
+
+function resolveStudioPlan(config) {
+  const sourceRunner = path.resolve(config.studioSourceRunner || path.join(config.comfyRoot, 'run_full_album_auto.py'));
+  if (!isInside(sourceRunner, [config.comfyRoot]) || path.extname(sourceRunner).toLowerCase() !== '.py' || !existsSync(sourceRunner) || !existsSync(STUDIO_RUNNER_PATH)) return null;
+  const candidates = [
+    path.join(config.comfyRoot, 'venv', 'Scripts', 'pythonw.exe'),
+    path.join(config.comfyRoot, '.venv', 'Scripts', 'pythonw.exe'),
+    path.join(config.comfyRoot, 'python_embeded', 'pythonw.exe'),
+    path.join(config.comfyRoot, 'python', 'pythonw.exe'),
+    path.join(config.comfyRoot, 'venv', 'Scripts', 'python.exe'),
+    path.join(config.comfyRoot, '.venv', 'Scripts', 'python.exe'),
+    path.join(config.comfyRoot, 'python_embeded', 'python.exe'),
+    path.join(config.comfyRoot, 'python', 'python.exe'),
+  ];
+  const executable = candidates.find(existsSync);
+  return executable ? { executable, sourceRunner } : null;
+}
+
+function planTracks(plan) {
+  return Object.values(plan || {}).flatMap((worker) => Array.isArray(worker?.tracks) ? worker.tracks : []);
+}
+
+function finalSlugSet(finals) {
+  return new Set(finals.map((file) => path.basename(file.fullPath).replace(/_LTX[0-9P.]*_FULL\.mp4$/i, '').toLowerCase()));
+}
+
+function studioQueueItems(plan, current, finals, record, workerBusy) {
+  const finished = finalSlugSet(finals);
+  const available = planTracks(plan).filter((item) => {
+    if (!item?.section || !item?.track || !item?.slug || finished.has(String(item.slug).toLowerCase())) return false;
+    if (workerBusy && item.slug === current?.slug) return false;
+    if (!parseShotRange(item.shots, item.count).length) return false;
+    return record.scenes?.[sceneKey(item)]?.status !== 'accepted';
+  });
+  return normalizeQueueOrder(available, record.queueOrder);
+}
+
+function safeStudioSegment(value) {
+  const result = String(value || '').replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120);
+  if (!result) throw new Error('Studio could not create a safe scene path.');
+  return result;
+}
+
+async function findShotOutput(config, slug, shot) {
+  const directory = path.resolve(config.clipsDirectory, slug);
+  if (!isInside(directory, [config.clipsDirectory])) throw new Error('Studio shot output is outside the configured clips folder.');
+  let names = [];
+  try { names = await readdir(directory); } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  const candidates = [];
+  for (const name of names) {
+    if (!(name.startsWith(`${shot}_`) || name === `${shot}${path.extname(name)}`) || !VIDEO_EXTENSIONS.has(path.extname(name).toLowerCase())) continue;
+    const fullPath = path.join(directory, name);
+    try {
+      const info = await stat(fullPath);
+      if (info.size > 100_000) candidates.push({ fullPath, size: info.size, modifiedMs: info.mtimeMs });
+    } catch { /* an output can move while Studio refreshes */ }
+  }
+  return candidates.sort((a, b) => b.modifiedMs - a.modifiedMs)[0] || null;
+}
+
+async function studioVideo(filePath, config, title) {
+  if (!filePath || !isInside(filePath, [config.clipsDirectory, STUDIO_RUNTIME_ROOT])) return null;
+  try {
+    const info = await stat(filePath);
+    if (!info.isFile() || info.size <= 100_000 || !VIDEO_EXTENSIONS.has(path.extname(filePath).toLowerCase())) return null;
+    const file = { fullPath: filePath, size: info.size, modifiedMs: info.mtimeMs };
+    const meta = await probeVideo(file, config);
+    return {
+      id: encodePath(filePath),
+      title,
+      filename: path.basename(filePath),
+      kind: 'clip',
+      size: info.size,
+      modifiedAt: new Date(info.mtimeMs).toISOString(),
+      mediaUrl: `http://127.0.0.1:${PORT}/media/${encodePath(filePath)}`,
+      directory: path.dirname(filePath),
+      ...meta,
+    };
+  } catch { return null; }
+}
+
+async function archiveStudioOutput(config, item, shot, scene) {
+  const output = await findShotOutput(config, item.slug, shot);
+  if (!output) return null;
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const archiveDirectory = path.join(STUDIO_RUNTIME_ROOT, 'attempts', safeStudioSegment(item.section), safeStudioSegment(item.slug), safeStudioSegment(shot), stamp);
+  await mkdir(archiveDirectory, { recursive: true });
+  const destination = path.join(archiveDirectory, path.basename(output.fullPath));
+  await rename(output.fullPath, destination);
+
+  const attempts = Array.isArray(scene.attempts[shot]) ? scene.attempts[shot] : [];
+  const recorded = attempts.find((attempt) => attempt.videoPath === output.fullPath);
+  if (recorded) {
+    recorded.videoPath = destination;
+    if (recorded.status === 'review') recorded.status = 'superseded';
+  } else {
+    attempts.push({
+      id: `imported-${randomBytes(6).toString('hex')}`,
+      status: 'superseded',
+      correction: '',
+      startedAt: new Date(output.modifiedMs).toISOString(),
+      completedAt: new Date(output.modifiedMs).toISOString(),
+      videoPath: destination,
+      imported: true,
+    });
+  }
+  scene.attempts[shot] = attempts;
+  return destination;
+}
+
+async function syncStudioJob(record, config) {
+  const job = record.activeJob;
+  if (!job) return false;
+  const scene = record.scenes?.[job.sceneKey];
+  const attempt = scene?.attempts?.[job.shot]?.find((item) => item.id === job.id);
+  if (!scene || !attempt || !isInside(job.resultPath, [STUDIO_RUNTIME_ROOT])) {
+    record.activeJob = null;
+    return true;
+  }
+  const result = await readJson(job.resultPath, null);
+  const runnerPid = Number(result?.runnerPid || job.pid);
+  if ((!result || result.status === 'generating') && processExists(runnerPid)) return false;
+
+  if (result?.status === 'review' && typeof result.outputPath === 'string' && isInside(result.outputPath, [config.clipsDirectory])) {
+    const output = await studioVideo(result.outputPath, config, 'Studio review output');
+    if (output) {
+      attempt.status = 'review';
+      attempt.completedAt = result.completedAt || new Date().toISOString();
+      attempt.videoPath = result.outputPath;
+      scene.status = 'review';
+      scene.currentShot = job.shot;
+      scene.updatedAt = attempt.completedAt;
+      record.activeJob = null;
+      return true;
+    }
+  }
+
+  attempt.status = 'failed';
+  attempt.completedAt = result?.completedAt || new Date().toISOString();
+  attempt.error = String(result?.error || 'The Studio runner ended without producing a reviewable video.').slice(0, 500);
+  scene.status = 'failed';
+  scene.currentShot = job.shot;
+  scene.updatedAt = attempt.completedAt;
+  record.activeJob = null;
+  return true;
+}
+
+async function buildStudioView(config, status, plan, current, finals, comfy) {
+  const record = await getStudioRecord();
+  let changed = await syncStudioJob(record, config);
+  const liveWorkers = getWorkerPids(status).filter(processExists);
+  const workerBusy = liveWorkers.length > 0;
+  const queue = studioQueueItems(plan, current, finals, record, workerBusy);
+  const validKeys = new Set(queue.map((item) => item.sceneKey));
+  if (!record.selectedSceneKey || !validKeys.has(record.selectedSceneKey)) {
+    record.selectedSceneKey = queue[0]?.sceneKey || null;
+    changed = true;
+  }
+
+  const selectedItem = queue.find((item) => item.sceneKey === record.selectedSceneKey) || null;
+  let selectedScene = null;
+  if (selectedItem) {
+    const scene = ensureSceneRecord(record, selectedItem);
+    const shots = parseShotRange(selectedItem.shots, selectedItem.count);
+    if (!scene.currentShot || !shots.includes(scene.currentShot) || scene.acceptedShots.includes(scene.currentShot)) {
+      scene.currentShot = nextUnacceptedShot(shots, scene.acceptedShots);
+      changed = true;
+    }
+    const currentShot = scene.currentShot;
+    const shotItems = [];
+    for (const shot of shots) {
+      const output = await findShotOutput(config, selectedItem.slug, shot);
+      const generating = record.activeJob?.sceneKey === selectedItem.sceneKey && record.activeJob?.shot === shot;
+      const accepted = scene.acceptedShots.includes(shot);
+      shotItems.push({
+        shot,
+        status: accepted ? 'accepted' : generating ? 'generating' : output ? 'review' : shot === currentShot ? 'ready' : 'queued',
+        hasOutput: Boolean(output),
+      });
+    }
+    const output = currentShot ? await findShotOutput(config, selectedItem.slug, currentShot) : null;
+    const reviewVideo = output ? await studioVideo(output.fullPath, config, `${selectedItem.track} · Shot ${currentShot}`) : null;
+    const attempts = [];
+    for (const attempt of (scene.attempts[currentShot] || []).slice().reverse()) {
+      const video = attempt.videoPath ? await studioVideo(attempt.videoPath, config, `${selectedItem.track} · Shot ${currentShot}`) : null;
+      attempts.push({
+        id: attempt.id,
+        status: attempt.status,
+        correction: attempt.correction || '',
+        startedAt: attempt.startedAt || null,
+        completedAt: attempt.completedAt || null,
+        error: attempt.error || null,
+        imported: Boolean(attempt.imported),
+        video,
+      });
+    }
+    selectedScene = {
+      ...selectedItem,
+      currentShot,
+      acceptedCount: scene.acceptedShots.length,
+      shots: shotItems,
+      reviewVideo,
+      attempts,
+      status: scene.status,
+    };
+  }
+
+  if (changed) await writeStudioRecord(record);
+  const adapterReady = Boolean(resolveStudioPlan(config));
+  const activeJob = record.activeJob;
+  const canGenerate = Boolean(selectedScene?.currentShot && adapterReady && !activeJob && !workerBusy && !comfy.online);
+  const blockedReason = activeJob
+    ? `Studio is generating shot ${activeJob.shot}.`
+    : workerBusy
+      ? 'The album worker is still active. Studio will unlock after it finishes.'
+      : comfy.online
+        ? `ComfyUI port ${config.studioPort} is already in use. Studio requires an idle port.`
+        : !adapterReady
+          ? 'Configure a compatible Studio source runner and ComfyUI Python environment.'
+          : !selectedScene
+            ? 'There are no scenes waiting in the Studio queue.'
+            : null;
+  return {
+    enabled: true,
+    adapterReady,
+    canGenerate,
+    blockedReason,
+    activeJob: activeJob ? { sceneKey: activeJob.sceneKey, shot: activeJob.shot, startedAt: activeJob.startedAt } : null,
+    queue: queue.map((item) => {
+      const scene = record.scenes?.[item.sceneKey];
+      return { ...item, studioStatus: scene?.status || 'queued', acceptedCount: scene?.acceptedShots?.length || 0 };
+    }),
+    selectedScene,
+  };
+}
+
+async function loadStudioContext() {
+  const config = await getConfig();
+  const [status, plan, logText, finals, comfy, record] = await Promise.all([
+    readJson(config.statusFile, {}),
+    readJson(config.planFile, {}),
+    readTail(config.logFile),
+    walkVideos(config.finalsDirectory, 'final', config.maxVideos),
+    getComfyQueue(config),
+    getStudioRecord(),
+  ]);
+  if (await syncStudioJob(record, config)) await writeStudioRecord(record);
+  const current = parseLog(logText).current;
+  const workerBusy = getWorkerPids(status).filter(processExists).length > 0;
+  const queue = studioQueueItems(plan, current, finals, record, workerBusy);
+  return { config, status, plan, current, finals, comfy, record, workerBusy, queue };
+}
+
+async function controlStudio(body) {
+  if (studioMutationInFlight) throw new Error('Another Studio action is still being saved.');
+  studioMutationInFlight = true;
+  try {
+    const context = await loadStudioContext();
+    const { config, status, plan, current, finals, comfy, record, workerBusy, queue } = context;
+    const action = String(body?.action || '');
+    const targetKey = String(body?.sceneKey || record.selectedSceneKey || '');
+    const item = queue.find((entry) => entry.sceneKey === targetKey);
+
+    if (action === 'select') {
+      if (!item) throw new Error('The selected scene is not available in the Studio queue.');
+      record.selectedSceneKey = item.sceneKey;
+      const scene = ensureSceneRecord(record, item);
+      const shots = parseShotRange(item.shots, item.count);
+      scene.currentShot = nextUnacceptedShot(shots, scene.acceptedShots);
+      await writeStudioRecord(record);
+      return buildStudioView(config, status, plan, current, finals, comfy);
+    }
+
+    if (action === 'move-first') {
+      if (!item) throw new Error('The selected scene is not available in the Studio queue.');
+      record.queueOrder = moveSceneFirst(queue, record.queueOrder, item.sceneKey);
+      record.selectedSceneKey = item.sceneKey;
+      await writeStudioRecord(record);
+      return buildStudioView(config, status, plan, current, finals, comfy);
+    }
+
+    if (!item) throw new Error('Select a queued scene before using Studio controls.');
+    const scene = ensureSceneRecord(record, item);
+    const shots = parseShotRange(item.shots, item.count);
+    const shot = String(body?.shot || scene.currentShot || '');
+    if (!shots.includes(shot)) throw new Error('The selected shot does not belong to this scene.');
+    if (record.activeJob) throw new Error('A Studio shot is already generating.');
+
+    if (action === 'accept') {
+      const output = await findShotOutput(config, item.slug, shot);
+      if (!output) throw new Error('Generate or import a reviewable output before accepting this shot.');
+      const attempts = Array.isArray(scene.attempts[shot]) ? scene.attempts[shot] : [];
+      let attempt = attempts.find((entry) => entry.status === 'review' && entry.videoPath === output.fullPath);
+      if (!attempt) {
+        attempt = {
+          id: `imported-${randomBytes(6).toString('hex')}`,
+          status: 'review',
+          correction: '',
+          startedAt: new Date(output.modifiedMs).toISOString(),
+          completedAt: new Date(output.modifiedMs).toISOString(),
+          videoPath: output.fullPath,
+          imported: true,
+        };
+        attempts.push(attempt);
+      }
+      attempt.status = 'accepted';
+      attempt.acceptedAt = new Date().toISOString();
+      scene.attempts[shot] = attempts;
+      scene.acceptedShots = [...new Set([...scene.acceptedShots, shot])];
+      scene.currentShot = nextUnacceptedShot(shots, scene.acceptedShots);
+      scene.status = scene.currentShot ? 'reviewing' : 'accepted';
+      scene.updatedAt = new Date().toISOString();
+      if (!scene.currentShot) {
+        const remaining = studioQueueItems(plan, current, finals, record, workerBusy);
+        record.selectedSceneKey = remaining.find((entry) => entry.sceneKey !== item.sceneKey)?.sceneKey || null;
+      }
+      await writeStudioRecord(record);
+      return buildStudioView(config, status, plan, current, finals, comfy);
+    }
+
+    if (action !== 'generate') throw new Error('Unsupported Studio action.');
+    if (workerBusy) throw new Error('The album worker is still active. Wait for it to finish before starting Studio.');
+    if (comfy.online) throw new Error(`ComfyUI port ${config.studioPort} is active. Studio will not compete for the GPU or port.`);
+    const launch = resolveStudioPlan(config);
+    if (!launch) throw new Error('Studio needs a compatible source runner and ComfyUI Python environment.');
+    const correction = cleanCorrection(body?.correction);
+    await archiveStudioOutput(config, item, shot, scene);
+
+    const id = randomBytes(12).toString('hex');
+    const jobsDirectory = path.join(STUDIO_RUNTIME_ROOT, 'jobs');
+    await mkdir(jobsDirectory, { recursive: true });
+    const jobPath = path.join(jobsDirectory, `${id}.json`);
+    const resultPath = path.join(jobsDirectory, `${id}.result.json`);
+    const startedAt = new Date().toISOString();
+    await writeFile(jobPath, `${JSON.stringify({
+      sourceRunner: launch.sourceRunner,
+      section: item.section,
+      track: item.track,
+      slug: item.slug,
+      shot,
+      correction,
+      port: config.studioPort,
+      cudaDevice: config.studioGpu,
+      resultPath,
+    }, null, 2)}\n`, 'utf8');
+    const attempt = { id, status: 'generating', correction, startedAt, completedAt: null, videoPath: null };
+    scene.attempts[shot] = [...(Array.isArray(scene.attempts[shot]) ? scene.attempts[shot] : []), attempt];
+    scene.currentShot = shot;
+    scene.status = 'generating';
+    scene.updatedAt = startedAt;
+    record.selectedSceneKey = item.sceneKey;
+    record.activeJob = { id, sceneKey: item.sceneKey, shot, pid: null, jobPath, resultPath, startedAt };
+    await writeStudioRecord(record);
+
+    const logHandle = await open(path.join(APP_ROOT, 'studio.log'), 'a');
+    try {
+      const child = spawn(launch.executable, [STUDIO_RUNNER_PATH, '--job', jobPath], {
+        cwd: config.comfyRoot,
+        detached: true,
+        stdio: ['ignore', logHandle.fd, logHandle.fd],
+        windowsHide: true,
+      });
+      await new Promise((resolveSpawn, rejectSpawn) => {
+        child.once('spawn', resolveSpawn);
+        child.once('error', rejectSpawn);
+      });
+      record.activeJob.pid = child.pid;
+      child.unref();
+      await writeStudioRecord(record);
+    } catch (error) {
+      attempt.status = 'failed';
+      attempt.completedAt = new Date().toISOString();
+      attempt.error = error instanceof Error ? error.message : 'Studio runner could not start.';
+      scene.status = 'failed';
+      record.activeJob = null;
+      await writeStudioRecord(record);
+      throw error;
+    } finally {
+      await logHandle.close();
+    }
+    return buildStudioView(config, status, plan, current, finals, comfy);
+  } finally {
+    studioMutationInFlight = false;
+  }
+}
+
 async function buildState() {
   const config = await getConfig();
   const [status, plan, logText, finals, clips, comfy, orchestratorRecord] = await Promise.all([
@@ -652,13 +1067,14 @@ async function buildState() {
   const workerOnline = Boolean(statusUpdated && now - statusUpdated.getTime() < 180_000 && Object.values(status.workers || {}).some((worker) => typeof worker === 'number' || worker?.alive !== false));
   const today = new Date();
   const todayFinals = finals.filter((file) => { const date = new Date(file.modifiedMs); return date.toDateString() === today.toDateString(); }).length;
+  const studio = await buildStudioView(config, status, plan, parsed.current, finals, comfy);
   return {
     updatedAt: new Date().toISOString(), connection: { comfy: comfy.online, worker: workerOnline, apiUrl: config.comfyUrl },
     current: parsed.current ? {
       ...parsed.current, completedShots, progress, remainingSeconds, averageShotSeconds: parsed.averageShotSeconds,
       elapsedSeconds: Math.max(0, (effectiveNow - new Date(parsed.current.startedAt || effectiveNow).getTime() - trackPausedMs) / 1000),
     } : null,
-    control, queue: queued, comfyQueue: comfy, videos,
+    control, queue: queued, comfyQueue: comfy, videos, studio,
     activity: control.changedAt ? [{
       type: control.state === 'recovery' ? 'recovery' : control.restartedShot ? 'recovered' : control.state === 'paused' ? 'paused' : 'resumed',
       time: control.changedAt,
@@ -674,7 +1090,7 @@ async function buildState() {
 async function serveMedia(req, res, id, config) {
   let filePath;
   try { filePath = decodePath(id); } catch { return sendJson(res, 400, { error: 'Invalid media id' }); }
-  if (!isInside(filePath, [config.finalsDirectory, config.clipsDirectory])) return sendJson(res, 403, { error: 'Path is outside configured output folders' });
+  if (!isInside(filePath, [config.finalsDirectory, config.clipsDirectory, STUDIO_RUNTIME_ROOT])) return sendJson(res, 403, { error: 'Path is outside local media folders' });
   let info;
   try { info = await stat(filePath); } catch { return sendJson(res, 404, { error: 'Video not found' }); }
   const ext = path.extname(filePath).toLowerCase();
@@ -707,6 +1123,10 @@ const server = http.createServer(async (req, res) => {
       if (action !== 'pause' && action !== 'resume') return sendJson(res, 400, { error: 'Action must be pause or resume' });
       return sendJson(res, 200, { ok: true, control: await controlGenerator(action) });
     }
+    if (req.method === 'POST' && requestUrl.pathname === '/api/studio') {
+      if (req.headers['x-ltx-control-token'] !== CONTROL_TOKEN) return sendJson(res, 403, { error: 'Invalid local control token' });
+      return sendJson(res, 200, { ok: true, studio: await controlStudio(await readBody(req)) });
+    }
     if (req.method === 'POST' && requestUrl.pathname === '/api/config') {
       const current = await getConfig();
       const next = { ...current, ...cleanConfig(await readBody(req)) };
@@ -717,7 +1137,7 @@ const server = http.createServer(async (req, res) => {
       const config = await getConfig();
       const body = await readBody(req);
       const target = typeof body.path === 'string' ? body.path : '';
-      if (!target || !isInside(target, [config.comfyRoot, config.finalsDirectory, config.clipsDirectory])) return sendJson(res, 403, { error: 'Path is outside configured folders' });
+      if (!target || !isInside(target, [config.comfyRoot, config.finalsDirectory, config.clipsDirectory, STUDIO_RUNTIME_ROOT])) return sendJson(res, 403, { error: 'Path is outside configured folders' });
       if (!(await exists(target))) return sendJson(res, 404, { error: 'Path not found' });
       const info = await stat(target);
       const args = info.isDirectory() ? [target] : [`/select,${target}`];

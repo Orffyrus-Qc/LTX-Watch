@@ -141,6 +141,20 @@ When adapting a new worker launcher:
 
 If the new runner does not expose a stable PID, disable pause/resume (`canControl: false`) until a safe adapter exists.
 
+### Studio generation
+
+Studio generation is separate from native pause/resume. Preserve these invariants:
+
+1. `studioSourceRunner` resolves inside `comfyRoot` and exposes the documented adapter callables.
+2. The standard worker PID list is empty and the configured ComfyUI port is offline before launch.
+3. The single-shot adapter acquires the upstream port lock and generates exactly one validated scene/shot.
+4. Correction text is limited, stored only in an ignored job file, and never included in process arguments or logs.
+5. A rejected/current output is moved to the Studio attempt archive before regeneration; it is never deleted.
+6. Acceptance requires a playable current output and is the only action that advances the shot pointer.
+7. Queue promotion updates only the Studio overlay and never mutates a running supervisor plan.
+
+Run `npm run test:studio` with a fixture Python interpreter. Real `/api/studio` generation requires explicit user direction and an idle GPU.
+
 ### Restart recovery
 
 A suspended process cannot survive a Windows reboot. Never call native resume on a PID recorded before the current system boot. The bridge must enter `recovery` and require a user action before launching anything.
@@ -195,6 +209,8 @@ After the adapter works, check that:
 - Queue items have stable unique keys.
 - Missing optional data produces an empty or fallback state, not a crash.
 - Old bridge responses without a new optional field do not crash during hot reload.
+- Studio shows a clear safety lock while the worker or ComfyUI port is active.
+- Studio queue selection, move-first, correction counting, attempt playback, and Accept & Next remain keyboard accessible.
 - Dialogs still close with Escape.
 - Icon-only buttons have accessible labels.
 - Responsive CSS does not hide the pause/resume affordance completely.

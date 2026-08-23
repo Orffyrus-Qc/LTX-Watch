@@ -13,6 +13,41 @@ LTX / Watch has four independent compatibility layers:
 
 A model checkpoint update does not automatically require an app update. Code changes are needed only when one of the consumed interfaces changes.
 
+## Studio single-shot adapter
+
+LTX Watch Studio launches `scripts/ltx-studio-runner.py` with an ignored local JSON job. The job identifies one section, track slug, numeric shot, correction note, GPU, and port. Correction text is never placed in the process command line.
+
+The configured `studioSourceRunner` must resolve inside `comfyRoot` and expose these Python callables:
+
+```text
+parse_args
+apply_args
+load_timing
+group_rows
+folder_slug_for
+prepare_track_inputs
+run_shot
+acquire_lock
+release_lock
+```
+
+It must also expose `OUTPUT_ROOT`, `LOCK_DIR`, and `GENERIC_MOTION_PROMPT`. Studio temporarily extends `GENERIC_MOTION_PROMPT` for the requested attempt, prepares only the selected input, acquires the same port lock used by the batch, and calls `run_shot` once. The adapter accepts completion only when a video larger than 100 KB appears beneath the configured clip root.
+
+If a future runner removes one of these functions, add a narrow adapter for the new runner. Do not import its private prompt schema into the React dashboard and do not weaken the path, worker, or port checks.
+
+### Studio runtime state
+
+Ignored local files hold:
+
+- Scene order and accepted-shot state in `studio.state.json`.
+- Private prompt jobs/results in `.ltx-watch-studio/jobs`.
+- Superseded attempt videos in `.ltx-watch-studio/attempts`.
+- Adapter stdout/stderr in `studio.log`.
+
+Archived attempts are served only after the media path is validated against the Studio runtime root. The `POST /api/studio` endpoint uses the same ephemeral `X-LTX-Control-Token` as pause/resume.
+
+Studio queue ordering is an overlay over the normalized plan. It never rewrites the upstream plan or a running supervisor assignment.
+
 ## Supported baseline
 
 The v1 adapter was built for:
@@ -221,6 +256,7 @@ control
 queue
 comfyQueue
 videos
+studio
 activity
 gpus
 stats
@@ -242,6 +278,9 @@ For each new LTX/ComfyUI release:
 - [ ] Verify status timestamp, worker PID, and GPU snapshot.
 - [ ] Verify plan worker/track arrays.
 - [ ] Verify the worker command fragment remains unique.
+- [ ] Verify the Studio source runner still satisfies the single-shot adapter contract.
+- [ ] Run Studio fixture tests and confirm correction text reaches only the fake prompt.
+- [ ] Confirm Studio remains locked while a real worker or configured ComfyUI port is active.
 - [ ] Confirm paused processes retain correct parent/child relationships.
 - [ ] Run non-destructive API and media range checks.
 - [ ] Test native control only on a temporary process.

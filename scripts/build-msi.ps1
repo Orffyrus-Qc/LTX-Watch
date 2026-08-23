@@ -81,10 +81,12 @@ Reset-BuildDirectory -Path $buildRoot
 New-Item -ItemType Directory -Path $stageRoot, $toolRoot, $releaseRoot -Force | Out-Null
 
 Copy-InstallerFile (Join-Path $projectRoot 'local-server.mjs') (Join-Path $stageRoot 'local-server.mjs')
+Copy-InstallerFile (Join-Path $projectRoot 'studio-core.mjs') (Join-Path $stageRoot 'studio-core.mjs')
 Copy-InstallerFile (Join-Path $projectRoot 'local.config.example.json') (Join-Path $stageRoot 'local.config.example.json')
 Copy-InstallerFile (Join-Path $projectRoot 'README.md') (Join-Path $stageRoot 'README.md')
 Copy-InstallerFile (Join-Path $installerRoot 'LTX Watch.cmd') (Join-Path $stageRoot 'LTX Watch.cmd')
 Copy-InstallerFile (Join-Path $projectRoot 'scripts\process-orchestrator.ps1') (Join-Path $stageRoot 'scripts\process-orchestrator.ps1')
+Copy-InstallerFile (Join-Path $projectRoot 'scripts\ltx-studio-runner.py') (Join-Path $stageRoot 'scripts\ltx-studio-runner.py')
 Copy-InstallerFile (Join-Path $projectRoot 'scripts\run-installed.mjs') (Join-Path $stageRoot 'scripts\run-installed.mjs')
 Copy-InstallerFile (Join-Path $projectRoot 'scripts\serve-production.mjs') (Join-Path $stageRoot 'scripts\serve-production.mjs')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'dist') -Destination (Join-Path $stageRoot 'dist') -Recurse -Force

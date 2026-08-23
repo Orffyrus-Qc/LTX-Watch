@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'LTX / Watch — Local Video Generation Monitor',
-  description: 'A private local dashboard for LTX Video 2.5 generation progress, queues, and output history.',
+  title: 'LTX / Watch Studio — Local Shot Review',
+  description: 'A private local dashboard and human-in-the-loop shot review studio for LTX Video generation.',
   robots: { index: false, follow: false },
 };
 

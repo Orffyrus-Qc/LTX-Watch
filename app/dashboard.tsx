@@ -5,6 +5,7 @@ import {
   Check,
   ChevronRight,
   CircleAlert,
+  Clapperboard,
   Clock3,
   ExternalLink,
   Film,
@@ -25,8 +26,9 @@ import {
   Zap,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import StudioWorkspace, { type StudioView, type StudioVideo } from './studio-workspace';
 
-const API_BASE = 'http://127.0.0.1:4311';
+const API_BASE = process.env.NEXT_PUBLIC_LTX_WATCH_API || 'http://127.0.0.1:4311';
 
 type VideoItem = {
   id: string;
@@ -57,6 +59,9 @@ type Config = {
   modelLabel: string;
   workerCommandFragment: string;
   recoveryScript: string;
+  studioSourceRunner: string;
+  studioGpu: number;
+  studioPort: number;
   comfyRoot: string;
   finalsDirectory: string;
   clipsDirectory: string;
@@ -105,6 +110,7 @@ type MonitorState = {
   gpus: { device: number; name: string; memoryMb: number; utilization: number; totalMemoryGb: number | null }[];
   stats: { finals: number; clips: number; todayFinals: number; queued: number };
   config: Config;
+  studio: StudioView;
 };
 
 function formatBytes(bytes: number) {
@@ -160,6 +166,7 @@ export default function Dashboard() {
   const [search, setSearch] = useState('');
   const [visibleCount, setVisibleCount] = useState(9);
   const [toast, setToast] = useState('');
+  const [workspace, setWorkspace] = useState<'watch' | 'studio'>('watch');
 
   const loadState = useCallback(async (quiet = false) => {
     if (!quiet) setRefreshing(true);
@@ -255,13 +262,14 @@ export default function Dashboard() {
   return (
     <main className="shell">
       <aside className="sidebar">
-        <button className="brand" onClick={() => document.getElementById('overview')?.scrollIntoView({ behavior: 'smooth' })}>
-          <span className="brand-mark"><Aperture size={17} /></span><span>LTX / WATCH</span>
+        <button className="brand" onClick={() => setWorkspace('watch')}>
+          <span className="brand-mark"><Aperture size={17} /></span><span>{workspace === 'studio' ? 'LTX / WATCH STUDIO' : 'LTX / WATCH'}</span>
         </button>
         <nav aria-label="Main navigation">
-          <button className="nav-item active" onClick={() => document.getElementById('overview')?.scrollIntoView({ behavior: 'smooth' })}><Gauge size={18} />Overview</button>
-          <button className="nav-item" onClick={() => document.getElementById('history')?.scrollIntoView({ behavior: 'smooth' })}><History size={18} />History</button>
-          <button className="nav-item" onClick={() => setQueueOpen(true)}><ListVideo size={18} />Queue <span className="nav-count">{state?.queue.length || 0}</span></button>
+          <button className={`nav-item ${workspace === 'watch' ? 'active' : ''}`} onClick={() => setWorkspace('watch')}><Gauge size={18} />Overview</button>
+          <button className={`nav-item ${workspace === 'studio' ? 'active' : ''}`} onClick={() => setWorkspace('studio')}><Clapperboard size={18} />Studio <span className="studio-nav-dot">BETA</span></button>
+          <button className="nav-item" onClick={() => { setWorkspace('watch'); window.setTimeout(() => document.getElementById('history')?.scrollIntoView({ behavior: 'smooth' }), 0); }}><History size={18} />History</button>
+          <button className="nav-item" onClick={() => { setWorkspace('watch'); setQueueOpen(true); }}><ListVideo size={18} />Queue <span className="nav-count">{state?.queue.length || 0}</span></button>
           <button className="nav-item" onClick={() => setSettingsOpen(true)}><Settings2 size={18} />Settings</button>
         </nav>
         <div className="system-card">
@@ -277,20 +285,21 @@ export default function Dashboard() {
 
       <section className="content">
         <header className="topbar">
-          <div><p className="kicker">LOCAL GENERATION MONITOR</p><h1>{greeting}, {state?.config.displayName || 'Creator'}.</h1></div>
+          <div><p className="kicker">{workspace === 'studio' ? 'SHOT REVIEW & DIRECTION' : 'LOCAL GENERATION MONITOR'}</p><h1>{workspace === 'studio' ? 'Direct every shot.' : `${greeting}, ${state?.config.displayName || 'Creator'}.`}</h1></div>
           <div className="header-actions">
             <button className="icon-button" onClick={() => loadState()} aria-label="Refresh data" title="Refresh data"><RefreshCw size={16} className={refreshing ? 'spinning' : ''} /></button>
             <button className="secondary-button" onClick={() => state?.config.finalsDirectory && openInExplorer(state.config.finalsDirectory)}><FolderOpen size={15} /> Open outputs</button>
-            <button className={`control-button ${isPaused ? 'resume' : 'pause'}`} onClick={toggleGenerator} disabled={!state?.control?.canControl || controlPending} title={recoveryRequired ? 'Restart the interrupted shot from the beginning' : isPaused ? 'Resume the suspended LTX worker' : 'Suspend the active LTX worker and its ComfyUI subprocesses'}>
+            {workspace === 'watch' && <button className={`control-button ${isPaused ? 'resume' : 'pause'}`} onClick={toggleGenerator} disabled={!state?.control?.canControl || controlPending} title={recoveryRequired ? 'Restart the interrupted shot from the beginning' : isPaused ? 'Resume the suspended LTX worker' : 'Suspend the active LTX worker and its ComfyUI subprocesses'}>
               {controlPending ? <LoaderCircle size={15} className="spinning" /> : isPaused ? <Play size={15} fill="currentColor" /> : <Pause size={15} fill="currentColor" />}
               <span>{controlPending ? 'Working…' : recoveryRequired ? 'Retry interrupted shot' : isPaused ? 'Resume render' : 'Pause render'}</span>
-            </button>
-            <div className={`sync ${error ? 'sync-error' : ''}`}><span className="status-dot" /> {error ? 'BRIDGE OFFLINE' : 'LIVE · AUTO REFRESH'}</div>
+            </button>}
+            <div className={`sync ${error ? 'sync-error' : ''}`}><span className="status-dot" /> {error ? 'BRIDGE OFFLINE' : workspace === 'studio' ? state?.studio.canGenerate ? 'STUDIO READY' : 'STUDIO SAFE WAIT' : 'LIVE · AUTO REFRESH'}</div>
           </div>
         </header>
 
         {error && <div className="error-banner" role="alert"><CircleAlert size={16} /><span><strong>Local bridge unavailable.</strong> Start the monitor with <code>npm run dev</code> and this page will reconnect automatically.</span></div>}
 
+        {workspace === 'studio' ? <StudioWorkspace studio={state?.studio} token={state?.control.token} apiBase={API_BASE} onRefresh={() => loadState(true)} onToast={setToast} onPlay={(video: StudioVideo) => setSelectedVideo(video)} /> : <>
         <section className={`hero ${active ? '' : 'hero-idle'} ${isPaused ? 'hero-paused' : ''}`} id="overview">
           <div className="hero-copy">
             <div className="job-label"><span className="pulse" /> {recoveryRequired ? 'SHOT RESTART REQUIRED' : isPaused ? 'GENERATION PAUSED' : active ? 'GENERATING NOW' : state?.connection.worker ? 'WORKER TRANSITIONING' : 'NO ACTIVE JOB'} <span>{current ? `SHOT ${Math.min(current.completedShots + 1, current.totalShots)} OF ${current.totalShots}` : 'STANDING BY'}</span></div>
@@ -364,7 +373,9 @@ export default function Dashboard() {
           </aside>
         </section>
 
-        <footer><span>LTX / WATCH</span><p>Private local monitor · Your files never leave this computer.</p><button onClick={() => setSettingsOpen(true)}>Configure sources <ExternalLink size={12} /></button></footer>
+        </>}
+
+        <footer><span>{workspace === 'studio' ? 'LTX / WATCH STUDIO' : 'LTX / WATCH'}</span><p>Private local monitor · Your files never leave this computer.</p><button onClick={() => setSettingsOpen(true)}>Configure sources <ExternalLink size={12} /></button></footer>
       </section>
 
       {selectedVideo && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedVideo(null); }}>
@@ -392,10 +403,11 @@ export default function Dashboard() {
           <div className="settings-fields">
             {([
               ['displayName', 'Display name'],
-              ['modelLabel', 'Model label'], ['workerCommandFragment', 'Worker command match'], ['recoveryScript', 'Recovery restart script'],
+              ['modelLabel', 'Model label'], ['workerCommandFragment', 'Worker command match'], ['recoveryScript', 'Recovery restart script'], ['studioSourceRunner', 'Studio source runner'],
               ['comfyRoot', 'ComfyUI root'], ['finalsDirectory', 'Final videos folder'], ['clipsDirectory', 'Generated clips folder'],
               ['logFile', 'Progress log'], ['statusFile', 'Worker status JSON'], ['planFile', 'Queue plan JSON'], ['comfyUrl', 'ComfyUI address'],
             ] as const).map(([key, label]) => <label key={key}><span>{label}</span><input value={settings[key]} onChange={(event) => setSettings({ ...settings, [key]: event.target.value })} /></label>)}
+            <div className="settings-row"><label><span>Studio GPU</span><input type="number" min="0" max="15" value={settings.studioGpu} onChange={(event) => setSettings({ ...settings, studioGpu: Number(event.target.value) })} /></label><label><span>Studio port</span><input type="number" min="1024" max="65535" value={settings.studioPort} onChange={(event) => setSettings({ ...settings, studioPort: Number(event.target.value) })} /></label></div>
             <div className="settings-row"><label><span>Refresh every</span><div className="input-unit"><input type="number" min="2" max="60" value={settings.refreshSeconds} onChange={(event) => setSettings({ ...settings, refreshSeconds: Number(event.target.value) })} /><i>seconds</i></div></label><label><span>Max videos</span><input type="number" min="20" max="500" value={settings.maxVideos} onChange={(event) => setSettings({ ...settings, maxVideos: Number(event.target.value) })} /></label></div>
           </div>
           <div className="settings-actions"><button className="secondary-button" onClick={() => setSettingsOpen(false)}>Cancel</button><button className="primary-button" onClick={saveSettings}>Save & reconnect</button></div>

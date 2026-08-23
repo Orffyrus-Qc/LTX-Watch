@@ -1,9 +1,11 @@
 import { spawn } from 'node:child_process';
 
 const mode = process.argv[2] === 'start' ? 'start' : 'dev';
+const sitePort = Math.min(65_535, Math.max(1_024, Number(process.env.LTX_WATCH_SITE_PORT || 3000)));
+const siteScript = `npm run site:${mode}${sitePort === 3000 ? '' : ` -- --port ${sitePort}`}`;
 const siteCommand = process.platform === 'win32'
-  ? [process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `npm run site:${mode}`]]
-  : ['npm', ['run', `site:${mode}`]];
+  ? [process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', siteScript]]
+  : ['npm', ['run', `site:${mode}`, ...(sitePort === 3000 ? [] : ['--', '--port', String(sitePort)])]];
 const children = [
   spawn(process.execPath, ['local-server.mjs'], { stdio: 'inherit' }),
   spawn(siteCommand[0], siteCommand[1], { stdio: 'inherit' }),
