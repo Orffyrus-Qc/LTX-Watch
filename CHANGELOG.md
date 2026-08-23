@@ -18,6 +18,10 @@ All notable changes to LTX / Watch are documented here.
 - The browser cannot supply workflow graphs, workflow paths, output prefixes, model files, Python/Blender scripts, executables, or arbitrary command arguments.
 - Blender automation validates a registered or privately uploaded `.blend`, copies it before rendering, disables auto-execution, and uses fixed background-render arguments without touching the source.
 
+### Fixed
+
+- Create reconciles an outdated official-template model filename with ComfyUI's live enum only when family and model-format markers identify one unambiguous installed checkpoint. This covers the renamed Gemma INT8 ConvRot checkpoint without silently switching precision.
+
 ## 1.4.0 — 2026-08-23
 
 ### Added

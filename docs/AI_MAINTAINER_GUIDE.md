@@ -135,6 +135,7 @@ When LTX or ComfyUI updates the official full-workflow templates:
 1. Fetch the official `video_ltx2_5_t2v.json`, `video_ltx2_5_i2v.json`, and `video_ltx2_5_flf2v.json` from the installed `comfyui_workflow_templates_json` package and compare their semantic subgraph inputs and node classes. Do not use a user's saved workflow as the compatibility contract.
 2. Keep template discovery beneath the configured ComfyUI Python environment. Never fall back to similarly named API/cloud templates.
 3. Match prompt, enhancer, duration, resolution, seed, and frame rate by subgraph labels/names. Do not hardcode node IDs or model filenames. Preserve the generic `/object_info/<class_type>` compiler for input ordering and dynamic nodes.
+   Preserve conservative combo reconciliation: keep valid template values, permit a renamed live model only when family and precision/format markers produce one unique match, and leave ambiguous values invalid. Never resolve a missing INT8/FP8/BF16 choice by silently changing precision.
 4. If the template gains multiple subgraphs or changes link semantics, add fixture copies of sanitized official structure and update the compiler deliberately. Do not silently choose a graph.
 5. Keep `SaveVideo.filename_prefix` constrained to the per-job Create output prefix and accept results only inside the configured clip root.
 6. Keep prompts and references in ignored JSON/runtime files. The command line contains only `ltx-create-runner.py --job <private-job-path>`.

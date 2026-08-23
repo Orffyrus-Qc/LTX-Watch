@@ -1298,6 +1298,7 @@ async function startCreateJob(record, job, config, backbone) {
     timeoutSeconds: 7_200,
   };
   await writeFile(jobPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  await writeFile(resultPath, `${JSON.stringify({ status: 'generating', stage: 'Starting local runner', progress: 0 }, null, 2)}\n`, 'utf8');
   const logHandle = await open(path.join(jobsDirectory, 'runner.log'), 'a');
   try {
     const child = spawn(launch.executable, [CREATE_RUNNER_PATH, '--job', jobPath], {
@@ -1468,6 +1469,8 @@ async function controlCreate(body) {
       source.startedAt = null;
       source.completedAt = null;
       source.error = null;
+      source.pid = null;
+      source.promptId = null;
     } else if (action === 'upload-start') {
       const fileName = path.basename(String(body?.fileName || '')).replace(/[^a-zA-Z0-9._ -]/g, '_').slice(0, 180);
       const extension = path.extname(fileName).toLowerCase();

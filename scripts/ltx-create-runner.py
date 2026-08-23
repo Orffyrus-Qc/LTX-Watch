@@ -11,6 +11,7 @@ import copy
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -25,6 +26,9 @@ CONNECTION_TYPES = {
     "SIGMAS", "GUIDER", "IMAGE", "AUDIO", "VIDEO", "LATENT_UPSCALE_MODEL",
     "*", "MASK", "IMAGE,MASK", "COMFY_MATCHTYPE_V3",
 }
+
+MODEL_FORMAT_TOKEN = re.compile(r"^(?:(?:int|fp|bf|nf|q)\d+[a-z0-9_]*|convrot|gguf|awq|gptq)$")
+GENERIC_FILENAME_TOKENS = {"safetensors", "ckpt", "pt", "pth", "bin", "model", "models"}
 
 
 def read_json(file_path: Path):
@@ -73,6 +77,36 @@ def load_module(file_path: Path, name: str):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _filename_tokens(value):
+    filename = str(value or "").replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return re.findall(r"[a-z]+\d+[a-z0-9]*|\d+[a-z]+|[a-z]+", filename)
+
+
+def reconcile_combo_value(value, definition):
+    """Reconcile a renamed template enum only when the live match is unambiguous."""
+    if not isinstance(definition, list) or not definition or not isinstance(definition[0], list):
+        return value
+    choices = [item for item in definition[0] if isinstance(item, str)]
+    if not isinstance(value, str) or not choices or value in choices:
+        return value
+    if len(choices) == 1:
+        return choices[0]
+
+    source_tokens = _filename_tokens(value)
+    source_set = set(source_tokens)
+    format_tokens = {token for token in source_set if MODEL_FORMAT_TOKEN.fullmatch(token)}
+    family = next((token for token in source_tokens if token not in format_tokens and token not in GENERIC_FILENAME_TOKENS), None)
+    candidates = []
+    for choice in choices:
+        candidate_tokens = set(_filename_tokens(choice))
+        if format_tokens and not format_tokens.issubset(candidate_tokens):
+            continue
+        if family and family not in candidate_tokens:
+            continue
+        candidates.append(choice)
+    return candidates[0] if len(candidates) == 1 else value
 
 
 def locate_template(comfy_root: Path, mode: str):
@@ -243,7 +277,7 @@ class WorkflowCompiler:
                     if not is_connection and widgets:
                         widgets.pop(0)
                 elif not is_connection and widgets:
-                    compiled_inputs[name] = widgets.pop(0)
+                    compiled_inputs[name] = reconcile_combo_value(widgets.pop(0), definition)
             for name, value in linked.items():
                 compiled_inputs.setdefault(name, value)
             if class_type == "SaveVideo":
