@@ -73,6 +73,8 @@ Then edit `local.config.json`. It is intentionally ignored by Git.
 
 The prebuilt MSI is self-contained: it bundles a production build and a private Node.js runtime, so end users do not need to install Node or npm. It installs per-user under `%LOCALAPPDATA%\Programs\LTX Watch` and creates Desktop and Start Menu shortcuts.
 
+[Download the latest Windows MSI](https://github.com/Orffyrus-Qc/ltx-watch/releases/latest)
+
 To build the installer from source:
 
 ```powershell
