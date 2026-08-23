@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import {
@@ -85,4 +86,10 @@ test('SAM 3.1 setup pins the official checkpoint and parses only its result mark
   const payload = parseSam3InstallerResult('download output\nLTX_WATCH_SAM3_RESULT:{"ok":true,"verified":true}\n');
   assert.deepEqual(payload, { ok: true, verified: true });
   assert.equal(parseSam3InstallerResult('LTX_WATCH_MANAGER_RESULT:{"ok":true}'), null);
+});
+
+test('SAM 3.1 installer hashes with .NET without relying on Get-FileHash module loading', async () => {
+  const script = await readFile(new URL('../scripts/install-sam3.ps1', import.meta.url), 'utf8');
+  assert.match(script, /System\.Security\.Cryptography\.SHA256/);
+  assert.doesNotMatch(script, /Get-FileHash/);
 });

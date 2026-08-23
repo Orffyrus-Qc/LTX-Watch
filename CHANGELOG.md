@@ -20,6 +20,10 @@ All notable changes to LTX / Watch are documented here.
 - Range-enabled project media previews and Explorer actions constrained to registered local roots.
 - Guarded **Install model** button for native SAM 3.1 with explicit license confirmation, idle-state locking, official Comfy-Org download, pinned size/SHA-256 verification, backup, and failure cleanup.
 
+### Fixed
+
+- SAM 3.1 checkpoint verification now works even when the installer process cannot auto-load PowerShell's `Get-FileHash` command.
+
 ## 1.3.0 — 2026-08-23
 
 ### Added

@@ -20,6 +20,26 @@ function Resolve-ExactPath {
   return (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path
 }
 
+function Get-Sha256Hash {
+  param([Parameter(Mandatory)][string]$LiteralPath)
+
+  $stream = $null
+  $algorithm = $null
+  try {
+    $stream = [System.IO.File]::Open(
+      $LiteralPath,
+      [System.IO.FileMode]::Open,
+      [System.IO.FileAccess]::Read,
+      [System.IO.FileShare]::Read
+    )
+    $algorithm = [System.Security.Cryptography.SHA256]::Create()
+    return ([System.BitConverter]::ToString($algorithm.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+  } finally {
+    if ($algorithm) { $algorithm.Dispose() }
+    if ($stream) { $stream.Dispose() }
+  }
+}
+
 $temporaryPath = $null
 $backupPath = $null
 $destination = $null
@@ -39,7 +59,7 @@ try {
     Send-Stage 'Verifying the existing SAM 3.1 checkpoint'
     $existing = Get-Item -LiteralPath $destination
     if ($existing.Length -eq $ExpectedSize) {
-      $existingHash = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant()
+      $existingHash = Get-Sha256Hash -LiteralPath $destination
       if ($existingHash -eq $ExpectedSha256.ToLowerInvariant()) {
         $result = [ordered]@{ ok = $true; installed = $false; verified = $true; filename = $existing.Name; size = $existing.Length; sha256 = $existingHash; backup = $null; comfyRestartRequired = $true }
         Send-Stage 'SAM 3.1 checkpoint is already verified'
@@ -69,7 +89,7 @@ try {
   Send-Stage 'Verifying model size and SHA-256 digest'
   $download = Get-Item -LiteralPath $temporaryPath
   if ($download.Length -ne $ExpectedSize) { throw "The SAM 3.1 download size did not match the pinned official file. Expected $ExpectedSize bytes and received $($download.Length)." }
-  $downloadHash = (Get-FileHash -LiteralPath $temporaryPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  $downloadHash = Get-Sha256Hash -LiteralPath $temporaryPath
   if ($downloadHash -ne $ExpectedSha256.ToLowerInvariant()) { throw 'The SAM 3.1 SHA-256 digest did not match the pinned official checkpoint.' }
 
   Move-Item -LiteralPath $temporaryPath -Destination $destination
