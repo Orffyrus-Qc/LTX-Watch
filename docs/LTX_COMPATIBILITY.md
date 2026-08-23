@@ -50,6 +50,62 @@ Archived attempts are served only after the media path is validated against the 
 
 Studio queue ordering is an overlay over the normalized plan. It never rewrites the upstream plan or a running supervisor assignment.
 
+## Create text-to-video adapter
+
+Create is intentionally separate from Studio. It creates new videos without requiring a scene or shot in the album plan. `create-core.mjs` owns pure prompt, option, seed, draft, and queue invariants; `app/create-workspace.tsx` owns the browser UI; `local-server.mjs` owns authenticated orchestration; and `scripts/ltx-create-runner.py` is the only layer allowed to compile and submit a workflow.
+
+The adapter supports ComfyUI's official local full-workflow templates:
+
+| Mode | Template |
+| --- | --- |
+| Text only | `video_ltx2_5_t2v.json` |
+| First frame | `video_ltx2_5_i2v.json` |
+| First + last frame | `video_ltx2_5_flf2v.json` |
+
+Do not substitute the `LtxApi*` cloud nodes: Create is a local-first adapter. Template discovery is constrained to the installed `comfyui_workflow_templates_json/templates` package beneath the configured ComfyUI Python environment.
+
+The compiler identifies the template's single subgraph by its definition ID, maps exposed inputs by `label`/`name`, detaches the `ResolutionSelector` width/height links when needed, resolves top-level and internal subgraph links, and queries the isolated loopback server's `/object_info/<class_type>` route to preserve ComfyUI's current required/optional input order. It handles `COMFY_AUTOGROW_V3` and `COMFY_DYNAMICCOMBO_V3`, ignores notes and UI-only resolution selectors, and constrains `SaveVideo.filename_prefix` to `video/ltx-watch-create/<job-id>`. Node numeric IDs are not an API and must not become constants.
+
+The compatible `studioSourceRunner` is reused only for these guarded server-lifecycle functions:
+
+```text
+parse_args
+apply_args
+acquire_lock
+release_lock
+start_comfy_server
+stop_comfy_server
+wait_for_server
+wait_for_history
+```
+
+Create configures a unique worker name and private log/cache directory, binds ComfyUI to loopback through the source runner, acquires the same port lock, starts one isolated server, submits one official workflow, waits for history completion, stops that server, and accepts only a video larger than 100 KB beneath the configured clip root. If the source runner changes these call signatures, add a versioned adapter rather than importing its whole batch policy into the UI.
+
+### Create runtime and privacy
+
+- `create.state.json` stores the private draft, queue, and bounded job history.
+- `.ltx-watch-create/uploads` stores allowlisted image, video, audio, and `.blend` context received in ordered 4 MiB chunks.
+- `.ltx-watch-create/jobs/<id>/job.json` contains the private prompt and paths; only this job path appears in process arguments.
+- `.ltx-watch-create/jobs/<id>/result.json` carries bounded status, stage, progress, prompt ID, and the validated output path.
+- The browser cannot submit a raw ComfyUI prompt graph, workflow path, Blender executable, Blender project path, output prefix, Python arguments, or arbitrary command.
+
+Create queue polling may advance an already-authorized queued job, so automated fixtures must use an empty or paused Create queue. Never call the real enqueue action during UI or API validation.
+
+### Create context contract
+
+The authenticated context tray accepts PNG/JPEG/WebP images, MP4/WebM/MOV/MKV video, WAV/MP3/FLAC/M4A/OGG/AAC audio, and `.blend` files. The bridge chooses the private destination and validates extension, bounded size, ordered chunk offsets, final byte count, ignored-runtime containment, and existence again at enqueue and launch. The browser never supplies a destination path.
+
+- The first dropped image becomes the first-frame anchor and the second becomes the last-frame anchor.
+- A dropped video is copied into the private job and FFmpeg extracts its first and final frames for the official I2V/FLF2V workflow. It is not full-video motion conditioning.
+- Dropped audio is copied into the private job and replaces the rendered video's audio with fixed FFmpeg mapping, AAC encoding, looping, and `-shortest`. It does not condition the visual model.
+- A dropped `.blend` is treated as the job's private backbone and follows the Blender contract below.
+
+### Blender reference-frame contract
+
+Blender mode is available for either a selected Project whose designated backbone resolves to a `.blend` inside that project's registered roots or a `.blend` uploaded into the private Create runtime, and only when a supported local `blender.exe` is detected. The bridge supplies those validated paths in an ignored private job. The Python adapter copies the backbone to the per-job runtime folder, disables auto-execution, invokes only fixed background-render arguments, and renders PNG frame anchors from that copy. It never uses `--python-expr`, accepts a browser-provided script, opens the original for saving, or overwrites the original.
+
+Text, I2V, FLF2V, Studio, and Projects regeneration share one in-process launch claim plus the upstream port lock. A Create job must wait while a worker PID is alive, the configured ComfyUI port responds, Studio/Projects has an active job, or another launch is being claimed.
+
 ## Project manifest and Blender backbone contract
 
 Project state is normalized by `project-core.mjs` and stored only in ignored `projects.state.json`. A project record contains its import mode and registered roots, project-wide context IDs, optional Blender-backbone asset ID, saved shot decisions, and the selective-regeneration queue. Binary uploads and managed copies live beneath ignored `.ltx-watch-projects`.
@@ -392,6 +448,11 @@ For each new LTX/ComfyUI release:
 - [ ] Verify the Studio source runner still satisfies the single-shot adapter contract.
 - [ ] Run Studio fixture tests and confirm correction text reaches only the fake prompt.
 - [ ] Confirm Studio remains locked while a real worker or configured ComfyUI port is active.
+- [ ] Confirm all three official local LTX 2.5 templates still have one compilable subgraph and semantic prompt/duration/width/height/seed/frame-rate inputs.
+- [ ] Run Create core and `--validate-job` fixture tests; do not submit a real workflow.
+- [ ] Confirm prompts remain only in ignored JSON, Create and Studio share the launch claim, and queued Create work cannot start beside a worker or occupied ComfyUI port.
+- [ ] Confirm dropped context extensions, size/offset/final-length checks, and private-runtime containment; never upload a real private asset in automated tests.
+- [ ] Confirm Blender mode renders only a copied `.blend` with auto-execution disabled and fixed background arguments, and keeps the source byte-for-byte unchanged.
 - [ ] Confirm paused processes retain correct parent/child relationships.
 - [ ] Run non-destructive API and media range checks.
 - [ ] Test native control only on a temporary process.

@@ -37,6 +37,9 @@ studio.state.json
 studio.log
 projects.state.json
 .ltx-watch-projects/
+create.state.json
+create.log
+.ltx-watch-create/
 
 # deployment and generated files
 .vercel

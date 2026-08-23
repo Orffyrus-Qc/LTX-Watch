@@ -36,6 +36,7 @@ Do not rely on blog posts or copied endpoint lists when the upstream source or O
 - Never call the real `/api/control` pause/resume action during an automated check.
 - Never call a real `/api/studio` generate action during an automated check. Use the fixture runner under `tests/fixtures`.
 - Never enqueue a mapped shot through `/api/projects` during an automated or live UI check; a queued item may start a real Studio generation when the GPU is idle.
+- Never enqueue through `/api/create` or press **Queue creation** during an automated or live UI check; an authorized Create item may start a real local LTX workflow when the GPU becomes idle.
 - Never suspend, interrupt, terminate, restart, or clear a real ComfyUI/LTX job unless the user explicitly asks for that action.
 - Test `process-orchestrator.ps1` only against a temporary process created for the test.
 - Never replace pause/resume with process termination or ComfyUI `/interrupt` without explicit user approval and a documented migration.
@@ -48,6 +49,7 @@ Do not rely on blog posts or copied endpoint lists when the upstream source or O
 - Keep `local.config.json`, `.env*`, generated media, logs, status files, queue plans, and `orchestrator.state.json` out of Git.
 - Keep `studio.state.json`, `.ltx-watch-studio`, Studio prompt jobs, corrections, and attempt media out of Git.
 - Keep `projects.state.json`, `.ltx-watch-projects`, project uploads, context relationships, private paths, and regeneration notes out of Git.
+- Keep `create.state.json`, `.ltx-watch-create`, Create prompts, references, Blender working copies, result files, and runner logs out of Git.
 - Never commit absolute paths, usernames, tokens, prompts, generated media, or real job IDs from a user's machine.
 - Do not expose the control token in logs, persistent files, URLs, or error messages.
 - Preserve HTTP range support in `/media/:id`; browser playback depends on it.
@@ -82,6 +84,16 @@ Prefer changing one adapter function over changing the dashboard contract.
 `studio-core.mjs` owns pure queue/range/review-state invariants. `scripts/ltx-studio-runner.py` is the only layer allowed to translate a Studio job into calls on a compatible local album runner. The browser must never submit prompts directly to ComfyUI.
 
 Studio must refuse generation while the normal worker is alive, the configured ComfyUI port is online, another Studio job is active, or the runner contract cannot be validated. Queue promotion changes only Studio's ignored local ordering overlay; never rewrite a live supervisor plan.
+
+### Create adapter
+
+`create-core.mjs` owns pure option, prompt, seed, draft, and queue invariants. `app/create-workspace.tsx` owns the original-video UI. `local-server.mjs` validates capabilities, registered roots, uploads, private jobs, queue transitions, and the shared generation launch claim. `scripts/ltx-create-runner.py` is the only layer allowed to compile ComfyUI's official local LTX 2.5 T2V/I2V/FLF2V templates and submit them to the isolated loopback server.
+
+The browser must never provide a workflow path/graph, output prefix, Blender executable/project path, Python script/expression, model filename, ComfyUI command, or arbitrary runner argument. Prompt and paths go only into a bridge-created ignored JSON job; process arguments contain only `--job <path>`. Create must not launch while the worker, configured ComfyUI port, Studio/Projects regeneration, or shared launch claim is active. Preserve the upstream port lock.
+
+Context intake accepts only the documented image/video/audio/`.blend` extensions through authenticated ordered chunks into the ignored Create runtime. Revalidate kind, size, final byte count, containment, and existence before launch. Video currently supplies extracted first/end anchors; audio replaces the rendered soundtrack and must never be presented as visual-model conditioning. Keep FFmpeg arguments fixed and server-owned.
+
+Blender mode accepts either a designated `.blend` inside a registered Project root or an authenticated dropped `.blend` inside the private Create runtime, plus a detected local Blender executable. Copy the source into the per-job runtime before fixed-argument background PNG rendering, with auto-execution disabled. Never save over the source or accept arbitrary Blender scripts. Automated tests use `--validate-job` and static safety assertions only; never invoke real Blender, ComfyUI, or a model.
 
 ### Project and Blender backbone adapter
 
@@ -193,6 +205,7 @@ With the local bridge running, validate only non-destructive routes:
 - `GET /api/state` returns the documented top-level fields.
 - `GET /api/environment` returns the documented diagnostic fields and does not change local state.
 - `GET /api/projects` may refresh an explicitly queued project workflow, so ensure the project fixture contains no queued items before validation.
+- `GET /api/create` may advance an explicitly authorized Create queue, so ensure `create.state.json` is absent or the fixture queue is empty/paused before validation.
 - An unauthorized `POST /api/environment/maintenance` is rejected with 403. Do not run a real maintenance action as an automated check.
 - An authenticated `install-sam3` request without `licenseAccepted: true` is rejected. Do not submit an accepted request during validation.
 - An unauthorized `POST /api/control` is rejected with 403.

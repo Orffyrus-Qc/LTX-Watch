@@ -29,6 +29,10 @@ The app runs entirely on your computer. It does not upload prompts, videos, logs
 - Editable source paths, model label, worker match, and refresh interval
 - Loopback-only local bridge with an ephemeral control token
 - Integrated **LTX Watch Studio** shot-by-shot review mode
+- Experimental **Create** workspace for original local LTX 2.5 text-to-video, image-to-video, and first/last-frame generation
+- Unified private drag-and-drop context tray for images, videos, songs, and `.blend` scenes
+- Optional Blender-backed reference frames rendered from an immutable copy of a project backbone
+- Private persistent Create drafts, variation queue, live progress, playback, retry, pause-between-jobs, and **Move first** ordering
 - Per-attempt correction notes and preserved regeneration history
 - Selectable Studio scene queue with one-click **Move first** ordering
 - Project Library imports an existing folder by reference or into an app-managed copy
@@ -43,7 +47,9 @@ The app runs entirely on your computer. It does not upload prompts, videos, logs
 - npm
 - A local ComfyUI installation
 - An LTX workflow that writes video files to a local output directory
+- ComfyUI's official local `video_ltx2_5_t2v`, `video_ltx2_5_i2v`, and `video_ltx2_5_flf2v` workflow templates for the matching Create modes
 - Optional: `ffprobe.exe` in the ComfyUI root for duration and resolution metadata
+- FFmpeg available through the compatible runner or system path when using dropped video/audio context
 - Optional: Blender 4.5 or Blender 5 for the ComfyUI-Blender integration
 
 The history and standard queue features work with ordinary ComfyUI output folders. The richest track/shot progression view uses the optional supervisor files described in [LTX compatibility](docs/LTX_COMPATIBILITY.md).
@@ -134,6 +140,23 @@ npm run dev
 ```
 
 Saved dashboard settings in `local.config.json` take precedence over auto-detected defaults.
+
+## Create original videos from text
+
+The experimental `feature/text-to-video` branch adds **Create** as a separate workspace. It does not require an existing album plan or shot number:
+
+1. Describe the scene and optionally add a title and an **Avoid** list. Avoid notes are written as production constraints so the model is not asked to speak them.
+2. Choose 3–20 seconds, a generation-friendly resolution, 12–30 fps, one to four variations, and a random or repeatable seed.
+3. Optionally enable local prompt enhancement, camera direction, motion intensity, visual style, and synchronized, ambience-only, soundtrack-replacement, or stripped audio.
+4. Drop images, video, a song, or a `.blend` into **Context Drop**, or start from text alone. The first two images become start/end anchors; a video supplies extracted first/end frames; audio replaces the finished video's soundtrack; and a `.blend` becomes the private Blender backbone.
+5. Blender mode can use either a `.blend` backbone assigned in **Projects** or a dropped `.blend`. The adapter copies the scene into the private job folder, disables Blender auto-execution, renders the selected timeline frame(s) in background mode, and passes those PNGs to the official local I2V or FLF2V workflow. It never saves over the source scene.
+6. Press **Queue creation**. Variations run one at a time only after the album worker, Studio, Projects regeneration, and the configured ComfyUI port are idle.
+
+Create state, prompts, uploads, runner logs, and job JSON live in ignored `create.state.json` and `.ltx-watch-create/`. Only the ignored JSON job path appears on the Python process command line. Outputs are written beneath the configured ComfyUI video folder and remain playable from Create history.
+
+Context files remain local. Dropped audio is not visual conditioning: it is looped or trimmed to the generated video's length and replaces the generated audio track after rendering. Dropped video is currently reduced to first/end visual anchors rather than used as full motion conditioning.
+
+The queue **Pause** control stops automatic launch of the next waiting creation; it does not suspend an active sampling process. Use **Move first** to reprioritize a waiting variation and **Retry** for a failed job. Automated checks must never press **Queue creation** or call the authenticated enqueue action against a real local bridge.
 
 ## LTX Watch Studio workflow
 
@@ -230,12 +253,17 @@ flowchart LR
   Files[Local output folders\nvideos and metadata]
   Logs[Supervisor files\nlog, status, plan]
   Control[Windows orchestrator\nworker process tree]
+  Create[Create adapter\nofficial local LTX 2.5 templates]
+  Blender[Optional Blender copy\nfirst/last reference frames]
 
   UI -->|read state / send controls| Bridge
   Bridge --> Comfy
   Bridge --> Files
   Bridge --> Logs
   Bridge --> Control
+  Bridge --> Create
+  Create --> Comfy
+  Create --> Blender
 ```
 
 Two local services start together:
@@ -290,6 +318,9 @@ The bridge is an implementation detail, but these endpoints define the dashboard
 | `POST` | `/api/config` | Save local configuration |
 | `POST` | `/api/control` | Pause or resume the verified worker tree |
 | `POST` | `/api/studio` | Select/reorder scenes, generate one shot, or accept the reviewed output |
+| `GET` | `/api/create` | Create capabilities, private draft, queue, active progress, and generated history |
+| `POST` | `/api/create` | Authenticated draft, enqueue, queue ordering/pause, retry, removal, and upload-session actions |
+| `POST` | `/api/create-upload/:id` | Authenticated chunked local image, video, audio, and `.blend` context intake |
 | `GET` | `/api/projects` | Scan and return the selected local project, assets, shots, context, and regeneration queue |
 | `POST` | `/api/projects` | Authenticated project import, state, context, upload-session, and selective-regeneration controls |
 | `POST` | `/api/project-upload/:id` | Authenticated chunked local file intake for a project upload session |
@@ -304,6 +335,7 @@ The bridge is an implementation detail, but these endpoints define the dashboard
 ```text
 app/
   dashboard.tsx              React dashboard and interactions
+  create-workspace.tsx       Original-video composer, queue, progress, and history
   project-workspace.tsx      Project/shot/context/Blender production workspace
   globals.css                Visual system and responsive layout
   layout.tsx                 Page metadata and fonts
@@ -316,6 +348,7 @@ lib/
 local-server.mjs             Local aggregation, streaming, and control API
 scripts/
   ltx-studio-runner.py       One-shot adapter for a compatible local runner
+  ltx-create-runner.py       Official local LTX 2.5 workflow and Blender reference adapter
   install-comfyui-blender.ps1 Official release install, Blender setup, backup, and rollback
   install-sam3.ps1           Official checkpoint download, digest validation, backup, and rollback
   process-orchestrator.ps1   Windows process-tree suspend/resume
@@ -323,6 +356,7 @@ scripts/
   run-studio.mjs             Starts isolated Studio development ports
 studio-core.mjs              Queue and review-state invariants
 project-core.mjs             Project assets, shot mapping, and regeneration-queue invariants
+create-core.mjs              Create option, prompt, seed, draft, and queue invariants
 docs/
   AI_MAINTAINER_GUIDE.md     Safe workflow for coding agents
   LTX_COMPATIBILITY.md       Adapter contract and upgrade checklist

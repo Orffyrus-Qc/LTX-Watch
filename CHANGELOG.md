@@ -2,6 +2,22 @@
 
 All notable changes to LTX / Watch are documented here.
 
+## Unreleased — `feature/text-to-video`
+
+### Added
+
+- Experimental **Create** workspace for original local LTX 2.5 text-to-video, first-frame, and first/last-frame generation using ComfyUI's official full-workflow templates.
+- Private persistent drafts, one-to-four variation queue, random/fixed seeds, prompt enhancement, format, camera, motion, style, audio, progress, history, playback, Explorer, retry, pause-between-jobs, and **Move first** controls.
+- Unified drag-and-drop context intake for images, video, songs, and `.blend` scenes, with private chunked uploads, video frame extraction, final-soundtrack replacement, and optional Blender-backed anchors.
+- Guarded workflow compiler that resolves semantic subgraph inputs and current ComfyUI node schemas without hardcoding template node IDs.
+- Shared generation launch claim across Create, Studio, and Projects regeneration, backed by the existing upstream ComfyUI port lock.
+
+### Security
+
+- Create prompts and local paths live only in ignored state/runtime JSON; process arguments contain only the private job path.
+- The browser cannot supply workflow graphs, workflow paths, output prefixes, model files, Python/Blender scripts, executables, or arbitrary command arguments.
+- Blender automation validates a registered or privately uploaded `.blend`, copies it before rendering, disables auto-execution, and uses fixed background-render arguments without touching the source.
+
 ## 1.4.0 — 2026-08-23
 
 ### Added

@@ -29,12 +29,14 @@ import {
   Sparkles,
   TimerReset,
   Wrench,
+  WandSparkles,
   X,
   Zap,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import StudioWorkspace, { type StudioView, type StudioVideo } from './studio-workspace';
 import ProjectWorkspace from './project-workspace';
+import CreateWorkspace from './create-workspace';
 
 const API_BASE = process.env.NEXT_PUBLIC_LTX_WATCH_API || 'http://127.0.0.1:4311';
 
@@ -292,7 +294,7 @@ export default function Dashboard() {
   const [search, setSearch] = useState('');
   const [visibleCount, setVisibleCount] = useState(9);
   const [toast, setToast] = useState('');
-  const [workspace, setWorkspace] = useState<'watch' | 'studio' | 'projects'>('watch');
+  const [workspace, setWorkspace] = useState<'watch' | 'create' | 'studio' | 'projects'>('watch');
 
   const loadState = useCallback(async (quiet = false) => {
     if (!quiet) setRefreshing(true);
@@ -496,10 +498,11 @@ export default function Dashboard() {
     <main className="shell">
       <aside className="sidebar">
         <button className="brand" onClick={() => setWorkspace('watch')}>
-          <span className="brand-mark"><Aperture size={17} /></span><span>{workspace === 'studio' ? 'LTX / WATCH STUDIO' : workspace === 'projects' ? 'LTX / WATCH PROJECTS' : 'LTX / WATCH'}</span>
+          <span className="brand-mark"><Aperture size={17} /></span><span>{workspace === 'create' ? 'LTX / WATCH CREATE' : workspace === 'studio' ? 'LTX / WATCH STUDIO' : workspace === 'projects' ? 'LTX / WATCH PROJECTS' : 'LTX / WATCH'}</span>
         </button>
         <nav aria-label="Main navigation">
           <button className={`nav-item ${workspace === 'watch' ? 'active' : ''}`} onClick={() => setWorkspace('watch')}><Gauge size={18} />Overview</button>
+          <button className={`nav-item ${workspace === 'create' ? 'active' : ''}`} onClick={() => setWorkspace('create')}><WandSparkles size={18} />Create <span className="studio-nav-dot">LAB</span></button>
           <button className={`nav-item ${workspace === 'studio' ? 'active' : ''}`} onClick={() => setWorkspace('studio')}><Clapperboard size={18} />Studio</button>
           <button className={`nav-item ${workspace === 'projects' ? 'active' : ''}`} onClick={() => setWorkspace('projects')}><FolderKanban size={18} />Projects <span className="studio-nav-dot">NEW</span></button>
           <button className="nav-item" onClick={() => { setWorkspace('watch'); window.setTimeout(() => document.getElementById('history')?.scrollIntoView({ behavior: 'smooth' }), 0); }}><History size={18} />History</button>
@@ -520,7 +523,7 @@ export default function Dashboard() {
 
       <section className="content">
         <header className="topbar">
-          <div><p className="kicker">{workspace === 'studio' ? 'SHOT REVIEW & DIRECTION' : workspace === 'projects' ? 'PROJECT & ASSET CONTROL' : 'LOCAL GENERATION MONITOR'}</p><h1>{workspace === 'studio' ? 'Direct every shot.' : workspace === 'projects' ? 'Manage the complete edit.' : `${greeting}, ${state?.config.displayName || 'Creator'}.`}</h1></div>
+          <div><p className="kicker">{workspace === 'create' ? 'ORIGINAL VIDEO CREATION' : workspace === 'studio' ? 'SHOT REVIEW & DIRECTION' : workspace === 'projects' ? 'PROJECT & ASSET CONTROL' : 'LOCAL GENERATION MONITOR'}</p><h1>{workspace === 'create' ? 'Create from an idea.' : workspace === 'studio' ? 'Direct every shot.' : workspace === 'projects' ? 'Manage the complete edit.' : `${greeting}, ${state?.config.displayName || 'Creator'}.`}</h1></div>
           <div className="header-actions">
             <button className="icon-button" onClick={() => loadState()} aria-label="Refresh data" title="Refresh data"><RefreshCw size={16} className={refreshing ? 'spinning' : ''} /></button>
             <button className="secondary-button" onClick={() => state?.config.finalsDirectory && openInExplorer(state.config.finalsDirectory)}><FolderOpen size={15} /> Open outputs</button>
@@ -528,13 +531,13 @@ export default function Dashboard() {
               {controlPending ? <LoaderCircle size={15} className="spinning" /> : isPaused ? <Play size={15} fill="currentColor" /> : <Pause size={15} fill="currentColor" />}
               <span>{controlPending ? 'Working…' : recoveryRequired ? 'Retry interrupted shot' : isPaused ? 'Resume render' : 'Pause render'}</span>
             </button>}
-            <div className={`sync ${error ? 'sync-error' : ''}`}><span className="status-dot" /> {error ? 'BRIDGE OFFLINE' : workspace === 'studio' ? state?.studio.canGenerate ? 'STUDIO READY' : 'STUDIO SAFE WAIT' : workspace === 'projects' ? 'PROJECTS · LOCAL' : 'LIVE · AUTO REFRESH'}</div>
+            <div className={`sync ${error ? 'sync-error' : ''}`}><span className="status-dot" /> {error ? 'BRIDGE OFFLINE' : workspace === 'create' ? 'CREATE · LOCAL' : workspace === 'studio' ? state?.studio.canGenerate ? 'STUDIO READY' : 'STUDIO SAFE WAIT' : workspace === 'projects' ? 'PROJECTS · LOCAL' : 'LIVE · AUTO REFRESH'}</div>
           </div>
         </header>
 
         {error && <div className="error-banner" role="alert"><CircleAlert size={16} /><span><strong>Local bridge unavailable.</strong> Start the monitor with <code>npm run dev</code> and this page will reconnect automatically.</span></div>}
 
-        {workspace === 'studio' ? <StudioWorkspace studio={state?.studio} token={state?.control.token} apiBase={API_BASE} onRefresh={() => loadState(true)} onToast={setToast} onPlay={(video: StudioVideo) => setSelectedVideo(video)} /> : workspace === 'projects' ? <ProjectWorkspace token={state?.control.token} apiBase={API_BASE} refreshSeconds={state?.config.refreshSeconds} onToast={setToast} onOpen={openInExplorer} onPlay={(video: StudioVideo) => setSelectedVideo(video)} /> : <>
+        {workspace === 'create' ? <CreateWorkspace token={state?.control.token} apiBase={API_BASE} refreshSeconds={state?.config.refreshSeconds} onToast={setToast} onOpen={openInExplorer} onPlay={(video: StudioVideo) => setSelectedVideo(video)} /> : workspace === 'studio' ? <StudioWorkspace studio={state?.studio} token={state?.control.token} apiBase={API_BASE} onRefresh={() => loadState(true)} onToast={setToast} onPlay={(video: StudioVideo) => setSelectedVideo(video)} /> : workspace === 'projects' ? <ProjectWorkspace token={state?.control.token} apiBase={API_BASE} refreshSeconds={state?.config.refreshSeconds} onToast={setToast} onOpen={openInExplorer} onPlay={(video: StudioVideo) => setSelectedVideo(video)} /> : <>
         <section className={`hero ${active ? '' : 'hero-idle'} ${isPaused ? 'hero-paused' : ''}`} id="overview">
           <div className="hero-copy">
             <div className="job-label"><span className="pulse" /> {recoveryRequired ? 'SHOT RESTART REQUIRED' : isPaused ? 'GENERATION PAUSED' : active ? 'GENERATING NOW' : state?.connection.worker ? 'WORKER TRANSITIONING' : 'NO ACTIVE JOB'} <span>{current ? `SHOT ${Math.min(current.completedShots + 1, current.totalShots)} OF ${current.totalShots}` : 'STANDING BY'}</span></div>
@@ -610,7 +613,7 @@ export default function Dashboard() {
 
         </>}
 
-        <footer><span>{workspace === 'studio' ? 'LTX / WATCH STUDIO' : workspace === 'projects' ? 'LTX / WATCH PROJECTS' : 'LTX / WATCH'}</span><p>Private local production workspace · Your files never leave this computer.</p><button onClick={openEnvironment}>Check environment <ShieldCheck size={12} /></button><button onClick={() => setSettingsOpen(true)}>Configure sources <ExternalLink size={12} /></button></footer>
+        <footer><span>{workspace === 'create' ? 'LTX / WATCH CREATE' : workspace === 'studio' ? 'LTX / WATCH STUDIO' : workspace === 'projects' ? 'LTX / WATCH PROJECTS' : 'LTX / WATCH'}</span><p>Private local production workspace · Your files never leave this computer.</p><button onClick={openEnvironment}>Check environment <ShieldCheck size={12} /></button><button onClick={() => setSettingsOpen(true)}>Configure sources <ExternalLink size={12} /></button></footer>
       </section>
 
       {selectedVideo && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedVideo(null); }}>

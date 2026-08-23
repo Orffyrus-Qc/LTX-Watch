@@ -16,7 +16,7 @@ import {
   parseShotRange,
   sceneKey,
 } from './studio-core.mjs';
-import { buildEnvironmentAudit } from './lib/environment-audit.mjs';
+import { buildEnvironmentAudit, findBlenderInstallation } from './lib/environment-audit.mjs';
 import { updateComfyUiCore } from './lib/comfyui-core-update.mjs';
 import { installComfyUiBlender, normalizeLoopbackComfyUrl } from './lib/comfyui-blender-setup.mjs';
 import { moveFile } from './lib/move-file.mjs';
@@ -34,6 +34,16 @@ import {
   projectAssetId,
   safeUploadRelativePath,
 } from './project-core.mjs';
+import {
+  composeCreatePrompt,
+  cleanCreateDraft,
+  createDefaultDraft,
+  createJobSeeds,
+  normalizeCreateOptions,
+  normalizeCreateRecord,
+  resolutionOptions,
+  safeCreateTitle,
+} from './create-core.mjs';
 
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = path.join(APP_ROOT, 'local.config.json');
@@ -44,6 +54,16 @@ const STUDIO_RUNTIME_ROOT = path.join(APP_ROOT, '.ltx-watch-studio');
 const STUDIO_RUNNER_PATH = path.join(APP_ROOT, 'scripts', 'ltx-studio-runner.py');
 const PROJECTS_STATE_PATH = path.join(APP_ROOT, 'projects.state.json');
 const PROJECTS_RUNTIME_ROOT = path.join(APP_ROOT, '.ltx-watch-projects');
+const CREATE_STATE_PATH = path.join(APP_ROOT, 'create.state.json');
+const CREATE_RUNTIME_ROOT = path.join(APP_ROOT, '.ltx-watch-create');
+const CREATE_RUNNER_PATH = path.join(APP_ROOT, 'scripts', 'ltx-create-runner.py');
+const CREATE_UPLOAD_CHUNK_LIMIT = 4 * 1024 * 1024;
+const CREATE_CONTEXT_EXTENSIONS = new Map([
+  ['.png', 'image'], ['.jpg', 'image'], ['.jpeg', 'image'], ['.webp', 'image'],
+  ['.mp4', 'video'], ['.webm', 'video'], ['.mov', 'video'], ['.mkv', 'video'],
+  ['.wav', 'audio'], ['.mp3', 'audio'], ['.flac', 'audio'], ['.m4a', 'audio'], ['.ogg', 'audio'], ['.aac', 'audio'],
+  ['.blend', 'blend'],
+]);
 const PROJECT_UPLOAD_CHUNK_LIMIT = 4 * 1024 * 1024;
 const COMFY_BLENDER_SCRIPT_PATH = path.join(APP_ROOT, 'scripts', 'install-comfyui-blender.ps1');
 const SAM3_SCRIPT_PATH = path.join(APP_ROOT, 'scripts', 'install-sam3.ps1');
@@ -60,8 +80,12 @@ const studioProgressHighWater = new Map();
 let recoveryInFlight = false;
 let studioMutationInFlight = false;
 let projectMutationInFlight = false;
+let createMutationInFlight = false;
+let generationLaunchInFlight = false;
 let sourcePlanCache = { key: '', expiresAt: 0, value: [], promise: null };
 const projectUploads = new Map();
+const createUploads = new Map();
+let blenderCache = { expiresAt: 0, value: null };
 
 function defaultConfig(comfyRoot) {
   return {
@@ -922,6 +946,7 @@ async function syncStudioJob(record, config) {
 
 async function buildStudioView(config, status, plan, current, finals, comfy) {
   const record = await getStudioRecord();
+  const createRecord = await getCreateRecord();
   let changed = await syncStudioJob(record, config);
   const liveWorkers = getWorkerPids(status).filter(processExists);
   const workerBusy = liveWorkers.length > 0;
@@ -983,9 +1008,11 @@ async function buildStudioView(config, status, plan, current, finals, comfy) {
   if (changed) await writeStudioRecord(record);
   const adapterReady = Boolean(resolveStudioPlan(config));
   const activeJob = record.activeJob;
-  const canGenerate = Boolean(selectedScene?.currentShot && adapterReady && !activeJob && !workerBusy && !comfy.online);
+  const canGenerate = Boolean(selectedScene?.currentShot && adapterReady && !activeJob && !createRecord.activeJobId && !workerBusy && !comfy.online);
   const blockedReason = activeJob
     ? `Studio is generating shot ${activeJob.shot}.`
+    : createRecord.activeJobId
+      ? 'Create is using the local generation adapter.'
     : workerBusy
       ? 'The album worker is still active. Studio will unlock after it finishes.'
       : comfy.online
@@ -1094,14 +1121,399 @@ async function controlStudio(body) {
     }
 
     if (action !== 'generate') throw new Error('Unsupported Studio action.');
+    if (generationLaunchInFlight) throw new Error('Another local generation job is claiming the adapter. Try again in a moment.');
+    const createRecord = await getCreateRecord();
+    if (createRecord.activeJobId) throw new Error('Create is already using the local generation adapter. Studio will wait safely.');
     if (workerBusy) throw new Error('The album worker is still active. Wait for it to finish before starting Studio.');
     if (comfy.online) throw new Error(`ComfyUI port ${config.studioPort} is active. Studio will not compete for the GPU or port.`);
     const correction = cleanCorrection(body?.correction);
-    await startStudioJob({ config, record, item, scene, shot, correction });
+    generationLaunchInFlight = true;
+    try {
+      await startStudioJob({ config, record, item, scene, shot, correction });
+    } finally {
+      generationLaunchInFlight = false;
+    }
     return buildStudioView(config, status, plan, current, finals, comfy);
   } finally {
     studioMutationInFlight = false;
   }
+}
+
+async function getCreateRecord() {
+  return normalizeCreateRecord(await readJson(CREATE_STATE_PATH, null));
+}
+
+async function writeCreateRecord(record) {
+  record.updatedAt = new Date().toISOString();
+  await writeFile(CREATE_STATE_PATH, `${JSON.stringify(record, null, 2)}\n`, 'utf8');
+}
+
+function createTemplateCandidates(config, name) {
+  return [
+    path.join(config.comfyRoot, 'venv', 'Lib', 'site-packages', 'comfyui_workflow_templates_json', 'templates', name),
+    path.join(config.comfyRoot, '.venv', 'Lib', 'site-packages', 'comfyui_workflow_templates_json', 'templates', name),
+    path.join(config.comfyRoot, 'python_embeded', 'Lib', 'site-packages', 'comfyui_workflow_templates_json', 'templates', name),
+  ];
+}
+
+function resolveCreatePlan(config) {
+  const studio = resolveStudioPlan(config);
+  if (!studio || !existsSync(CREATE_RUNNER_PATH)) return null;
+  const templates = {
+    text: createTemplateCandidates(config, 'video_ltx2_5_t2v.json').find(existsSync) || null,
+    firstFrame: createTemplateCandidates(config, 'video_ltx2_5_i2v.json').find(existsSync) || null,
+    firstLast: createTemplateCandidates(config, 'video_ltx2_5_flf2v.json').find(existsSync) || null,
+  };
+  return { ...studio, templates };
+}
+
+async function getCreateBackbones(config) {
+  const record = await getProjectsRecord();
+  const result = [];
+  for (const project of Object.values(record.projects || {})) {
+    if (!project?.blenderBackboneAssetId) continue;
+    const assets = await projectAssets(project, config);
+    const asset = assets.find((item) => item.id === project.blenderBackboneAssetId && path.extname(item.fullPath).toLowerCase() === '.blend');
+    if (!asset || !isInside(asset.fullPath, projectRoots({ projects: { [project.id]: project } }))) continue;
+    result.push({ projectId: project.id, projectName: project.name, assetName: asset.name, fullPath: asset.fullPath, rootPath: project.rootPath });
+  }
+  return result;
+}
+
+async function getCachedBlender() {
+  if (blenderCache.expiresAt > Date.now()) return blenderCache.value;
+  const found = await findBlenderInstallation();
+  blenderCache = { expiresAt: Date.now() + 120_000, value: found };
+  return found;
+}
+
+async function createVideo(filePath, config, title) {
+  return studioVideo(filePath, config, title);
+}
+
+async function syncCreateJob(record, config) {
+  const id = record.activeJobId;
+  if (!id) return false;
+  const job = record.jobs[id];
+  if (!job) {
+    record.activeJobId = null;
+    return true;
+  }
+  if (!isInside(job.resultPath, [CREATE_RUNTIME_ROOT])) {
+    job.status = 'failed';
+    job.error = 'Create job result path is outside the private runtime folder.';
+    job.completedAt = new Date().toISOString();
+    record.activeJobId = null;
+    return true;
+  }
+  const result = await readJson(job.resultPath, null);
+  const runnerPid = Number(result?.runnerPid || job.pid);
+  if ((!result || result.status === 'generating') && processExists(runnerPid)) {
+    job.stage = String(result?.stage || job.stage || 'Starting local runner').slice(0, 120);
+    job.progress = Math.min(99, Math.max(Number(job.progress || 0), Number(result?.progress || 0)));
+    job.promptId = typeof result?.promptId === 'string' ? result.promptId : job.promptId || null;
+    return true;
+  }
+  if (result?.status === 'complete' && typeof result.outputPath === 'string' && isInside(result.outputPath, [config.clipsDirectory])) {
+    const output = await createVideo(result.outputPath, config, job.title);
+    if (output) {
+      job.status = 'complete';
+      job.stage = 'Complete';
+      job.progress = 100;
+      job.outputPath = result.outputPath;
+      job.completedAt = result.completedAt || new Date().toISOString();
+      record.activeJobId = null;
+      return true;
+    }
+  }
+  job.status = 'failed';
+  job.stage = 'Failed';
+  job.error = String(result?.error || 'The local Create runner ended without producing a reviewable video.').slice(0, 500);
+  job.completedAt = result?.completedAt || new Date().toISOString();
+  record.activeJobId = null;
+  return true;
+}
+
+async function startCreateJob(record, job, config, backbone) {
+  const launch = resolveCreatePlan(config);
+  if (!launch) throw new Error('Create needs a compatible local LTX runner, ComfyUI Python, and the bundled Create adapter.');
+  const templateKey = job.options.referenceMode === 'first-last' ? 'firstLast' : job.options.referenceMode === 'first-frame' || job.options.useBlender ? 'firstFrame' : 'text';
+  if (!launch.templates[templateKey]) throw new Error('The matching official ComfyUI LTX 2.5 workflow template is not installed. Update ComfyUI templates first.');
+  const jobsDirectory = path.join(CREATE_RUNTIME_ROOT, 'jobs', job.id);
+  await mkdir(jobsDirectory, { recursive: true });
+  const jobPath = path.join(jobsDirectory, 'job.json');
+  const resultPath = path.join(jobsDirectory, 'result.json');
+  const referencePaths = [];
+  for (const source of [job.options.firstFramePath, job.options.lastFramePath].filter(Boolean)) {
+    if (!isInside(source, [CREATE_RUNTIME_ROOT])) throw new Error('Create reference frames must be uploaded through the local interface.');
+    const info = await stat(source).catch(() => null);
+    if (!info?.isFile()) throw new Error('An uploaded Create reference frame is no longer available.');
+    const destination = path.join(jobsDirectory, `reference-${referencePaths.length + 1}${path.extname(source).toLowerCase()}`);
+    await copyFile(source, destination);
+    referencePaths.push(destination);
+  }
+  const copyContextFile = async (source, label, expectedKinds) => {
+    if (!source) return null;
+    const extension = path.extname(source).toLowerCase();
+    if (!isInside(source, [CREATE_RUNTIME_ROOT]) || !expectedKinds.includes(CREATE_CONTEXT_EXTENSIONS.get(extension))) throw new Error(`The ${label} context is not a supported private Create upload.`);
+    const info = await stat(source).catch(() => null);
+    if (!info?.isFile()) throw new Error(`The ${label} context file is no longer available.`);
+    const destination = path.join(jobsDirectory, `${label}${extension}`);
+    await copyFile(source, destination);
+    return destination;
+  };
+  const videoContextPath = await copyContextFile(job.options.contextVideoPath, 'context-video', ['video']);
+  const soundtrackPath = await copyContextFile(job.options.soundtrackPath, 'soundtrack', ['audio']);
+  const blender = job.options.useBlender ? await getCachedBlender() : null;
+  if (job.options.useBlender && (!blender?.executable || !backbone)) throw new Error('Blender and a selected or dropped .blend backbone are required for this mode.');
+  const outputPrefix = `video/ltx-watch-create/${job.id}`;
+  const payload = {
+    id: job.id,
+    sourceRunner: launch.sourceRunner,
+    comfyRoot: path.resolve(config.comfyRoot),
+    runtimeRoot: jobsDirectory,
+    resultPath,
+    prompt: composeCreatePrompt(job.options),
+    promptEnhance: job.options.promptEnhance,
+    duration: job.options.duration,
+    width: job.options.width,
+    height: job.options.height,
+    frameRate: job.options.frameRate,
+    seed: job.seed,
+    audio: job.options.audio,
+    referenceMode: job.options.referenceMode,
+    referencePaths,
+    videoContextPath,
+    soundtrackPath,
+    useBlender: job.options.useBlender,
+    blenderExecutable: blender?.executable || null,
+    blenderProjectPath: backbone?.fullPath || null,
+    allowedProjectRoots: backbone ? [backbone.rootPath] : [],
+    blenderFirstFrame: job.options.blenderFirstFrame,
+    blenderLastFrame: job.options.blenderLastFrame,
+    port: config.studioPort,
+    cudaDevice: config.studioGpu,
+    safer: false,
+    outputPrefix,
+    timeoutSeconds: 7_200,
+  };
+  await writeFile(jobPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  const logHandle = await open(path.join(jobsDirectory, 'runner.log'), 'a');
+  try {
+    const child = spawn(launch.executable, [CREATE_RUNNER_PATH, '--job', jobPath], {
+      cwd: config.comfyRoot,
+      detached: true,
+      stdio: ['ignore', logHandle.fd, logHandle.fd],
+      windowsHide: true,
+    });
+    await new Promise((resolveSpawn, rejectSpawn) => {
+      child.once('spawn', resolveSpawn);
+      child.once('error', rejectSpawn);
+    });
+    const startedAt = new Date().toISOString();
+    Object.assign(job, { status: 'generating', stage: 'Starting local runner', progress: 1, pid: child.pid, jobPath, resultPath, startedAt, completedAt: null, error: null });
+    record.activeJobId = job.id;
+    child.unref();
+  } finally {
+    await logHandle.close();
+  }
+}
+
+async function maybeStartCreateJob(record, config) {
+  if (record.activeJobId || record.queuePaused || studioMutationInFlight || createMutationInFlight || generationLaunchInFlight) return false;
+  generationLaunchInFlight = true;
+  try {
+    const [studio, freshStatus, freshComfy] = await Promise.all([getStudioRecord(), readJson(config.statusFile, {}), getComfyQueue(config)]);
+    if (studio.activeJob || getWorkerPids(freshStatus).some(processExists) || freshComfy.online) return false;
+    const nextId = record.queue.find((id) => record.jobs[id]?.status === 'queued');
+    if (!nextId) return false;
+    const job = record.jobs[nextId];
+    const backbones = job.options.useBlender && !job.options.blenderUploadPath ? await getCreateBackbones(config) : [];
+    const uploadedBackbone = job.options.blenderUploadPath && isInside(job.options.blenderUploadPath, [CREATE_RUNTIME_ROOT]) && path.extname(job.options.blenderUploadPath).toLowerCase() === '.blend' && existsSync(job.options.blenderUploadPath)
+      ? { fullPath: job.options.blenderUploadPath, rootPath: CREATE_RUNTIME_ROOT }
+      : null;
+    const backbone = uploadedBackbone || backbones.find((item) => item.projectId === job.options.blenderProjectId) || null;
+    try {
+      await startCreateJob(record, job, config, backbone);
+    } catch (error) {
+      job.status = 'failed';
+      job.stage = 'Failed before launch';
+      job.error = error instanceof Error ? error.message.slice(0, 500) : 'Create job could not start.';
+      job.completedAt = new Date().toISOString();
+    }
+    return true;
+  } finally {
+    generationLaunchInFlight = false;
+  }
+}
+
+async function buildCreateView({ sync = false } = {}) {
+  const config = await getConfig();
+  const [status, comfy, record, studio, backbones, blender] = await Promise.all([
+    readJson(config.statusFile, {}), getComfyQueue(config), getCreateRecord(), getStudioRecord(), getCreateBackbones(config), getCachedBlender(),
+  ]);
+  let changed = await syncCreateJob(record, config);
+  if (sync && await maybeStartCreateJob(record, config)) changed = true;
+  if (changed) await writeCreateRecord(record);
+  const launch = resolveCreatePlan(config);
+  const workerBusy = getWorkerPids(status).some(processExists);
+  const activeJob = record.activeJobId ? record.jobs[record.activeJobId] : null;
+  const queued = record.queue.filter((id) => record.jobs[id]?.status === 'queued').length;
+  const adapterReady = Boolean(launch?.templates.text);
+  const canStart = Boolean(adapterReady && !activeJob && !studio.activeJob && !workerBusy && !comfy.online && !record.queuePaused);
+  const blockedReason = activeJob
+    ? `Creating ${activeJob.title}.`
+    : studio.activeJob
+      ? 'Studio is using the local generation adapter.'
+      : workerBusy
+        ? 'The album worker is still active. Create will wait safely in its queue.'
+        : comfy.online
+          ? `ComfyUI port ${config.studioPort} is already active. Create will not compete for it.`
+          : !adapterReady
+            ? 'Install or update the official ComfyUI LTX 2.5 workflow templates.'
+            : record.queuePaused
+              ? 'The Create queue is paused.'
+              : null;
+  const jobs = [];
+  for (const id of record.queue.slice().reverse()) {
+    const job = record.jobs[id];
+    if (!job) continue;
+    const video = job.outputPath ? await createVideo(job.outputPath, config, job.title) : null;
+    jobs.push({
+      id: job.id, title: job.title, status: job.status, stage: job.stage || null, progress: Number(job.progress || 0),
+      seed: job.seed, variation: job.variation, variations: job.variations, createdAt: job.createdAt,
+      startedAt: job.startedAt || null, completedAt: job.completedAt || null, error: job.error || null,
+      summary: `${job.options.width}×${job.options.height} · ${job.options.duration}s · ${job.options.frameRate} fps`,
+      mode: job.options.useBlender ? 'Blender' : job.options.referenceMode === 'text' ? 'Text' : job.options.referenceMode === 'first-last' ? 'First + last frame' : 'First frame',
+      video,
+    });
+  }
+  return {
+    enabled: true,
+    adapterReady,
+    canStart,
+    blockedReason,
+    queuePaused: record.queuePaused,
+    queued,
+    activeJobId: record.activeJobId,
+    draft: { ...createDefaultDraft(), ...record.draft },
+    resolutions: resolutionOptions(),
+    templates: {
+      text: Boolean(launch?.templates.text), firstFrame: Boolean(launch?.templates.firstFrame), firstLast: Boolean(launch?.templates.firstLast),
+    },
+    blender: { installed: Boolean(blender?.executable), version: blender?.version?.text || null, backbones: backbones.map((item) => ({ projectId: item.projectId, projectName: item.projectName, assetName: item.assetName })) },
+    jobs,
+  };
+}
+
+async function controlCreate(body) {
+  if (createMutationInFlight) throw new Error('Another Create action is still being saved.');
+  createMutationInFlight = true;
+  try {
+    const record = await getCreateRecord();
+    const action = String(body?.action || '');
+    if (action === 'save-draft') {
+      record.draft = cleanCreateDraft(body?.draft);
+    } else if (action === 'enqueue') {
+      const options = normalizeCreateOptions(body?.draft);
+      for (const privatePath of [options.firstFramePath, options.lastFramePath, options.contextVideoPath, options.soundtrackPath, options.blenderUploadPath].filter(Boolean)) {
+        if (!isInside(privatePath, [CREATE_RUNTIME_ROOT]) || !existsSync(privatePath)) throw new Error('Upload Create context through the local interface before queuing.');
+      }
+      const config = await getConfig();
+      const backbones = options.useBlender ? await getCreateBackbones(config) : [];
+      if (options.useBlender && !options.blenderUploadPath && !backbones.some((item) => item.projectId === options.blenderProjectId)) throw new Error('Choose a project with an assigned .blend backbone or drop a .blend file.');
+      if (options.useBlender && !(await getCachedBlender())?.executable) throw new Error('Blender is not detected. Install Blender or switch to a non-Blender creation mode.');
+      const seeds = createJobSeeds(options);
+      const groupId = randomBytes(8).toString('hex');
+      for (const [index, seed] of seeds.entries()) {
+        const id = `create-${randomBytes(10).toString('hex')}`;
+        record.jobs[id] = {
+          id,
+          groupId,
+          title: safeCreateTitle(options.title, id),
+          options,
+          seed,
+          variation: index + 1,
+          variations: seeds.length,
+          status: 'queued',
+          stage: 'Waiting safely for the GPU',
+          progress: 0,
+          createdAt: new Date().toISOString(),
+          startedAt: null,
+          completedAt: null,
+          outputPath: null,
+          error: null,
+        };
+        record.queue.push(id);
+      }
+      record.draft = { ...options, width: undefined, height: undefined, label: undefined };
+    } else if (action === 'toggle-queue') {
+      record.queuePaused = body?.paused === true;
+    } else if (action === 'move-first') {
+      const id = String(body?.jobId || '');
+      if (record.jobs[id]?.status !== 'queued') throw new Error('Only a queued Create job can move first.');
+      record.queue = [id, ...record.queue.filter((item) => item !== id)];
+    } else if (action === 'remove') {
+      const id = String(body?.jobId || '');
+      if (record.jobs[id]?.status === 'generating') throw new Error('An active Create job cannot be removed.');
+      record.queue = record.queue.filter((item) => item !== id);
+      delete record.jobs[id];
+    } else if (action === 'retry') {
+      const id = String(body?.jobId || '');
+      const source = record.jobs[id];
+      if (!source || source.status !== 'failed') throw new Error('Only a failed Create job can be retried.');
+      source.status = 'queued';
+      source.stage = 'Waiting safely for the GPU';
+      source.progress = 0;
+      source.startedAt = null;
+      source.completedAt = null;
+      source.error = null;
+    } else if (action === 'upload-start') {
+      const fileName = path.basename(String(body?.fileName || '')).replace(/[^a-zA-Z0-9._ -]/g, '_').slice(0, 180);
+      const extension = path.extname(fileName).toLowerCase();
+      const kind = CREATE_CONTEXT_EXTENSIONS.get(extension);
+      if (!kind) throw new Error('Create context supports images, MP4/WebM/MOV/MKV video, WAV/MP3/FLAC/M4A/OGG/AAC audio, and .blend files.');
+      const size = Math.max(0, Math.trunc(Number(body?.size) || 0));
+      const maximum = kind === 'image' ? 100 * 1024 * 1024 : kind === 'audio' ? 2 * 1024 * 1024 * 1024 : 8 * 1024 * 1024 * 1024;
+      if (!size || size > maximum) throw new Error(`The ${kind} context file exceeds the ${Math.round(maximum / 1024 / 1024)} MB limit.`);
+      const id = randomBytes(18).toString('hex');
+      const root = path.join(CREATE_RUNTIME_ROOT, 'uploads');
+      await mkdir(root, { recursive: true });
+      const temporaryPath = path.join(root, `${id}.part`);
+      const destinationPath = path.join(root, `${id}${extension}`);
+      await writeFile(temporaryPath, Buffer.alloc(0));
+      createUploads.set(id, { id, fileName, kind, size, received: 0, temporaryPath, destinationPath, createdAt: Date.now() });
+      return { upload: { id, kind, received: 0, size } };
+    } else if (action === 'upload-finish') {
+      const id = String(body?.uploadId || '');
+      const upload = createUploads.get(id);
+      if (!upload) throw new Error('The Create upload session expired.');
+      if (upload.received !== upload.size) throw new Error(`Upload is incomplete: received ${upload.received} of ${upload.size} bytes.`);
+      await rename(upload.temporaryPath, upload.destinationPath);
+      createUploads.delete(id);
+      return { upload: { id, fileName: upload.fileName, kind: upload.kind, path: upload.destinationPath, size: upload.size } };
+    } else if (action === 'refresh') {
+      return buildCreateView({ sync: true });
+    } else {
+      throw new Error('Unsupported Create action.');
+    }
+    await writeCreateRecord(record);
+    return buildCreateView({ sync: false });
+  } finally {
+    createMutationInFlight = false;
+  }
+}
+
+async function appendCreateUpload(req, uploadId) {
+  const upload = createUploads.get(uploadId);
+  if (!upload) throw new Error('The Create upload session expired. Start the upload again.');
+  const requestedOffset = Math.max(0, Math.trunc(Number(req.headers['x-ltx-upload-offset']) || 0));
+  if (requestedOffset !== upload.received) throw new Error(`Upload offset mismatch. Expected ${upload.received}.`);
+  const chunk = await readBinaryBody(req);
+  if (chunk.length > CREATE_UPLOAD_CHUNK_LIMIT || upload.received + chunk.length > upload.size) throw new Error('The reference upload chunk is invalid.');
+  await appendFile(upload.temporaryPath, chunk);
+  upload.received += chunk.length;
+  return { id: uploadId, received: upload.received, size: upload.size };
 }
 
 async function getProjectsRecord() {
@@ -1324,30 +1736,36 @@ async function syncProjectRegeneration(config, status, plan, comfy) {
   }
 
   const activeProjectJob = studioRecord.activeJob?.projectId;
-  if (!activeProjectJob && !studioRecord.activeJob && !studioMutationInFlight) {
+  const createRecord = await getCreateRecord();
+  if (!activeProjectJob && !studioRecord.activeJob && !createRecord.activeJobId && !studioMutationInFlight && !createMutationInFlight && !generationLaunchInFlight) {
     const project = projectsRecord.projects[projectsRecord.selectedProjectId];
     const liveWorkers = getWorkerPids(status).filter(processExists);
     const next = project && !project.queuePaused ? project.regenerationQueue.find((item) => item.status === 'queued') : null;
     if (project && next && liveWorkers.length === 0 && !comfy.online && resolveStudioPlan(config)) {
-      const planItem = (await projectPlanTracks(config, plan)).find((item) => sceneKey(item) === next.sceneKey);
-      if (!planItem || !parseShotRange(planItem.shots, planItem.count).includes(next.shot)) {
-        next.status = 'failed';
-        next.error = 'The source scene or shot no longer exists in the compatible LTX source runner.';
-        next.completedAt = new Date().toISOString();
-      } else {
-        const scene = ensureSceneRecord(studioRecord, planItem);
-        next.status = 'generating';
-        next.startedAt = new Date().toISOString();
-        const launched = await startStudioJob({
-          config,
-          record: studioRecord,
-          item: { ...planItem, sceneKey: sceneKey(planItem) },
-          scene,
-          shot: next.shot,
-          correction: next.correction,
-          metadata: { projectId: project.id, projectQueueId: next.id, projectShotKey: next.shotKey },
-        });
-        next.attemptId = launched.id;
+      generationLaunchInFlight = true;
+      try {
+        const planItem = (await projectPlanTracks(config, plan)).find((item) => sceneKey(item) === next.sceneKey);
+        if (!planItem || !parseShotRange(planItem.shots, planItem.count).includes(next.shot)) {
+          next.status = 'failed';
+          next.error = 'The source scene or shot no longer exists in the compatible LTX source runner.';
+          next.completedAt = new Date().toISOString();
+        } else {
+          const scene = ensureSceneRecord(studioRecord, planItem);
+          next.status = 'generating';
+          next.startedAt = new Date().toISOString();
+          const launched = await startStudioJob({
+            config,
+            record: studioRecord,
+            item: { ...planItem, sceneKey: sceneKey(planItem) },
+            scene,
+            shot: next.shot,
+            correction: next.correction,
+            metadata: { projectId: project.id, projectQueueId: next.id, projectShotKey: next.shotKey },
+          });
+          next.attemptId = launched.id;
+        }
+      } finally {
+        generationLaunchInFlight = false;
       }
       project.updatedAt = new Date().toISOString();
       projectsChanged = true;
@@ -1704,6 +2122,16 @@ const server = http.createServer(async (req, res) => {
   try {
     if (req.method === 'GET' && requestUrl.pathname === '/api/health') return sendJson(res, 200, { ok: true, name: 'LTX Watch local bridge' });
     if (req.method === 'GET' && requestUrl.pathname === '/api/state') return sendJson(res, 200, await buildState());
+    if (req.method === 'GET' && requestUrl.pathname === '/api/create') return sendJson(res, 200, await buildCreateView({ sync: true }));
+    if (req.method === 'POST' && requestUrl.pathname === '/api/create') {
+      if (req.headers['x-ltx-control-token'] !== CONTROL_TOKEN) return sendJson(res, 403, { error: 'Invalid local control token' });
+      const result = await controlCreate(await readBody(req));
+      return sendJson(res, 200, result.upload ? { ok: true, ...result } : { ok: true, create: result });
+    }
+    if (req.method === 'POST' && requestUrl.pathname.startsWith('/api/create-upload/')) {
+      if (req.headers['x-ltx-control-token'] !== CONTROL_TOKEN) return sendJson(res, 403, { error: 'Invalid local control token' });
+      return sendJson(res, 200, { ok: true, upload: await appendCreateUpload(req, requestUrl.pathname.slice('/api/create-upload/'.length)) });
+    }
     if (req.method === 'GET' && requestUrl.pathname === '/api/projects') {
       const { config, plan, record } = await loadProjectsContext({ sync: true });
       return sendJson(res, 200, await buildProjectsView(config, plan, record));
@@ -1744,7 +2172,7 @@ const server = http.createServer(async (req, res) => {
       const projectsRecord = await getProjectsRecord();
       const body = await readBody(req);
       const target = typeof body.path === 'string' ? body.path : '';
-      if (!target || !isInside(target, [config.comfyRoot, config.finalsDirectory, config.clipsDirectory, STUDIO_RUNTIME_ROOT, ...projectRoots(projectsRecord)])) return sendJson(res, 403, { error: 'Path is outside configured folders' });
+      if (!target || !isInside(target, [config.comfyRoot, config.finalsDirectory, config.clipsDirectory, STUDIO_RUNTIME_ROOT, CREATE_RUNTIME_ROOT, ...projectRoots(projectsRecord)])) return sendJson(res, 403, { error: 'Path is outside configured folders' });
       if (!(await exists(target))) return sendJson(res, 404, { error: 'Path not found' });
       const info = await stat(target);
       const args = info.isDirectory() ? [target] : [`/select,${target}`];

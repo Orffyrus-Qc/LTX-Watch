@@ -126,6 +126,25 @@ When adding Blender as an active camera/animation backbone:
 
 When adding a paid AI provider, keep credentials in OS-backed local storage, send only files explicitly selected for that request, show the destination/provider and estimated cost before submission, normalize provider jobs behind one adapter contract, and import results as new shot versions. Do not put provider payload shapes or keys in the project manifest or React tree.
 
+### Create workspace and LTX template evolution
+
+Create is the original-video path. Keep its responsibilities split between `create-core.mjs`, `app/create-workspace.tsx`, `local-server.mjs`, and `scripts/ltx-create-runner.py`. The browser chooses normalized creative options; it must never construct a ComfyUI graph or pass an arbitrary workflow/script/path/command to Python.
+
+When LTX or ComfyUI updates the official full-workflow templates:
+
+1. Fetch the official `video_ltx2_5_t2v.json`, `video_ltx2_5_i2v.json`, and `video_ltx2_5_flf2v.json` from the installed `comfyui_workflow_templates_json` package and compare their semantic subgraph inputs and node classes. Do not use a user's saved workflow as the compatibility contract.
+2. Keep template discovery beneath the configured ComfyUI Python environment. Never fall back to similarly named API/cloud templates.
+3. Match prompt, enhancer, duration, resolution, seed, and frame rate by subgraph labels/names. Do not hardcode node IDs or model filenames. Preserve the generic `/object_info/<class_type>` compiler for input ordering and dynamic nodes.
+4. If the template gains multiple subgraphs or changes link semantics, add fixture copies of sanitized official structure and update the compiler deliberately. Do not silently choose a graph.
+5. Keep `SaveVideo.filename_prefix` constrained to the per-job Create output prefix and accept results only inside the configured clip root.
+6. Keep prompts and references in ignored JSON/runtime files. The command line contains only `ltx-create-runner.py --job <private-job-path>`.
+7. Preserve the shared launch claim: Create, Studio, and Projects regeneration cannot race for the GPU/port. The source runner's port lock remains the second line of defense.
+8. Test `create-core.mjs` and `ltx-create-runner.py --validate-job` only. Never press **Queue creation** or submit `/api/create` `enqueue` during automated validation.
+
+Context uploads are an explicit local contract. Preserve the extension allowlist, kind-specific size limits, ordered 4 MiB offsets, exact final length, server-selected destination, and private-runtime revalidation. Image files are I2V/FLF2V anchors; video is reduced to first/end anchors through fixed FFmpeg arguments; audio replaces the final soundtrack and must never be described as visual conditioning. Do not add arbitrary transcoder flags from the browser.
+
+For Blender mode, validate either the designated Project `.blend` against registered roots or the dropped `.blend` against the private Create runtime in Node and again in Python. Copy it into the per-job runtime before rendering. Keep auto-execution disabled and the argument list fixed to background open, output prefix, PNG format, and numeric frame; do not add browser-supplied Python expressions or scripts. A real Blender invocation is excluded from automated tests.
+
 ### Queue normalization
 
 `getComfyQueue` currently tries legacy `/queue` and newer `/api/queue`. Return:
@@ -221,6 +240,20 @@ Studio generation is separate from native pause/resume. Preserve these invariant
 7. Acceptance requires a playable current output and is the only action that advances the shot pointer.
 8. Queue promotion updates only the Studio overlay and never mutates a running supervisor plan.
 
+### Create generation
+
+Create is separate from native pause/resume and Studio correction generation. Preserve these invariants:
+
+1. A user explicitly enqueues a normalized draft; GET polling may advance only that already-authorized queue.
+2. The normal worker is absent, the configured ComfyUI port is offline, Studio/Projects has no active job, and the shared launch claim is free immediately before launch.
+3. The adapter uses an official local LTX workflow template and the configured source runner's guarded server lifecycle and port lock.
+4. Prompt, reference, Blender, and output paths are private server-created values and never browser-controlled command arguments.
+5. Queue pause applies between jobs and never pretends to suspend an active ComfyUI sampling process.
+6. Blender opens a job-local copy of the master scene and produces new reference PNGs.
+7. A complete job requires a playable video larger than 100 KB inside the configured clip root; runner death or invalid output becomes a bounded failed job.
+
+Run Create tests with `--validate-job` and pure core fixtures. A real `/api/create` enqueue requires explicit user direction and an idle GPU.
+
 Run `npm run test:studio` with a fixture Python interpreter. Real `/api/studio` generation requires explicit user direction and an idle GPU.
 
 ### Restart recovery
@@ -282,6 +315,7 @@ After the adapter works, check that:
 - Missing optional data produces an empty or fallback state, not a crash.
 - Old bridge responses without a new optional field do not crash during hot reload.
 - Studio shows a clear safety lock while the worker or ComfyUI port is active.
+- Create exposes text/reference/Blender modes, keeps Queue creation disabled until required input is present, and shows its safety wait, queue progress, retry, pause-between-jobs, playback, and Explorer controls.
 - Studio queue selection, move-first, correction counting, attempt playback, and Accept & Next remain keyboard accessible.
 - Dialogs still close with Escape.
 - Icon-only buttons have accessible labels.
