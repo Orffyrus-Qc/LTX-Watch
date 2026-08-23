@@ -6,6 +6,7 @@ All notable changes to LTX / Watch are documented here.
 
 ### Added
 
+- Guarded **Update core** action for official ComfyUI Git checkouts with exact-path Git trust, tracked-change and divergence locks, fast-forward-only updates, matching Python requirements, validation, restart notice, and rollback.
 - LTX Watch Studio workspace for sequential, human-reviewed shot generation.
 - Per-shot correction notes, regenerate-until-accepted workflow, and automatic advance after acceptance.
 - Playable attempt history with rejected outputs archived instead of deleted.

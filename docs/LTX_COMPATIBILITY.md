@@ -85,7 +85,7 @@ The audit may:
 The audit must not:
 
 - Import `torch`, initialize CUDA, or launch ComfyUI
-- Run `git fetch`, `git pull`, package installation, model downloads, driver installers, or custom-node installers (the separate authenticated maintenance endpoint owns its narrow allowlisted actions)
+- Run `git fetch`, Git merges, package installation, model downloads, driver installers, or custom-node installers (the separate authenticated maintenance endpoint owns its narrow allowlisted actions)
 - Accept model licenses or persist credentials
 - Return prompts, media, log contents, machine names, or absolute model file paths
 - Modify a custom external runner or enable a secondary LTX worker
@@ -139,6 +139,8 @@ Prefer native ComfyUI SAM 3 support over community wrappers when available. A na
 ### SAM 3.1 model installation
 
 The `install-sam3` maintenance action requires the session token, `{ "confirmed": true, "licenseAccepted": true }`, native SAM 3.1 core nodes, and an idle worker plus running/pending ComfyUI queue. It downloads `sam3.1_multiplex_fp16.safetensors` from the exact Comfy-Org URL documented in the official ComfyUI workflow template, validates the pinned 1,745,546,848-byte size and SHA-256 digest, and only then moves it to `models/checkpoints`.
+
+The separate `update-comfyui-core` action requires the session token, `{ "confirmed": true }`, and the same idle-state revalidation. It accepts only the official ComfyUI GitHub origins on `master`, scopes Git trust to the exact configured checkout, refuses tracked changes or non-fast-forward histories, records the previous commit, installs the fetched revision's requirements into the detected ComfyUI Python environment, and validates with `pip check`. On dependency failure it restores the previous tracked commit and requirements. Untracked local production files are never cleaned or reset.
 
 If the canonical destination already contains an unverified file, the installer moves it to the maintenance backup directory first and restores it when download or verification fails. Partial downloads use a unique `.part` name and are removed on failure. If the model filename, digest, size, license, repository, or native node path changes, update the adapter and its parser/constants test against official ComfyUI and Comfy-Org sources; never silently follow a redirect to an unofficial mirror.
 

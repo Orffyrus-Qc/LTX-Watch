@@ -84,6 +84,7 @@ Copy-InstallerFile (Join-Path $projectRoot 'local-server.mjs') (Join-Path $stage
 Copy-InstallerFile (Join-Path $projectRoot 'studio-core.mjs') (Join-Path $stageRoot 'studio-core.mjs')
 Copy-InstallerFile (Join-Path $projectRoot 'project-core.mjs') (Join-Path $stageRoot 'project-core.mjs')
 Copy-InstallerFile (Join-Path $projectRoot 'lib\environment-audit.mjs') (Join-Path $stageRoot 'lib\environment-audit.mjs')
+Copy-InstallerFile (Join-Path $projectRoot 'lib\comfyui-core-update.mjs') (Join-Path $stageRoot 'lib\comfyui-core-update.mjs')
 Copy-InstallerFile (Join-Path $projectRoot 'lib\comfyui-blender-setup.mjs') (Join-Path $stageRoot 'lib\comfyui-blender-setup.mjs')
 Copy-InstallerFile (Join-Path $projectRoot 'lib\sam3-setup.mjs') (Join-Path $stageRoot 'lib\sam3-setup.mjs')
 Copy-InstallerFile (Join-Path $projectRoot 'local.config.example.json') (Join-Path $stageRoot 'local.config.example.json')

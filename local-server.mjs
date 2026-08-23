@@ -17,6 +17,7 @@ import {
   sceneKey,
 } from './studio-core.mjs';
 import { buildEnvironmentAudit } from './lib/environment-audit.mjs';
+import { updateComfyUiCore } from './lib/comfyui-core-update.mjs';
 import { installComfyUiBlender, normalizeLoopbackComfyUrl } from './lib/comfyui-blender-setup.mjs';
 import { moveFile } from './lib/move-file.mjs';
 import { installSam3Model } from './lib/sam3-setup.mjs';
@@ -1572,7 +1573,7 @@ async function getEnvironmentView(force = false) {
 }
 
 async function runEnvironmentMaintenance(body) {
-  const supportedActions = new Set(['install-comfyui-blender', 'install-sam3']);
+  const supportedActions = new Set(['update-comfyui-core', 'install-comfyui-blender', 'install-sam3']);
   if (!supportedActions.has(body?.action)) throw new Error('Unsupported environment maintenance action.');
   if (body?.confirmed !== true) throw new Error('Explicit confirmation is required before changing ComfyUI, Blender, dependencies, or launch settings.');
   if (body?.action === 'install-sam3' && body?.licenseAccepted !== true) throw new Error('SAM 3.1 installation requires confirmation that the SAM License was reviewed and accepted.');
@@ -1586,7 +1587,13 @@ async function runEnvironmentMaintenance(body) {
   maintenanceState = { status: 'running', action: body.action, stage: 'Preparing guarded setup', startedAt, completedAt: null, result: null };
   try {
     let result;
-    if (body.action === 'install-sam3') {
+    if (body.action === 'update-comfyui-core') {
+      result = await updateComfyUiCore({
+        comfyRoot: config.comfyRoot,
+        backupRoot: MAINTENANCE_BACKUP_ROOT,
+        onStage: (stage) => { maintenanceState = { ...maintenanceState, stage }; },
+      });
+    } else if (body.action === 'install-sam3') {
       result = await installSam3Model({
         scriptPath: SAM3_SCRIPT_PATH,
         comfyRoot: config.comfyRoot,

@@ -76,7 +76,17 @@ For an LTX or ComfyUI update:
 
 Any updater or installer must be implemented as a separate authenticated maintenance adapter with explicit confirmation, idle-state revalidation, backup, progress reporting, validation, and rollback. Do not turn the read-only audit route into a mutating endpoint.
 
-The maintenance endpoint allowlists `install-comfyui-blender` and `install-sam3` only.
+The maintenance endpoint allowlists `update-comfyui-core`, `install-comfyui-blender`, and `install-sam3` only.
+
+For ComfyUI Core updates:
+
+1. Accept only the official `comfyanonymous/ComfyUI` or `Comfy-Org/ComfyUI` origin and the official `master` branch.
+2. Scope Git trust to the exact configured ComfyUI folder with `git -c safe.directory=<path>`; never write `safe.directory=*` or silently change global Git configuration.
+3. Refuse tracked local changes and divergent/ahead histories. Preserve untracked workflows, scripts, models, outputs, logs, and runtime files.
+4. Fetch first, record the previous and target commits, and merge only with `--ff-only`.
+5. Install the fetched revision's `requirements.txt` in the detected ComfyUI Python environment and validate with `pip check`.
+6. On failure after the fast-forward, restore the previous tracked commit and its requirements, reporting an incomplete rollback explicitly if either restoration step fails.
+7. Never run the real updater in automated tests; inject a fake process runner and verify allowlisting, trust scoping, dependency validation, and rollback calls.
 
 For ComfyUI-Blender:
 
@@ -94,7 +104,7 @@ For SAM 3.1:
 2. Keep the model URL and verification values pinned in `lib/sam3-setup.mjs`; pass those values to the PowerShell adapter rather than accepting browser-supplied URLs or digests.
 3. Require `licenseAccepted: true` in addition to confirmation, token, native-node, disk-space, and idle running/pending queue checks.
 4. Download to a unique partial file. Back up an existing unverified canonical file and restore it on any failure.
-5. Never automate gated Meta account access or license acceptance, update ComfyUI core, restart ComfyUI, load the checkpoint, or run the real download during tests.
+5. Never automate gated Meta account access or license acceptance, invoke the separate ComfyUI core updater, restart ComfyUI, load the checkpoint, or run the real download during tests.
 6. Test the result marker, pinned constants, PowerShell syntax, and MSI staging only.
 
 ## Preserve the adapter boundary

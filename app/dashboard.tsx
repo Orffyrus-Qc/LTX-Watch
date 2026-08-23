@@ -213,7 +213,7 @@ type EnvironmentState = {
     stage: string | null;
     startedAt: string | null;
     completedAt: string | null;
-    result: { comfyRestartRequired?: boolean; error?: string } | null;
+    result: { comfyRestartRequired?: boolean; updated?: boolean; currentCommit?: string; error?: string } | null;
   };
   actions: { id: string; label: string; url: string; kind: 'primary' | 'secondary'; reason: string }[];
   warnings: string[];
@@ -415,6 +415,34 @@ export default function Dashboard() {
       setToast(payload.result?.installed ? 'SAM 3.1 installed and verified — restart ComfyUI when idle' : 'SAM 3.1 checkpoint verified');
     } catch (requestError) {
       const message = requestError instanceof Error ? requestError.message : 'SAM 3.1 setup failed';
+      await loadEnvironment(true);
+      setEnvironmentError(message);
+    } finally {
+      setMaintenancePending(false);
+      setMaintenanceAction('');
+    }
+  }
+
+  async function updateComfyCore() {
+    const repository = environment?.repositories.find((repo) => repo.id === 'comfy');
+    if (!repository || repository.updateStatus !== 'behind' || repository.dirty || !state?.control.token || maintenancePending || environment?.render.changesLocked) return;
+    const confirmed = window.confirm(`LTX Watch will fast-forward ComfyUI Core from ${shortHash(repository.localHead)} to the official ${shortHash(repository.remoteHead)} revision, install that revision's Python requirements, and validate them.\n\nTracked local changes block the update. Untracked workflows, scripts, models, outputs, and logs are preserved. Git trust is scoped only to ${state.config.comfyRoot}; no global wildcard is added. If dependency setup fails, Watch will restore the previous tracked revision and requirements.\n\nComfyUI must be idle and restarted afterward. Continue?`);
+    if (!confirmed) return;
+    setMaintenanceAction('update-comfyui-core');
+    setMaintenancePending(true);
+    setEnvironmentError('');
+    try {
+      const response = await fetch(`${API_BASE}/api/environment/maintenance`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-LTX-Control-Token': state.control.token },
+        body: JSON.stringify({ action: 'update-comfyui-core', confirmed: true }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'ComfyUI Core update failed');
+      setEnvironment(payload.environment as EnvironmentState);
+      setToast(payload.result?.updated ? 'ComfyUI Core updated — restart ComfyUI before rendering' : 'ComfyUI Core is already current');
+    } catch (requestError) {
+      const message = requestError instanceof Error ? requestError.message : 'ComfyUI Core update failed';
       await loadEnvironment(true);
       setEnvironmentError(message);
     } finally {
@@ -625,7 +653,7 @@ export default function Dashboard() {
             </section>
 
             {environment.render.changesLocked && <div className="maintenance-lock"><Pause size={15} /><div><b>Maintenance changes are locked while rendering</b><span>Diagnostics and official links remain available. Do not update ComfyUI, packages, models, drivers, or GPU profiles until the current job stops.</span></div></div>}
-            {(maintenancePending || environment.maintenance?.status === 'running') && <div className="maintenance-progress" role="status"><LoaderCircle size={15} className="spinning" /><div><b>{(maintenanceAction || environment.maintenance?.action) === 'install-comfyui-blender' ? 'Configuring ComfyUI-Blender' : (maintenanceAction || environment.maintenance?.action) === 'install-sam3' ? 'Installing SAM 3.1' : 'Preparing guarded setup'}</b><span>{environment.maintenance?.stage || 'Validating the official integration…'}</span></div></div>}
+            {(maintenancePending || environment.maintenance?.status === 'running') && <div className="maintenance-progress" role="status"><LoaderCircle size={15} className="spinning" /><div><b>{(maintenanceAction || environment.maintenance?.action) === 'update-comfyui-core' ? 'Updating ComfyUI Core' : (maintenanceAction || environment.maintenance?.action) === 'install-comfyui-blender' ? 'Configuring ComfyUI-Blender' : (maintenanceAction || environment.maintenance?.action) === 'install-sam3' ? 'Installing SAM 3.1' : 'Preparing guarded setup'}</b><span>{environment.maintenance?.stage || 'Validating the official integration…'}</span></div></div>}
 
             <div className="doctor-grid" aria-label="Environment checks">
               {environment.checks.map((check) => <article className={`doctor-card ${check.state}`} key={check.id}>
@@ -641,7 +669,7 @@ export default function Dashboard() {
                   {environment.repositories.map((repo) => <div className="repository-row" key={repo.id}>
                     <span className={`repo-status ${repo.updateStatus}`}>{repo.updateStatus === 'current' ? <Check size={13} /> : <RefreshCw size={13} />}</span>
                     <div><b>{repo.name}</b><small>{repo.updateStatus === 'behind' ? `${repo.behindBy} commits behind` : repo.updateStatus === 'current' ? 'Current upstream revision' : `Status: ${repo.updateStatus}`}{repo.dirty ? ' · local changes' : ''}{repo.trustRequired ? ' · trust confirmation required' : ''}</small></div>
-                    <code>{shortHash(repo.localHead)} → {shortHash(repo.remoteHead)}</code>
+                    <div className="repository-actions"><code>{shortHash(repo.localHead)} → {shortHash(repo.remoteHead)}</code>{repo.id === 'comfy' && repo.updateStatus === 'behind' && <button className="tool-setup-button" onClick={updateComfyCore} disabled={maintenancePending || environment.render.changesLocked || repo.dirty} title={repo.dirty ? 'Tracked local changes must be committed or restored before updating.' : 'Fast-forward official ComfyUI Core and install matching Python requirements.'}><RefreshCw size={11} /> Update core</button>}</div>
                   </div>)}
                   {!environment.repositories.length && <p className="section-empty">No Git-managed ComfyUI repositories were detected.</p>}
                 </div>

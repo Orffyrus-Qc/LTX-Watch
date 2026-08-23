@@ -203,9 +203,11 @@ Open **Environment** in the sidebar to run a read-only local scan. The doctor di
 
 The scan never imports PyTorch or CUDA, launches a workflow, downloads a model, accepts a license, or changes a repository. When a worker or ComfyUI queue item is active or pending, the UI explicitly locks maintenance actions.
 
-Most official actions open verified upstream pages in a new browser tab. Two narrow, explicit maintenance adapters can make local changes.
+Most official actions open verified upstream pages in a new browser tab. Three narrow, explicit maintenance adapters can make local changes.
 
-**SAM 3.1 → Install model** is available when native SAM 3.1 nodes are present. It requires an explicit confirmation that the user reviewed and accepts Meta's SAM License, an idle worker/ComfyUI queue, and enough free disk space. Watch downloads the exact checkpoint documented by ComfyUI from the official Comfy-Org repository into `models\checkpoints`, then verifies its pinned 1,745,546,848-byte size and SHA-256 digest before making it visible. Partial downloads are removed; an existing unverified checkpoint is backed up and restored on failure. Watch does not update ComfyUI core automatically when the native nodes are missing.
+**ComfyUI Core → Update core** is available for an official Git checkout that is behind upstream and has no tracked local changes. It uses Git trust only for the exact configured ComfyUI path, fetches the official `master` branch, permits fast-forward updates only, preserves untracked workflows/scripts/models/outputs, records the previous commit, installs the matching requirements into the detected ComfyUI Python environment, and runs `pip check`. If dependency setup fails, Watch restores the previous tracked revision and requirements. ComfyUI must be restarted after a successful update.
+
+**SAM 3.1 → Install model** is available when native SAM 3.1 nodes are present. It requires an explicit confirmation that the user reviewed and accepts Meta's SAM License, an idle worker/ComfyUI queue, and enough free disk space. Watch downloads the exact checkpoint documented by ComfyUI from the official Comfy-Org repository into `models\checkpoints`, then verifies its pinned 1,745,546,848-byte size and SHA-256 digest before making it visible. Partial downloads are removed; an existing unverified checkpoint is backed up and restored on failure. When native nodes are missing, update ComfyUI Core first through its separate guarded action.
 
 **ComfyUI-Blender → Install & configure** automates both required halves of that integration:
 
@@ -215,7 +217,7 @@ Most official actions open verified upstream pages in a new browser tab. Two nar
 4. Enables the matching Blender add-on and saves the configured loopback `comfyUrl` as its server address.
 5. Reports whether ComfyUI must be restarted. Watch never restarts it automatically.
 
-Both actions require a confirmation dialog, the ephemeral local control token, a valid ComfyUI root, and an idle worker/queue. Blender setup also requires a closed Blender session. They refuse unsafe targets and preserve backups when setup fails. The SAM adapter installs only the pinned licensed checkpoint after the user explicitly accepts its license. Watch still does not silently install ComfyUI, Blender, drivers, other model weights, or externally gated models.
+All three maintenance actions require a confirmation dialog, the ephemeral local control token, a valid ComfyUI root, and an idle worker/queue. Blender setup also requires a closed Blender session. They refuse unsafe targets and preserve recovery information or backups when setup fails. The SAM adapter installs only the pinned licensed checkpoint after the user explicitly accepts its license. Watch still does not silently install ComfyUI, Blender, drivers, other model weights, or externally gated models.
 
 The update comparison contacts the official GitHub API and official ComfyUI `requirements.txt` endpoint only while the Environment page is scanned. It sends repository commit hashes, not prompts, videos, local paths, machine names, or credentials.
 
@@ -284,7 +286,7 @@ The bridge is an implementation detail, but these endpoints define the dashboard
 | `GET` | `/api/health` | Bridge health |
 | `GET` | `/api/state` | Aggregated job, queue, video, GPU, and control state |
 | `GET` | `/api/environment` | Read-only installation, dependency, update, model, tool, disk, and GPU audit |
-| `POST` | `/api/environment/maintenance` | Confirmed, authenticated, idle-only allowlisted Blender or SAM 3.1 setup action |
+| `POST` | `/api/environment/maintenance` | Confirmed, authenticated, idle-only allowlisted ComfyUI Core, Blender, or SAM 3.1 maintenance action |
 | `GET` | `/api/config` | Effective local configuration |
 | `POST` | `/api/config` | Save local configuration |
 | `POST` | `/api/control` | Pause or resume the verified worker tree |
@@ -308,6 +310,7 @@ app/
   layout.tsx                 Page metadata and fonts
 lib/
   environment-audit.mjs      Read-only ComfyUI/LTX/dependency/GPU diagnostics
+  comfyui-core-update.mjs    Guarded official fast-forward core/dependency updater
   comfyui-blender-setup.mjs  Guarded ComfyUI-Blender maintenance adapter
   sam3-setup.mjs             Pinned, verified SAM 3.1 model-install adapter
 local-server.mjs             Local aggregation, streaming, and control API

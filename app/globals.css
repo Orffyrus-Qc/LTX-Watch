@@ -216,6 +216,7 @@ footer button:hover { color:var(--acid); }
 .repository-row { min-height:58px; display:grid; grid-template-columns:26px minmax(0,1fr) auto; align-items:center; gap:9px; border-bottom:1px solid #22272b; }.repository-row:last-child { border-bottom:0; }
 .repo-status { width:24px; height:24px; display:grid; place-items:center; border-radius:50%; background:rgba(200,255,50,.08); color:var(--acid); }.repo-status.behind,.repo-status.diverged { color:#ffbc57; background:rgba(255,188,87,.08); }
 .repository-row > div { min-width:0; display:grid; gap:3px; }.repository-row b { font-size:10px; }.repository-row small { color:#697178; font-size:8px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }.repository-row code { color:#697178; font:400 8px var(--font-geist-mono); }
+.repository-row .repository-actions { min-width:116px; display:grid; justify-items:end; gap:5px; }.repository-actions .tool-setup-button { min-height:23px; }
 .section-empty { margin:0; padding:28px 12px; color:#687078; font-size:9px; text-align:center; }
 .dependency-summary { padding:7px 16px 6px; }
 .dependency-summary > div { min-height:48px; display:grid; grid-template-columns:26px 1fr; align-items:center; gap:9px; border-bottom:1px solid #22272b; }.dependency-summary > div:last-child { border-bottom:0; }
