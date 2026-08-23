@@ -18,8 +18,9 @@ Before changing compatibility behavior, read these files in order:
 2. `docs/LTX_COMPATIBILITY.md`
 3. `docs/AI_MAINTAINER_GUIDE.md`
 4. `local-server.mjs`
-5. `app/dashboard.tsx`
-6. `scripts/process-orchestrator.ps1`
+5. `lib/environment-audit.mjs`
+6. `app/dashboard.tsx`
+7. `scripts/process-orchestrator.ps1`
 
 Use official upstream sources when investigating LTX or ComfyUI changes:
 
@@ -37,6 +38,8 @@ Do not rely on blog posts or copied endpoint lists when the upstream source or O
 - Test `process-orchestrator.ps1` only against a temporary process created for the test.
 - Never replace pause/resume with process termination or ComfyUI `/interrupt` without explicit user approval and a documented migration.
 - Keep the local bridge bound to `127.0.0.1`. Do not change it to `0.0.0.0`.
+- Keep `/api/environment` read-only and safe while a real render is active. A live worker or running/pending ComfyUI queue item must lock maintenance guidance.
+- Keep `/api/environment/maintenance` token-protected, confirmation-gated, and limited to allowlisted actions. Revalidate that workers and both running/pending ComfyUI queues are idle immediately before changing files.
 - Preserve the per-session `X-LTX-Control-Token` check.
 - Validate decoded media and Explorer paths against configured roots before access.
 - Keep `local.config.json`, `.env*`, generated media, logs, status files, queue plans, and `orchestrator.state.json` out of Git.
@@ -68,6 +71,31 @@ Compatibility-sensitive functions:
 - `controlGenerator`
 
 Prefer changing one adapter function over changing the dashboard contract.
+
+### `lib/environment-audit.mjs`
+
+Owns read-only ComfyUI/LTX installation detection, model filename grouping, Python package checks, upstream revision comparison, disk checks, optional-tool readiness, and NVIDIA GPU role recommendations. It may run metadata commands, but it must never import Torch, initialize CUDA, mutate Git, install packages, download models, accept licenses, change drivers, rewrite an external runner, or launch a workflow. Keep official outbound URLs allowlisted in this module.
+
+### ComfyUI-Blender maintenance adapter
+
+`lib/comfyui-blender-setup.mjs` and `scripts/install-comfyui-blender.ps1` own the one allowlisted automated environment mutation. Preserve these invariants:
+
+- Accept only a valid configured ComfyUI root and loopback HTTP(S) server address.
+- Use only official `alexisrolland/ComfyUI-Blender` GitHub release/tag URLs.
+- Match Blender 5 to the latest release and Blender 4.5 to the last compatible v3.3.4 release.
+- Verify GitHub's published SHA-256 digest when present, refuse unrecognized targets or dirty Git checkouts, and back up existing files before replacement.
+- Require Blender to be closed, enable the add-on through Blender's background preferences API, save `server_address`, and never start a workflow.
+- Roll back changed files when setup fails and never restart ComfyUI automatically.
+
+### ComfyUI Manager maintenance adapter
+
+`lib/comfyui-manager-setup.mjs` and `scripts/install-comfyui-manager.ps1` own the built-in Manager migration action. Preserve these invariants:
+
+- Require current core support through `manager_requirements.txt` and `--enable-manager`.
+- Use only the configured ComfyUI Python environment and the requirement file inside that root.
+- Patch only the recognized launcher assignment, with an external backup made first.
+- Archive the legacy Manager only when it is a clean Git checkout from `Comfy-Org/ComfyUI-Manager` or its historical official `ltdrdata` origin.
+- Never configure wildcard Git trust, overwrite local changes, restart ComfyUI, or invoke the real installer during automated checks.
 
 ### `scripts/process-orchestrator.ps1`
 
@@ -121,9 +149,12 @@ Always run:
 
 ```powershell
 node --check local-server.mjs
+node --check lib/environment-audit.mjs
+node --check lib/comfyui-blender-setup.mjs
 node --check scripts/run-local.mjs
 node --check scripts/run-installed.mjs
 node --check scripts/serve-production.mjs
+npm test
 npm run build
 npm run build:msi
 ```
@@ -132,6 +163,8 @@ With the local bridge running, validate only non-destructive routes:
 
 - `GET /api/health` returns 200.
 - `GET /api/state` returns the documented top-level fields.
+- `GET /api/environment` returns the documented diagnostic fields and does not change local state.
+- An unauthorized `POST /api/environment/maintenance` is rejected with 403. Do not run a real maintenance action as an automated check.
 - An unauthorized `POST /api/control` is rejected with 403.
 - An authenticated invalid control action is rejected with 400.
 - A media range request returns 206 and the requested byte count.

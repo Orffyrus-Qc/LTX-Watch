@@ -1,6 +1,6 @@
 {
   "name": "ltx-video-monitor",
-  "version": "1.0.2",
+  "version": "1.3.0",
   "description": "A private local dashboard for LTX Video and ComfyUI generation progress, queues, history, playback, and process control.",
   "private": true,
   "homepage": "https://github.com/Orffyrus-Qc/ltx-watch#readme",
@@ -25,7 +25,8 @@
     "build:msi": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-msi.ps1",
     "start": "node scripts/run-local.mjs start",
     "site:start": "vinext start",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
+    "test": "node --test"
   },
   "dependencies": {
     "lucide-react": "^1.33.0",

@@ -22,6 +22,9 @@ Classify the request before editing:
 | Status JSON changes | Update `parseGpuSnapshot`, `getWorkerPids`, or both |
 | Queue plan JSON changes | Normalize the new plan before building `queued` |
 | Worker launch command changes | Change `workerCommandFragment`; preserve command verification |
+| LTX model component/filename changes | Update `MODEL_GROUPS` in `lib/environment-audit.mjs` and keep legacy matches |
+| ComfyUI ships a formerly custom tool natively | Prefer the native node and update its readiness check |
+| New GPU family or memory profile | Extend the read-only role recommendation and validate on an idle fixture workflow |
 | Linux/macOS process control requested | Add a separate platform adapter; do not silently reuse the Windows implementation |
 
 ## Collect sanitized evidence
@@ -54,6 +57,43 @@ Check current official sources before changing assumptions:
 4. ComfyUI server routes when OpenAPI is incomplete: `server.py` in the official ComfyUI repository
 
 Record the upstream release, commit, or schema version in the PR/commit description and `CHANGELOG.md` when material.
+
+## Preserve the Environment Doctor boundary
+
+`lib/environment-audit.mjs` owns installation, model, package, revision, disk, optional-tool, and GPU readiness. The browser consumes its normalized `/api/environment` response and must not run local commands itself.
+
+For an LTX or ComfyUI update:
+
+1. Compare official model-card filenames to `MODEL_GROUPS`.
+2. Confirm native LTX and optional-tool node locations in current ComfyUI core.
+3. Keep Python verification metadata-only: `pip list` and `pip check`; never import Torch during a diagnostic.
+4. Keep repository comparison non-mutating. Do not replace it with `git fetch` or `git pull`.
+5. Keep exact Git trust warnings visible. Never set `safe.directory=*`.
+6. Keep official links allowlisted in `OFFICIAL_LINKS`; never accept a URL supplied by a browser request.
+7. Treat a live worker or running ComfyUI queue item as a maintenance lock.
+8. Keep external runner setup guided except for the versioned, reversible Manager launch-flag adapter.
+9. Add or update parser tests in `tests/environment-audit.test.mjs`.
+
+Any updater or installer must be implemented as a separate authenticated maintenance adapter with explicit confirmation, idle-state revalidation, backup, progress reporting, validation, and rollback. Do not turn the read-only audit route into a mutating endpoint.
+
+The maintenance endpoint allowlists `install-comfyui-manager` and `install-comfyui-blender`. ComfyUI Manager setup follows the current built-in installation documented by Comfy-Org. Preserve these rules:
+
+1. Require `manager_requirements.txt` and the core `--enable-manager` option; do not silently fall back to installing the legacy custom node on a new setup.
+2. Install requirements only with the Python environment inside the configured ComfyUI root, and run pip's dry-run preflight first.
+3. Patch only the recognized `args.server_extra_args = []` launcher assignment or accept an already configured flag. Back up the launcher first.
+4. Archive a legacy Manager only when its Git origin is official and its working tree is clean. Never set global Git trust.
+5. Restore launcher and legacy-node file changes on failure, report that Python package changes may remain, and never restart ComfyUI automatically.
+6. Keep the real action out of automated tests; validate the result parser and PowerShell syntax instead.
+
+For ComfyUI-Blender:
+
+1. Confirm the official release asset naming, tag compatibility, add-on module name, and `server_address` preference against `alexisrolland/ComfyUI-Blender`.
+2. Keep the latest-release channel only for Blender 5 and retain v3.3.4 for Blender 4.5 unless the upstream compatibility statement changes.
+3. Keep URLs hard-coded to the official repository and validate dynamic asset URLs before download.
+4. Never overwrite an unrecognized folder or a Git checkout with local changes.
+5. Preserve backup, rollback, closed-Blender, loopback-address, explicit-confirmation, token, and idle running/pending queue checks.
+6. Never import Torch, start a workflow, restart ComfyUI, or test the real POST action during automated validation.
+7. Update `chooseComfyBlenderChannel` tests and the MSI staging list whenever the adapter layout changes.
 
 ## Preserve the adapter boundary
 
@@ -160,6 +200,7 @@ Run syntax and build checks:
 ```powershell
 node --check local-server.mjs
 node --check scripts/run-local.mjs
+npm test
 npm run build
 ```
 
@@ -175,6 +216,9 @@ Verify security behavior:
 - `POST /api/control` without the token returns 403.
 - An authenticated unsupported action returns 400.
 - Do not submit `pause` or `resume` to a live bridge during testing.
+- `GET /api/environment` remains safe during a render and reports `render.changesLocked: true`.
+- Environment actions contain only the allowlisted official URLs from `OFFICIAL_LINKS`.
+- An unauthenticated `POST /api/environment/maintenance` returns 403; do not invoke the authenticated installer during an automated or active-render check.
 
 Verify media behavior with a range request against a known test video:
 

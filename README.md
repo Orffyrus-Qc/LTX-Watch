@@ -23,6 +23,10 @@ The app runs entirely on your computer. It does not upload prompts, videos, logs
 - One-click **Show in Explorer** actions
 - Windows process-tree pause/resume that preserves the current shot and VRAM
 - Auto-refreshing activity timeline parsed from generator events
+- Read-only Environment Doctor for ComfyUI, LTX models, Python packages, Git revisions, disks, video tools, and NVIDIA GPUs
+- Official installation/update actions plus native SAM 3.1 readiness and guarded GPU-role recommendations
+- Guarded migration from legacy ComfyUI Manager nodes to the current built-in Manager
+- One-click guarded installation and configuration of the official ComfyUI-Blender integration
 - Editable source paths, model label, worker match, and refresh interval
 - Loopback-only local bridge with an ephemeral control token
 
@@ -34,6 +38,7 @@ The app runs entirely on your computer. It does not upload prompts, videos, logs
 - A local ComfyUI installation
 - An LTX workflow that writes video files to a local output directory
 - Optional: `ffprobe.exe` in the ComfyUI root for duration and resolution metadata
+- Optional: Blender 4.5 or Blender 5 for the ComfyUI-Blender integration
 
 The history and standard queue features work with ordinary ComfyUI output folders. The richest track/shot progression view uses the optional supervisor files described in [LTX compatibility](docs/LTX_COMPATIBILITY.md).
 
@@ -109,6 +114,45 @@ npm run dev
 
 Saved dashboard settings in `local.config.json` take precedence over auto-detected defaults.
 
+## Environment & setup
+
+Open **Environment** in the sidebar to run a read-only local scan. The doctor distinguishes between:
+
+- A ComfyUI installation with native LTX support
+- A complete or incomplete LTX 2.5 model pack
+- The optional standalone LTX Desktop application
+- Installed packages that satisfy the current ComfyUI checkout
+- Package changes that would be required by the latest upstream checkout
+- Clean, current, outdated, divergent, or Git-untrusted repositories
+- Primary, secondary-candidate, and auxiliary-only NVIDIA GPUs
+- Native SAM 3.1 nodes and their separately licensed model checkpoint
+- Built-in versus legacy custom-node ComfyUI Manager, its Python package, launch flag, and migration readiness
+- Blender, the Blender add-on, matching ComfyUI custom nodes, saved server configuration, and compatible integration updates
+
+The scan never imports PyTorch or CUDA, launches a workflow, downloads a model, accepts a license, or changes a repository. When a worker or ComfyUI queue item is active or pending, the UI explicitly locks maintenance actions.
+
+Most official actions open verified upstream pages in a new browser tab. Two narrow, explicit maintenance adapters can make local changes.
+
+**ComfyUI Manager → Migrate to built-in** follows the current official Manager installation model:
+
+1. Requires `manager_requirements.txt` and `--enable-manager` support in the installed ComfyUI core.
+2. Uses the Python environment belonging to ComfyUI and preflights the official requirements before installation.
+3. Recognizes only the configured LTX launcher adapter, backs it up, and adds `--enable-manager`.
+4. Verifies that an existing legacy `ComfyUI-Manager` checkout is clean and from the official repository, then archives it outside `custom_nodes`.
+5. Reports the backup paths and requires a later ComfyUI restart; Watch never restarts ComfyUI itself.
+
+**ComfyUI-Blender → Install & configure** automates both required halves of that integration:
+
+1. Detects the newest supported Blender installation. Blender 5 uses the latest ComfyUI-Blender release; Blender 4.5 uses the last compatible 3.3.4 release.
+2. Downloads the official release and matching tagged source from `alexisrolland/ComfyUI-Blender`, verifying the published SHA-256 digest when GitHub supplies one.
+3. Backs up a recognized existing integration, then installs or updates `custom_nodes\ComfyUI-Blender`.
+4. Enables the matching Blender add-on and saves the configured loopback `comfyUrl` as its server address.
+5. Reports whether ComfyUI must be restarted. Watch never restarts it automatically.
+
+Both actions require the confirmation dialog, the ephemeral local control token, a valid ComfyUI root, and an idle worker/queue. Blender setup also requires a closed Blender session. They refuse to overwrite unrecognized folders or Git checkouts with local changes and restore file backups when setup fails. The Manager adapter installs only the official Manager requirement and changes only a recognized launcher assignment; all other external-runner and GPU setup remains guided. Watch still does not silently install ComfyUI, Blender, drivers, model weights, or licensed models.
+
+The update comparison contacts the official GitHub API and official ComfyUI `requirements.txt` endpoint only while the Environment page is scanned. It sends repository commit hashes, not prompts, videos, local paths, machine names, or credentials.
+
 ## How it works
 
 ```mermaid
@@ -173,6 +217,8 @@ The bridge is an implementation detail, but these endpoints define the dashboard
 | --- | --- | --- |
 | `GET` | `/api/health` | Bridge health |
 | `GET` | `/api/state` | Aggregated job, queue, video, GPU, and control state |
+| `GET` | `/api/environment` | Read-only installation, dependency, update, model, tool, disk, and GPU audit |
+| `POST` | `/api/environment/maintenance` | Confirmed, authenticated, idle-only allowlisted Manager or Blender setup action |
 | `GET` | `/api/config` | Effective local configuration |
 | `POST` | `/api/config` | Save local configuration |
 | `POST` | `/api/control` | Pause or resume the verified worker tree |
@@ -188,8 +234,14 @@ app/
   dashboard.tsx              React dashboard and interactions
   globals.css                Visual system and responsive layout
   layout.tsx                 Page metadata and fonts
+lib/
+  environment-audit.mjs      Read-only ComfyUI/LTX/dependency/GPU diagnostics
+  comfyui-blender-setup.mjs  Guarded ComfyUI-Blender maintenance adapter
+  comfyui-manager-setup.mjs  Guarded built-in Manager migration adapter
 local-server.mjs             Local aggregation, streaming, and control API
 scripts/
+  install-comfyui-blender.ps1 Official release install, Blender setup, backup, and rollback
+  install-comfyui-manager.ps1 Official Manager requirements, launcher flag, migration, and rollback
   process-orchestrator.ps1   Windows process-tree suspend/resume
   run-local.mjs              Starts the dashboard and bridge together
 docs/
@@ -210,7 +262,9 @@ Validation commands:
 
 ```powershell
 node --check local-server.mjs
+node --check lib/comfyui-blender-setup.mjs
 node --check scripts/run-local.mjs
+npm test
 npm run build
 ```
 
@@ -274,6 +328,8 @@ Place `ffprobe.exe` in the configured ComfyUI root. Playback does not require FF
 - Explorer requests are restricted to configured local folders.
 - Control requests require an ephemeral token.
 - No telemetry or remote analytics are included.
+- Environment update checks contact only the documented official GitHub endpoints and never upload local media, prompts, logs, paths, or machine identifiers.
+- Official installer/model links open only after a user click; downloads and license acceptance remain outside Watch.
 
 Do not commit `local.config.json`, `.env` files, generated videos, ComfyUI logs, supervisor status files, or `orchestrator.state.json`.
 

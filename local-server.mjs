@@ -6,15 +6,25 @@ import { randomBytes } from 'node:crypto';
 import { homedir, uptime, userInfo } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { buildEnvironmentAudit } from './lib/environment-audit.mjs';
+import { installComfyUiBlender, normalizeLoopbackComfyUrl } from './lib/comfyui-blender-setup.mjs';
+import { installComfyUiManager } from './lib/comfyui-manager-setup.mjs';
 
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = path.join(APP_ROOT, 'local.config.json');
 const ORCHESTRATOR_STATE_PATH = path.join(APP_ROOT, 'orchestrator.state.json');
 const ORCHESTRATOR_SCRIPT_PATH = path.join(APP_ROOT, 'scripts', 'process-orchestrator.ps1');
+const COMFY_BLENDER_SCRIPT_PATH = path.join(APP_ROOT, 'scripts', 'install-comfyui-blender.ps1');
+const COMFY_MANAGER_SCRIPT_PATH = path.join(APP_ROOT, 'scripts', 'install-comfyui-manager.ps1');
+const MAINTENANCE_ROOT = path.join(process.env.LOCALAPPDATA || APP_ROOT, 'LTX Watch', 'maintenance');
+const COMFY_BLENDER_RECEIPT_PATH = path.join(MAINTENANCE_ROOT, 'comfyui-blender.json');
+const MAINTENANCE_BACKUP_ROOT = path.join(MAINTENANCE_ROOT, 'backups');
 const PORT = Number(process.env.LTX_WATCH_API_PORT || 4311);
 const CONTROL_TOKEN = randomBytes(24).toString('hex');
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.webm', '.mov', '.mkv']);
 const probeCache = new Map();
+let environmentCache = { key: '', expiresAt: 0, value: null, promise: null };
+let maintenanceState = { status: 'idle', action: null, stage: null, startedAt: null, completedAt: null, result: null };
 let recoveryInFlight = false;
 
 function defaultConfig(comfyRoot) {
@@ -671,6 +681,105 @@ async function buildState() {
   };
 }
 
+function getMaintenanceView() {
+  return {
+    status: maintenanceState.status,
+    action: maintenanceState.action,
+    stage: maintenanceState.stage,
+    startedAt: maintenanceState.startedAt,
+    completedAt: maintenanceState.completedAt,
+    result: maintenanceState.result,
+  };
+}
+
+async function getMaintenanceRender(config) {
+  const [status, comfy] = await Promise.all([readJson(config.statusFile, {}), getComfyQueue(config)]);
+  const statusUpdated = parseDate(status.updated);
+  const workerOnline = Boolean(statusUpdated && Date.now() - statusUpdated.getTime() < 180_000 && getWorkerPids(status).some(processExists));
+  return {
+    active: workerOnline || comfy.running > 0 || comfy.pending > 0,
+    worker: workerOnline,
+    comfyRunning: comfy.running,
+    comfyPending: comfy.pending,
+  };
+}
+
+async function getEnvironmentView(force = false) {
+  const config = await getConfig();
+  const [render, comfyBlenderReceipt] = await Promise.all([getMaintenanceRender(config), readJson(COMFY_BLENDER_RECEIPT_PATH, null)]);
+  const cacheKey = `${config.comfyRoot.toLowerCase()}|${config.comfyUrl.toLowerCase()}|${render.active}|${render.worker}|${render.comfyRunning}|${render.comfyPending}`;
+  const decorate = (value) => ({ ...value, maintenance: getMaintenanceView() });
+  if (!force && environmentCache.value && environmentCache.key === cacheKey && environmentCache.expiresAt > Date.now()) {
+    return decorate(environmentCache.value);
+  }
+  if (!force && environmentCache.promise && environmentCache.key === cacheKey) return decorate(await environmentCache.promise);
+
+  const promise = buildEnvironmentAudit(config, render, { comfyBlenderReceipt }).then((value) => {
+    environmentCache = { key: cacheKey, expiresAt: Date.now() + 90_000, value, promise: null };
+    return value;
+  }).catch((error) => {
+    environmentCache.promise = null;
+    throw error;
+  });
+  environmentCache = { ...environmentCache, key: cacheKey, promise };
+  return decorate(await promise);
+}
+
+async function runEnvironmentMaintenance(body) {
+  const supportedActions = new Set(['install-comfyui-blender', 'install-comfyui-manager']);
+  if (!supportedActions.has(body?.action)) throw new Error('Unsupported environment maintenance action.');
+  if (body?.confirmed !== true) throw new Error('Explicit confirmation is required before changing ComfyUI, Blender, dependencies, or launch settings.');
+  if (maintenanceState.status === 'running') throw new Error('Another environment maintenance action is already running.');
+
+  const config = await getConfig();
+  const render = await getMaintenanceRender(config);
+  if (render.active) throw new Error('Setup is locked while an LTX worker or ComfyUI queue item is active. Wait for the queue to become idle.');
+
+  const startedAt = new Date().toISOString();
+  maintenanceState = { status: 'running', action: body.action, stage: 'Preparing guarded setup', startedAt, completedAt: null, result: null };
+  try {
+    let result;
+    if (body.action === 'install-comfyui-manager') {
+      result = await installComfyUiManager({
+        scriptPath: COMFY_MANAGER_SCRIPT_PATH,
+        comfyRoot: config.comfyRoot,
+        runnerFragment: config.workerCommandFragment,
+        backupRoot: MAINTENANCE_BACKUP_ROOT,
+        onStage: (stage) => { maintenanceState = { ...maintenanceState, stage }; },
+      });
+    } else {
+      result = await installComfyUiBlender({
+        scriptPath: COMFY_BLENDER_SCRIPT_PATH,
+        comfyRoot: config.comfyRoot,
+        comfyUrl: config.comfyUrl,
+        onStage: (stage) => { maintenanceState = { ...maintenanceState, stage }; },
+      });
+      const receipt = {
+        status: 'configured',
+        version: result.version,
+        blenderVersion: result.blenderVersion,
+        serverAddress: normalizeLoopbackComfyUrl(result.serverAddress),
+        configuredAt: new Date().toISOString(),
+      };
+      await mkdir(MAINTENANCE_ROOT, { recursive: true });
+      await writeFile(COMFY_BLENDER_RECEIPT_PATH, `${JSON.stringify(receipt, null, 2)}\n`, 'utf8');
+    }
+    const completedAt = new Date().toISOString();
+    maintenanceState = { ...maintenanceState, status: 'complete', stage: 'Setup complete', completedAt, result };
+    environmentCache = { key: '', expiresAt: 0, value: null, promise: null };
+    return { result, environment: await getEnvironmentView(true) };
+  } catch (error) {
+    maintenanceState = {
+      ...maintenanceState,
+      status: 'failed',
+      stage: 'Setup failed',
+      completedAt: new Date().toISOString(),
+      result: { error: error instanceof Error ? error.message : 'Environment setup failed.' },
+    };
+    throw error;
+  }
+}
+
 async function serveMedia(req, res, id, config) {
   let filePath;
   try { filePath = decodePath(id); } catch { return sendJson(res, 400, { error: 'Invalid media id' }); }
@@ -700,6 +809,11 @@ const server = http.createServer(async (req, res) => {
   try {
     if (req.method === 'GET' && requestUrl.pathname === '/api/health') return sendJson(res, 200, { ok: true, name: 'LTX Watch local bridge' });
     if (req.method === 'GET' && requestUrl.pathname === '/api/state') return sendJson(res, 200, await buildState());
+    if (req.method === 'GET' && requestUrl.pathname === '/api/environment') return sendJson(res, 200, await getEnvironmentView(requestUrl.searchParams.get('refresh') === '1'));
+    if (req.method === 'POST' && requestUrl.pathname === '/api/environment/maintenance') {
+      if (req.headers['x-ltx-control-token'] !== CONTROL_TOKEN) return sendJson(res, 403, { error: 'Invalid local control token' });
+      return sendJson(res, 200, { ok: true, ...await runEnvironmentMaintenance(await readBody(req)) });
+    }
     if (req.method === 'GET' && requestUrl.pathname === '/api/config') return sendJson(res, 200, await getConfig());
     if (req.method === 'POST' && requestUrl.pathname === '/api/control') {
       if (req.headers['x-ltx-control-token'] !== CONTROL_TOKEN) return sendJson(res, 403, { error: 'Invalid local control token' });
