@@ -26,6 +26,7 @@ import {
   createProjectsRecord,
   enqueueProjectShots,
   inferShotIdentity,
+  mergeProjectPlanItems,
   normalizeProjectsRecord,
   projectAssetId,
   safeUploadRelativePath,
@@ -55,6 +56,7 @@ let maintenanceState = { status: 'idle', action: null, stage: null, startedAt: n
 let recoveryInFlight = false;
 let studioMutationInFlight = false;
 let projectMutationInFlight = false;
+let sourcePlanCache = { key: '', expiresAt: 0, value: [], promise: null };
 const projectUploads = new Map();
 
 function defaultConfig(comfyRoot) {
@@ -235,9 +237,9 @@ async function walkVideos(directory, kind, limit) {
   return found.sort((a, b) => b.modifiedMs - a.modifiedMs).slice(0, limit);
 }
 
-function execFileAsync(command, args) {
+function execFileAsync(command, args, options = {}) {
   return new Promise((resolve) => {
-    execFile(command, args, { windowsHide: true, timeout: 5000, maxBuffer: 512_000 }, (error, stdout) => {
+    execFile(command, args, { windowsHide: true, timeout: options.timeout || 5000, maxBuffer: options.maxBuffer || 512_000 }, (error, stdout) => {
       resolve(error ? null : stdout);
     });
   });
@@ -698,6 +700,33 @@ function resolveStudioPlan(config) {
 
 function planTracks(plan) {
   return Object.values(plan || {}).flatMap((worker) => Array.isArray(worker?.tracks) ? worker.tracks : []);
+}
+
+async function sourceRunnerPlanTracks(config) {
+  const launch = resolveStudioPlan(config);
+  if (!launch) return [];
+  const info = await stat(launch.sourceRunner).catch(() => null);
+  const key = `${launch.sourceRunner.toLowerCase()}:${Number(info?.mtimeMs || 0)}`;
+  const now = Date.now();
+  if (sourcePlanCache.key === key && sourcePlanCache.expiresAt > now) return sourcePlanCache.value;
+  if (sourcePlanCache.key === key && sourcePlanCache.promise) return sourcePlanCache.promise;
+
+  const promise = (async () => {
+    const output = await execFileAsync(launch.executable, [STUDIO_RUNNER_PATH, '--inspect-source', launch.sourceRunner], { timeout: 15_000, maxBuffer: 2_000_000 });
+    if (!output) return [];
+    try {
+      const parsed = JSON.parse(output);
+      return Array.isArray(parsed) ? parsed.slice(0, 5_000) : [];
+    } catch { return []; }
+  })();
+  sourcePlanCache = { key, expiresAt: now + 60_000, value: sourcePlanCache.key === key ? sourcePlanCache.value : [], promise };
+  const value = await promise;
+  sourcePlanCache = { key, expiresAt: Date.now() + 60_000, value, promise: null };
+  return value;
+}
+
+async function projectPlanTracks(config, activePlan) {
+  return mergeProjectPlanItems(planTracks(activePlan), await sourceRunnerPlanTracks(config));
 }
 
 function finalSlugSet(finals) {
@@ -1193,7 +1222,7 @@ async function buildProjectsView(config, plan, record = null) {
 
   const rawAssets = await projectAssets(project, config);
   const assets = rawAssets.map(decorateProjectAsset);
-  const shots = buildProjectShots(assets, project.shots, planTracks(plan));
+  const shots = buildProjectShots(assets, project.shots, await projectPlanTracks(config, plan));
   const queueByShot = new Map(project.regenerationQueue.filter((item) => ['queued', 'generating', 'review', 'failed'].includes(item.status)).map((item) => [item.shotKey, item]));
   for (const shot of shots) {
     const queued = queueByShot.get(shot.shotKey);
@@ -1261,10 +1290,10 @@ async function syncProjectRegeneration(config, status, plan, comfy) {
     const liveWorkers = getWorkerPids(status).filter(processExists);
     const next = project && !project.queuePaused ? project.regenerationQueue.find((item) => item.status === 'queued') : null;
     if (project && next && liveWorkers.length === 0 && !comfy.online && resolveStudioPlan(config)) {
-      const planItem = planTracks(plan).find((item) => sceneKey(item) === next.sceneKey);
+      const planItem = (await projectPlanTracks(config, plan)).find((item) => sceneKey(item) === next.sceneKey);
       if (!planItem || !parseShotRange(planItem.shots, planItem.count).includes(next.shot)) {
         next.status = 'failed';
-        next.error = 'The source scene or shot no longer exists in the configured LTX plan.';
+        next.error = 'The source scene or shot no longer exists in the compatible LTX source runner.';
         next.completedAt = new Date().toISOString();
       } else {
         const scene = ensureSceneRecord(studioRecord, planItem);

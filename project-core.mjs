@@ -133,6 +133,15 @@ export function buildProjectShots(assets, savedShots = {}, planItems = []) {
   }).sort((left, right) => left.sceneSlug?.localeCompare(right.sceneSlug || '') || left.shot.localeCompare(right.shot, undefined, { numeric: true }));
 }
 
+export function mergeProjectPlanItems(activeItems = [], sourceItems = []) {
+  const merged = new Map();
+  for (const item of [...activeItems, ...sourceItems]) {
+    if (!item?.section || !item?.track || !item?.slug || !parseShotRange(item.shots, item.count).length) continue;
+    merged.set(`${String(item.section).toLowerCase()}/${String(item.slug).toLowerCase()}`, item);
+  }
+  return [...merged.values()];
+}
+
 export function safeUploadRelativePath(value) {
   const normalized = String(value || '').replaceAll('\\', '/').replace(/^\/+/, '');
   const parts = normalized.split('/').filter((part) => part && part !== '.');

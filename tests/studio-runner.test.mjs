@@ -44,3 +44,20 @@ test('single-shot adapter applies a correction and returns a review output', asy
     await rm(fixtureRoot, { recursive: true, force: true });
   }
 });
+
+test('single-shot adapter exposes completed source scenes for project mapping', (context) => {
+  const python = process.env.LTX_STUDIO_TEST_PYTHON || (process.platform === 'win32' ? 'python.exe' : 'python3');
+  const run = spawnSync(python, [path.join(appRoot, 'scripts', 'ltx-studio-runner.py'), '--inspect-source', path.join(testRoot, 'fixtures', 'fake_album_runner.py')], {
+    cwd: testRoot,
+    encoding: 'utf8',
+    windowsHide: true,
+    env: { ...process.env, LTX_STUDIO_FIXTURE_OUTPUT: path.join(tmpdir(), 'ltx-watch-studio-inspect-output') },
+  });
+  if (run.error?.code === 'ENOENT') {
+    context.skip(`Python executable not available: ${python}`);
+    return;
+  }
+  assert.equal(run.status, 0, run.stderr || run.stdout);
+  const [scene] = JSON.parse(run.stdout);
+  assert.deepEqual(scene, { section: 'album', track: 'Scene One', slug: 'scene_one_full', shots: '0001', count: 1 });
+});

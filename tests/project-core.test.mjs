@@ -6,6 +6,7 @@ import {
   createProjectsRecord,
   enqueueProjectShots,
   inferShotIdentity,
+  mergeProjectPlanItems,
   normalizeProjectsRecord,
   safeUploadRelativePath,
 } from '../project-core.mjs';
@@ -49,6 +50,17 @@ test('regeneration queue rejects duplicates and unmapped shots', () => {
   assert.equal(first.length, 1);
   assert.equal(first[0].correction, 'more stable');
   assert.equal(second.length, 0);
+});
+
+test('project mapping supplements the active queue with completed source scenes', () => {
+  const active = [{ section: 'album', track: 'New Scene', slug: 'new_scene_full', shots: '0200-0201', count: 2 }];
+  const source = [
+    { section: 'album', track: 'Old Scene', slug: 'old_scene_full', shots: '0093,0094', count: 2 },
+    { section: 'album', track: 'New Scene', slug: 'new_scene_full', shots: '0200,0201', count: 2 },
+  ];
+  const merged = mergeProjectPlanItems(active, source);
+  assert.equal(merged.length, 2);
+  assert.equal(merged.find((item) => item.slug === 'old_scene_full').shots, '0093,0094');
 });
 
 test('project state and upload paths are normalized defensively', () => {

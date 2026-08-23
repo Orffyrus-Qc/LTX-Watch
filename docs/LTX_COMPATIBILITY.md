@@ -33,6 +33,8 @@ release_lock
 
 It must also expose `OUTPUT_ROOT`, `LOCK_DIR`, and `GENERIC_MOTION_PROMPT`. Studio temporarily extends `GENERIC_MOTION_PROMPT` for the requested attempt, prepares only the selected input, acquires the same port lock used by the batch, and calls `run_shot` once. The adapter accepts completion only when a video larger than 100 KB appears beneath the configured clip root.
 
+The adapter's read-only `--inspect-source` mode calls `load_timing`, `group_rows`, and `folder_slug_for` to return scene/slug/shot metadata. Projects merges that complete source index with the active remaining-work plan so a completed scene can still receive an explicitly requested one-shot correction. Inspection does not call `prepare_track_inputs`, `run_shot`, ComfyUI, or the GPU. Keep its output free of prompts and filesystem paths.
+
 If a future runner removes one of these functions, add a narrow adapter for the new runner. Do not import its private prompt schema into the React dashboard and do not weaken the path, worker, or port checks.
 
 ### Studio runtime state
@@ -60,7 +62,7 @@ Supported indexed asset classes are:
 - text/data: TXT, Markdown, RTF, SRT, VTT, CSV, JSON, YAML, TOML
 - 3D: Blender, FBX, OBJ, GLTF/GLB, and USD variants
 
-A shot identity comes from a leading number or `shot_####` pattern. Its parent folder is normalized as the scene slug. Regeneration is available only when that slug matches a normalized plan item and the shot belongs to that item's parsed shot range. Keep this mapping narrow; do not guess a source scene from media similarity or prompt text.
+A shot identity comes from a leading number or `shot_####` pattern. Its parent folder is normalized as the scene slug. Regeneration is available only when that slug matches the active plan or the compatible source runner's inspected scene index and the shot belongs to that item's parsed shot range. Keep this mapping narrow; do not guess a source scene from media similarity or prompt text.
 
 The Blender-backbone ID records the master scene used for shared camera animation, blocking, scale, and spatial continuity. It does not grant permission to run Blender scripts or overwrite that file. Future Blender automation should use a separate authenticated adapter with versioned outputs, explicit actions, path constraints, backup/rollback, and tests that never touch a real production scene.
 

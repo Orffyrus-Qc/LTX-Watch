@@ -58,6 +58,25 @@ def load_source_runner(source_path):
     return module
 
 
+def inspect_source_plan(source_path):
+    module = load_source_runner(source_path)
+    scenes = []
+    for key, rows in module.group_rows(module.load_timing()):
+        section, track = key
+        slug = module.folder_slug_for(track)
+        shots = [str(row.get("number") or "").strip() for row in rows]
+        if not section or not track or not slug or not shots or any(not shot.isdigit() for shot in shots):
+            continue
+        scenes.append({
+            "section": str(section),
+            "track": str(track),
+            "slug": str(slug),
+            "shots": ",".join(shots),
+            "count": len(shots),
+        })
+    return scenes
+
+
 def find_shot(module, job):
     for key, rows in module.group_rows(module.load_timing()):
         section, track = key
@@ -124,8 +143,17 @@ def run(job):
 
 def main():
     parser = argparse.ArgumentParser(description="LTX Watch Studio single-shot adapter")
-    parser.add_argument("--job", required=True)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--job")
+    mode.add_argument("--inspect-source")
     args = parser.parse_args()
+    if args.inspect_source:
+        try:
+            print(json.dumps(inspect_source_plan(os.path.abspath(args.inspect_source))))
+            return 0
+        except Exception as error:
+            print(str(error), file=sys.stderr)
+            return 1
     job = None
     result_path = None
     try:

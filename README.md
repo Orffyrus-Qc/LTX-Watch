@@ -172,12 +172,14 @@ Open **Projects** to turn an output folder or edit folder into a persistent loca
 1. Choose **Import project** and enter an absolute folder path.
 2. Use **Reference in place** to leave files untouched, or **Copy supported assets** to make a managed local working copy.
 3. Watch indexes video, stills, audio, text prompts, subtitles, JSON/YAML/TOML metadata, Blender scenes, and common 3D interchange files.
-4. Files with a leading shot number or `shot_####` name are grouped into shots and versions. A parent folder matching a configured plan slug makes that shot eligible for LTX regeneration.
+4. Files with a leading shot number or `shot_####` name are grouped into shots and versions. A parent folder matching either the active plan or a scene reported by the compatible Studio source runner makes that shot eligible for LTX regeneration. This keeps completed/assembled scenes available for later one-shot corrections without putting the whole scene back into the album queue.
 5. Select any number of mapped shots, enter one correction note, and add them to the persistent regeneration queue. Pause/resume applies to this queue between shots; it never interrupts a shot already running.
 6. Upload reference/context files in the browser, select them in the inspector, and attach them to one or more shots.
 7. Mark reviewed shots accepted or return them to review without deleting any media.
 
 Project state lives in ignored `projects.state.json`; managed copies and uploads live under ignored `.ltx-watch-projects`. Reference imports store paths only and never move source files. The bridge serves previews and Explorer actions only after validating paths against registered project roots.
+
+Source-runner inspection returns scene names, slugs, and shot numbers only. It does not queue work, start ComfyUI, read prompt text, or make an assembled scene part of the unattended Studio queue. A regeneration starts only after the user explicitly submits a mapped shot from Projects and the normal worker/ComfyUI safety locks are clear.
 
 ### Blender production backbone
 

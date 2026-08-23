@@ -94,6 +94,7 @@ Preserve these invariants:
 - Upload relative paths reject traversal and reserved Windows filename characters; chunks must match the expected offset and declared size.
 - Keep the shot library batched and mount video/image previews only near the viewport; large projects may contain hundreds of local videos.
 - A project regeneration starts only when it was explicitly queued, the normal worker is absent, ComfyUI is offline, and no Studio job is active.
+- Source-runner plan inspection is metadata-only: it may expose completed scene slugs and shot numbers for explicit Project regeneration, but it must never prepare inputs, launch ComfyUI, initialize the GPU, expose prompts/paths, or add completed scenes to the unattended Studio queue.
 - Context and Blender-backbone relationships are metadata. Do not send files or prompts to a paid provider without a separate provider adapter and explicit user action.
 - Treat `.blend` as a master production asset. A future Blender render adapter must create backups/versioned outputs, constrain scripts and paths, and never overwrite the master scene silently.
 

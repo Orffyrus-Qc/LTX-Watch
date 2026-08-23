@@ -203,12 +203,13 @@ If the new runner does not expose a stable PID, disable pause/resume (`canContro
 Studio generation is separate from native pause/resume. Preserve these invariants:
 
 1. `studioSourceRunner` resolves inside `comfyRoot` and exposes the documented adapter callables.
-2. The standard worker PID list is empty and the configured ComfyUI port is offline before launch.
-3. The single-shot adapter acquires the upstream port lock and generates exactly one validated scene/shot.
-4. Correction text is limited, stored only in an ignored job file, and never included in process arguments or logs.
-5. A rejected/current output is moved to the Studio attempt archive before regeneration; it is never deleted.
-6. Acceptance requires a playable current output and is the only action that advances the shot pointer.
-7. Queue promotion updates only the Studio overlay and never mutates a running supervisor plan.
+2. Source inspection returns only scene/slug/shot metadata and never calls input preparation, generation, ComfyUI, or GPU APIs. Completed-source metadata may supplement Project mapping but must not silently add scenes to the unattended Studio queue.
+3. The standard worker PID list is empty and the configured ComfyUI port is offline before launch.
+4. The single-shot adapter acquires the upstream port lock and generates exactly one validated scene/shot.
+5. Correction text is limited, stored only in an ignored job file, and never included in process arguments or logs.
+6. A rejected/current output is moved to the Studio attempt archive before regeneration; it is never deleted.
+7. Acceptance requires a playable current output and is the only action that advances the shot pointer.
+8. Queue promotion updates only the Studio overlay and never mutates a running supervisor plan.
 
 Run `npm run test:studio` with a fixture Python interpreter. Real `/api/studio` generation requires explicit user direction and an idle GPU.
 
