@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { createReadStream, existsSync } from 'node:fs';
-import { access, mkdir, open, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
+import { access, appendFile, copyFile, mkdir, open, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { execFile, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { homedir, uptime, userInfo } from 'node:os';
@@ -16,6 +16,20 @@ import {
   parseShotRange,
   sceneKey,
 } from './studio-core.mjs';
+import { buildEnvironmentAudit } from './lib/environment-audit.mjs';
+import { installComfyUiBlender, normalizeLoopbackComfyUrl } from './lib/comfyui-blender-setup.mjs';
+import { installComfyUiManager } from './lib/comfyui-manager-setup.mjs';
+import {
+  PROJECT_FILE_LIMIT,
+  buildProjectShots,
+  classifyProjectAsset,
+  createProjectsRecord,
+  enqueueProjectShots,
+  inferShotIdentity,
+  normalizeProjectsRecord,
+  projectAssetId,
+  safeUploadRelativePath,
+} from './project-core.mjs';
 
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = path.join(APP_ROOT, 'local.config.json');
@@ -24,12 +38,24 @@ const ORCHESTRATOR_SCRIPT_PATH = path.join(APP_ROOT, 'scripts', 'process-orchest
 const STUDIO_STATE_PATH = path.join(APP_ROOT, 'studio.state.json');
 const STUDIO_RUNTIME_ROOT = path.join(APP_ROOT, '.ltx-watch-studio');
 const STUDIO_RUNNER_PATH = path.join(APP_ROOT, 'scripts', 'ltx-studio-runner.py');
+const PROJECTS_STATE_PATH = path.join(APP_ROOT, 'projects.state.json');
+const PROJECTS_RUNTIME_ROOT = path.join(APP_ROOT, '.ltx-watch-projects');
+const PROJECT_UPLOAD_CHUNK_LIMIT = 4 * 1024 * 1024;
+const COMFY_BLENDER_SCRIPT_PATH = path.join(APP_ROOT, 'scripts', 'install-comfyui-blender.ps1');
+const COMFY_MANAGER_SCRIPT_PATH = path.join(APP_ROOT, 'scripts', 'install-comfyui-manager.ps1');
+const MAINTENANCE_ROOT = path.join(process.env.LOCALAPPDATA || APP_ROOT, 'LTX Watch', 'maintenance');
+const COMFY_BLENDER_RECEIPT_PATH = path.join(MAINTENANCE_ROOT, 'comfyui-blender.json');
+const MAINTENANCE_BACKUP_ROOT = path.join(MAINTENANCE_ROOT, 'backups');
 const PORT = Number(process.env.LTX_WATCH_API_PORT || 4311);
 const CONTROL_TOKEN = randomBytes(24).toString('hex');
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.webm', '.mov', '.mkv']);
 const probeCache = new Map();
+let environmentCache = { key: '', expiresAt: 0, value: null, promise: null };
+let maintenanceState = { status: 'idle', action: null, stage: null, startedAt: null, completedAt: null, result: null };
 let recoveryInFlight = false;
 let studioMutationInFlight = false;
+let projectMutationInFlight = false;
+const projectUploads = new Map();
 
 function defaultConfig(comfyRoot) {
   return {
@@ -103,7 +129,7 @@ function setCors(req, res) {
   if (!origin || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin || '*');
   }
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-LTX-Control-Token');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-LTX-Control-Token, X-LTX-Upload-Offset');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
 }
 
@@ -116,6 +142,17 @@ async function readBody(req) {
     chunks.push(chunk);
   }
   return chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {};
+}
+
+async function readBinaryBody(req) {
+  const chunks = [];
+  let length = 0;
+  for await (const chunk of req) {
+    length += chunk.length;
+    if (length > PROJECT_UPLOAD_CHUNK_LIMIT) throw new Error('Upload chunk is too large.');
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
 }
 
 async function readTail(filePath, bytes = 2_000_000) {
@@ -753,6 +790,66 @@ async function archiveStudioOutput(config, item, shot, scene) {
   return destination;
 }
 
+async function startStudioJob({ config, record, item, scene, shot, correction, metadata = {} }) {
+  const launch = resolveStudioPlan(config);
+  if (!launch) throw new Error('Studio needs a compatible source runner and ComfyUI Python environment.');
+  await archiveStudioOutput(config, item, shot, scene);
+
+  const id = randomBytes(12).toString('hex');
+  const jobsDirectory = path.join(STUDIO_RUNTIME_ROOT, 'jobs');
+  await mkdir(jobsDirectory, { recursive: true });
+  const jobPath = path.join(jobsDirectory, `${id}.json`);
+  const resultPath = path.join(jobsDirectory, `${id}.result.json`);
+  const startedAt = new Date().toISOString();
+  await writeFile(jobPath, `${JSON.stringify({
+    sourceRunner: launch.sourceRunner,
+    section: item.section,
+    track: item.track,
+    slug: item.slug,
+    shot,
+    correction,
+    port: config.studioPort,
+    cudaDevice: config.studioGpu,
+    resultPath,
+  }, null, 2)}\n`, 'utf8');
+  const attempt = { id, status: 'generating', correction, startedAt, completedAt: null, videoPath: null };
+  scene.attempts[shot] = [...(Array.isArray(scene.attempts[shot]) ? scene.attempts[shot] : []), attempt];
+  scene.currentShot = shot;
+  scene.status = 'generating';
+  scene.updatedAt = startedAt;
+  record.selectedSceneKey = item.sceneKey;
+  record.activeJob = { id, sceneKey: item.sceneKey, shot, pid: null, jobPath, resultPath, startedAt, ...metadata };
+  await writeStudioRecord(record);
+
+  const logHandle = await open(path.join(APP_ROOT, 'studio.log'), 'a');
+  try {
+    const child = spawn(launch.executable, [STUDIO_RUNNER_PATH, '--job', jobPath], {
+      cwd: config.comfyRoot,
+      detached: true,
+      stdio: ['ignore', logHandle.fd, logHandle.fd],
+      windowsHide: true,
+    });
+    await new Promise((resolveSpawn, rejectSpawn) => {
+      child.once('spawn', resolveSpawn);
+      child.once('error', rejectSpawn);
+    });
+    record.activeJob.pid = child.pid;
+    child.unref();
+    await writeStudioRecord(record);
+  } catch (error) {
+    attempt.status = 'failed';
+    attempt.completedAt = new Date().toISOString();
+    attempt.error = error instanceof Error ? error.message : 'Studio runner could not start.';
+    scene.status = 'failed';
+    record.activeJob = null;
+    await writeStudioRecord(record);
+    throw error;
+  } finally {
+    await logHandle.close();
+  }
+  return { id, startedAt };
+}
+
 async function syncStudioJob(record, config) {
   const job = record.activeJob;
   if (!job) return false;
@@ -966,67 +1063,379 @@ async function controlStudio(body) {
     if (action !== 'generate') throw new Error('Unsupported Studio action.');
     if (workerBusy) throw new Error('The album worker is still active. Wait for it to finish before starting Studio.');
     if (comfy.online) throw new Error(`ComfyUI port ${config.studioPort} is active. Studio will not compete for the GPU or port.`);
-    const launch = resolveStudioPlan(config);
-    if (!launch) throw new Error('Studio needs a compatible source runner and ComfyUI Python environment.');
     const correction = cleanCorrection(body?.correction);
-    await archiveStudioOutput(config, item, shot, scene);
-
-    const id = randomBytes(12).toString('hex');
-    const jobsDirectory = path.join(STUDIO_RUNTIME_ROOT, 'jobs');
-    await mkdir(jobsDirectory, { recursive: true });
-    const jobPath = path.join(jobsDirectory, `${id}.json`);
-    const resultPath = path.join(jobsDirectory, `${id}.result.json`);
-    const startedAt = new Date().toISOString();
-    await writeFile(jobPath, `${JSON.stringify({
-      sourceRunner: launch.sourceRunner,
-      section: item.section,
-      track: item.track,
-      slug: item.slug,
-      shot,
-      correction,
-      port: config.studioPort,
-      cudaDevice: config.studioGpu,
-      resultPath,
-    }, null, 2)}\n`, 'utf8');
-    const attempt = { id, status: 'generating', correction, startedAt, completedAt: null, videoPath: null };
-    scene.attempts[shot] = [...(Array.isArray(scene.attempts[shot]) ? scene.attempts[shot] : []), attempt];
-    scene.currentShot = shot;
-    scene.status = 'generating';
-    scene.updatedAt = startedAt;
-    record.selectedSceneKey = item.sceneKey;
-    record.activeJob = { id, sceneKey: item.sceneKey, shot, pid: null, jobPath, resultPath, startedAt };
-    await writeStudioRecord(record);
-
-    const logHandle = await open(path.join(APP_ROOT, 'studio.log'), 'a');
-    try {
-      const child = spawn(launch.executable, [STUDIO_RUNNER_PATH, '--job', jobPath], {
-        cwd: config.comfyRoot,
-        detached: true,
-        stdio: ['ignore', logHandle.fd, logHandle.fd],
-        windowsHide: true,
-      });
-      await new Promise((resolveSpawn, rejectSpawn) => {
-        child.once('spawn', resolveSpawn);
-        child.once('error', rejectSpawn);
-      });
-      record.activeJob.pid = child.pid;
-      child.unref();
-      await writeStudioRecord(record);
-    } catch (error) {
-      attempt.status = 'failed';
-      attempt.completedAt = new Date().toISOString();
-      attempt.error = error instanceof Error ? error.message : 'Studio runner could not start.';
-      scene.status = 'failed';
-      record.activeJob = null;
-      await writeStudioRecord(record);
-      throw error;
-    } finally {
-      await logHandle.close();
-    }
+    await startStudioJob({ config, record, item, scene, shot, correction });
     return buildStudioView(config, status, plan, current, finals, comfy);
   } finally {
     studioMutationInFlight = false;
   }
+}
+
+async function getProjectsRecord() {
+  return normalizeProjectsRecord(await readJson(PROJECTS_STATE_PATH, createProjectsRecord()));
+}
+
+async function writeProjectsRecord(record) {
+  record.updatedAt = new Date().toISOString();
+  await writeFile(PROJECTS_STATE_PATH, `${JSON.stringify(record, null, 2)}\n`, 'utf8');
+}
+
+async function scanProjectRoot(rootPath, relativePrefix = '') {
+  if (!rootPath || !(await exists(rootPath))) return [];
+  const root = path.resolve(rootPath);
+  const assets = [];
+  async function walk(directory, depth) {
+    if (depth > 12 || assets.length >= PROJECT_FILE_LIMIT) return;
+    let entries = [];
+    try { entries = await readdir(directory, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (assets.length >= PROJECT_FILE_LIMIT) break;
+      if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === '.ltx-watch-projects') continue;
+      const fullPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await walk(fullPath, depth + 1);
+        continue;
+      }
+      const classification = classifyProjectAsset(entry.name);
+      if (!classification.supported) continue;
+      try {
+        const info = await stat(fullPath);
+        if (!info.isFile()) continue;
+        const localRelative = path.relative(root, fullPath).replaceAll('\\', '/');
+        const relativePath = [relativePrefix, localRelative].filter(Boolean).join('/');
+        assets.push({
+          id: projectAssetId(fullPath),
+          fullPath,
+          name: entry.name,
+          relativePath,
+          kind: classification.kind,
+          extension: classification.extension,
+          size: info.size,
+          modifiedMs: info.mtimeMs,
+          modifiedAt: new Date(info.mtimeMs).toISOString(),
+          identity: inferShotIdentity(relativePath),
+        });
+      } catch { /* files can move while a project folder is being updated */ }
+    }
+  }
+  await walk(root, 0);
+  return assets;
+}
+
+async function copyProjectAssets(sourceRoot, destinationRoot) {
+  const assets = await scanProjectRoot(sourceRoot);
+  for (const asset of assets) {
+    const destination = path.join(destinationRoot, ...asset.relativePath.split('/'));
+    if (!isInside(destination, [destinationRoot])) throw new Error('A managed project asset resolved outside its project folder.');
+    await mkdir(path.dirname(destination), { recursive: true });
+    await copyFile(asset.fullPath, destination);
+  }
+  return assets.length;
+}
+
+function projectRoots(record) {
+  return Object.values(record.projects || {}).flatMap((project) => [project.rootPath, project.uploadRoot]).filter(Boolean);
+}
+
+async function projectAssets(project, config) {
+  const [sourceAssets, uploadedAssets] = await Promise.all([
+    scanProjectRoot(project.rootPath),
+    project.uploadRoot && path.resolve(project.uploadRoot) !== path.resolve(project.rootPath)
+      ? scanProjectRoot(project.uploadRoot, 'uploads')
+      : Promise.resolve([]),
+  ]);
+  const assets = [...sourceAssets, ...uploadedAssets];
+  const existing = new Set(assets.map((asset) => asset.id));
+  for (const saved of Object.values(project.shots || {})) {
+    for (const attempt of Array.isArray(saved?.attempts) ? saved.attempts : []) {
+      const fullPath = typeof attempt?.outputPath === 'string' ? attempt.outputPath : '';
+      if (!fullPath || existing.has(projectAssetId(fullPath)) || !isInside(fullPath, [config.clipsDirectory, STUDIO_RUNTIME_ROOT])) continue;
+      try {
+        const info = await stat(fullPath);
+        const classification = classifyProjectAsset(fullPath);
+        if (!info.isFile() || !classification.supported) continue;
+        const relativePath = `generated/${path.basename(path.dirname(fullPath))}/${path.basename(fullPath)}`;
+        assets.push({
+          id: projectAssetId(fullPath), fullPath, name: path.basename(fullPath), relativePath,
+          kind: classification.kind, extension: classification.extension, size: info.size,
+          modifiedMs: info.mtimeMs, modifiedAt: new Date(info.mtimeMs).toISOString(), identity: inferShotIdentity(relativePath), generated: true,
+        });
+        existing.add(projectAssetId(fullPath));
+      } catch { /* stale generated attempt */ }
+    }
+  }
+  return assets.sort((left, right) => right.modifiedMs - left.modifiedMs);
+}
+
+function decorateProjectAsset(asset) {
+  const previewable = ['video', 'image', 'audio'].includes(asset.kind);
+  return {
+    ...asset,
+    directory: path.dirname(asset.fullPath),
+    mediaUrl: previewable ? `http://127.0.0.1:${PORT}/project-media/${encodePath(asset.fullPath)}` : null,
+  };
+}
+
+async function buildProjectsView(config, plan, record = null) {
+  const projectsRecord = record || await getProjectsRecord();
+  const summaries = Object.values(projectsRecord.projects).map((project) => ({
+    id: project.id,
+    name: project.name,
+    mode: project.mode,
+    sourcePath: project.sourcePath,
+    queuePaused: project.queuePaused,
+    queued: project.regenerationQueue.filter((item) => item.status === 'queued').length,
+    review: Object.values(project.shots || {}).filter((shot) => shot?.queueState === 'review').length,
+    updatedAt: project.updatedAt,
+  })).sort((left, right) => String(right.updatedAt || '').localeCompare(String(left.updatedAt || '')));
+  const project = projectsRecord.projects[projectsRecord.selectedProjectId] || null;
+  if (!project) return { selectedProjectId: null, projects: summaries, project: null };
+
+  const rawAssets = await projectAssets(project, config);
+  const assets = rawAssets.map(decorateProjectAsset);
+  const shots = buildProjectShots(assets, project.shots, planTracks(plan));
+  const queueByShot = new Map(project.regenerationQueue.filter((item) => ['queued', 'generating', 'review', 'failed'].includes(item.status)).map((item) => [item.shotKey, item]));
+  for (const shot of shots) {
+    const queued = queueByShot.get(shot.shotKey);
+    if (queued) shot.status = queued.status;
+  }
+  const contextAssets = assets.filter((asset) => !asset.identity || ['text', 'data', 'scene3d', 'audio', 'image'].includes(asset.kind));
+  const blenderAssets = assets.filter((asset) => asset.kind === 'scene3d');
+  return {
+    selectedProjectId: projectsRecord.selectedProjectId,
+    projects: summaries,
+    project: {
+      ...project,
+      assets,
+      shots,
+      contextAssets,
+      blenderAssets,
+      blenderBackbone: blenderAssets.find((asset) => asset.id === project.blenderBackboneAssetId) || null,
+      queue: project.regenerationQueue.slice().reverse(),
+      counts: {
+        assets: assets.length,
+        shots: shots.length,
+        mapped: shots.filter((shot) => shot.regeneratable).length,
+        selectedContext: project.contextAssetIds.length,
+        queued: project.regenerationQueue.filter((item) => item.status === 'queued').length,
+        generating: project.regenerationQueue.filter((item) => item.status === 'generating').length,
+        review: project.regenerationQueue.filter((item) => item.status === 'review').length,
+      },
+    },
+  };
+}
+
+async function syncProjectRegeneration(config, status, plan, comfy) {
+  const projectsRecord = await getProjectsRecord();
+  const studioRecord = await getStudioRecord();
+  const activeBeforeSync = studioRecord.activeJob ? { ...studioRecord.activeJob } : null;
+  const studioChanged = await syncStudioJob(studioRecord, config);
+  let projectsChanged = false;
+
+  if (activeBeforeSync?.projectId && activeBeforeSync?.projectQueueId) {
+    const project = projectsRecord.projects[activeBeforeSync.projectId];
+    const queueItem = project?.regenerationQueue.find((item) => item.id === activeBeforeSync.projectQueueId);
+    const attempt = studioRecord.scenes?.[activeBeforeSync.sceneKey]?.attempts?.[activeBeforeSync.shot]?.find((item) => item.id === activeBeforeSync.id);
+    if (queueItem && attempt) {
+      queueItem.status = attempt.status;
+      queueItem.completedAt = attempt.completedAt || null;
+      queueItem.outputPath = attempt.videoPath || null;
+      queueItem.error = attempt.error || null;
+      const saved = project.shots[queueItem.shotKey] && typeof project.shots[queueItem.shotKey] === 'object' ? project.shots[queueItem.shotKey] : {};
+      const savedAttempts = Array.isArray(saved.attempts) ? saved.attempts.filter((item) => item.id !== attempt.id) : [];
+      savedAttempts.push({ id: attempt.id, correction: attempt.correction || '', status: attempt.status, startedAt: attempt.startedAt, completedAt: attempt.completedAt, outputPath: attempt.videoPath || null, error: attempt.error || null });
+      project.shots[queueItem.shotKey] = {
+        ...saved,
+        queueState: attempt.status,
+        currentAssetId: attempt.videoPath ? projectAssetId(attempt.videoPath) : saved.currentAssetId,
+        attempts: savedAttempts,
+      };
+      project.updatedAt = new Date().toISOString();
+      projectsChanged = true;
+    }
+  }
+
+  const activeProjectJob = studioRecord.activeJob?.projectId;
+  if (!activeProjectJob && !studioRecord.activeJob && !studioMutationInFlight) {
+    const project = projectsRecord.projects[projectsRecord.selectedProjectId];
+    const liveWorkers = getWorkerPids(status).filter(processExists);
+    const next = project && !project.queuePaused ? project.regenerationQueue.find((item) => item.status === 'queued') : null;
+    if (project && next && liveWorkers.length === 0 && !comfy.online && resolveStudioPlan(config)) {
+      const planItem = planTracks(plan).find((item) => sceneKey(item) === next.sceneKey);
+      if (!planItem || !parseShotRange(planItem.shots, planItem.count).includes(next.shot)) {
+        next.status = 'failed';
+        next.error = 'The source scene or shot no longer exists in the configured LTX plan.';
+        next.completedAt = new Date().toISOString();
+      } else {
+        const scene = ensureSceneRecord(studioRecord, planItem);
+        next.status = 'generating';
+        next.startedAt = new Date().toISOString();
+        const launched = await startStudioJob({
+          config,
+          record: studioRecord,
+          item: { ...planItem, sceneKey: sceneKey(planItem) },
+          scene,
+          shot: next.shot,
+          correction: next.correction,
+          metadata: { projectId: project.id, projectQueueId: next.id, projectShotKey: next.shotKey },
+        });
+        next.attemptId = launched.id;
+      }
+      project.updatedAt = new Date().toISOString();
+      projectsChanged = true;
+    }
+  }
+
+  if (studioChanged) await writeStudioRecord(studioRecord);
+  if (projectsChanged) await writeProjectsRecord(projectsRecord);
+  return projectsRecord;
+}
+
+async function loadProjectsContext({ sync = false } = {}) {
+  const config = await getConfig();
+  const [status, plan, comfy] = await Promise.all([readJson(config.statusFile, {}), readJson(config.planFile, {}), getComfyQueue(config)]);
+  const record = sync ? await syncProjectRegeneration(config, status, plan, comfy) : await getProjectsRecord();
+  return { config, status, plan, comfy, record };
+}
+
+async function controlProjects(body) {
+  if (projectMutationInFlight) throw new Error('Another project action is still being saved.');
+  projectMutationInFlight = true;
+  try {
+    const { config, plan, record } = await loadProjectsContext();
+    const action = String(body?.action || '');
+
+    if (action === 'import-folder') {
+      const requestedPath = String(body?.path || '').trim();
+      if (!requestedPath) throw new Error('Enter an absolute project folder path.');
+      const sourcePath = path.resolve(requestedPath);
+      if (!path.isAbsolute(sourcePath)) throw new Error('Enter an absolute project folder path.');
+      const info = await stat(sourcePath).catch(() => null);
+      if (!info?.isDirectory()) throw new Error('The project folder does not exist or is not a directory.');
+      const id = `project-${randomBytes(8).toString('hex')}`;
+      const mode = body?.mode === 'managed' ? 'managed' : 'reference';
+      const managedRoot = path.join(PROJECTS_RUNTIME_ROOT, 'projects', id, 'source');
+      const uploadRoot = path.join(PROJECTS_RUNTIME_ROOT, 'projects', id, 'uploads');
+      if (mode === 'managed') {
+        await mkdir(managedRoot, { recursive: true });
+        await copyProjectAssets(sourcePath, managedRoot);
+      }
+      await mkdir(uploadRoot, { recursive: true });
+      const now = new Date().toISOString();
+      record.projects[id] = {
+        id,
+        name: String(body?.name || path.basename(sourcePath) || 'LTX project').trim().slice(0, 120),
+        mode,
+        rootPath: mode === 'managed' ? managedRoot : sourcePath,
+        sourcePath,
+        uploadRoot,
+        blenderBackboneAssetId: null,
+        contextAssetIds: [],
+        shots: {},
+        regenerationQueue: [],
+        queuePaused: false,
+        createdAt: now,
+        updatedAt: now,
+      };
+      record.selectedProjectId = id;
+      await writeProjectsRecord(record);
+      return buildProjectsView(config, plan, record);
+    }
+
+    if (action === 'select-project') {
+      const id = String(body?.projectId || '');
+      if (!record.projects[id]) throw new Error('The selected project does not exist.');
+      record.selectedProjectId = id;
+      await writeProjectsRecord(record);
+      return buildProjectsView(config, plan, record);
+    }
+
+    const project = record.projects[String(body?.projectId || record.selectedProjectId || '')];
+    if (!project) throw new Error('Import or select a project first.');
+    const view = await buildProjectsView(config, plan, record);
+    const shots = view.project?.shots || [];
+    const shotKeys = [...new Set(Array.isArray(body?.shotKeys) ? body.shotKeys.map(String) : [])];
+
+    if (action === 'queue-regeneration') {
+      const correction = cleanCorrection(body?.correction);
+      const added = enqueueProjectShots(project, shots, shotKeys, correction, () => `regen-${randomBytes(8).toString('hex')}`);
+      if (!added.length) throw new Error('No new mapped shots were added. Select mapped shots that are not already queued.');
+    } else if (action === 'attach-context') {
+      const assetIds = [...new Set(Array.isArray(body?.assetIds) ? body.assetIds.map(String) : [])];
+      const validAssets = new Set((view.project?.contextAssets || []).map((asset) => asset.id));
+      const validIds = assetIds.filter((id) => validAssets.has(id));
+      if (!validIds.length) throw new Error('Select one or more valid context assets.');
+      for (const shotKey of shotKeys) {
+        const saved = project.shots[shotKey] && typeof project.shots[shotKey] === 'object' ? project.shots[shotKey] : {};
+        project.shots[shotKey] = { ...saved, contextAssetIds: [...new Set([...(saved.contextAssetIds || []), ...validIds])] };
+      }
+    } else if (action === 'mark-status') {
+      const statusValue = body?.status === 'accepted' ? 'accepted' : 'review';
+      for (const shotKey of shotKeys) {
+        const shot = shots.find((item) => item.shotKey === shotKey);
+        if (!shot) continue;
+        const saved = project.shots[shotKey] && typeof project.shots[shotKey] === 'object' ? project.shots[shotKey] : {};
+        project.shots[shotKey] = { ...saved, queueState: statusValue, acceptedAssetId: statusValue === 'accepted' ? shot.currentAssetId : null };
+      }
+    } else if (action === 'set-blender-backbone') {
+      const assetId = body?.assetId ? String(body.assetId) : null;
+      if (assetId && !(view.project?.blenderAssets || []).some((asset) => asset.id === assetId)) throw new Error('Select a Blender or supported 3D scene asset.');
+      project.blenderBackboneAssetId = assetId;
+    } else if (action === 'set-project-context') {
+      const validAssets = new Set((view.project?.contextAssets || []).map((asset) => asset.id));
+      project.contextAssetIds = [...new Set(Array.isArray(body?.assetIds) ? body.assetIds.map(String).filter((id) => validAssets.has(id)) : [])];
+    } else if (action === 'toggle-queue') {
+      project.queuePaused = Boolean(body?.paused);
+    } else if (action === 'remove-queued') {
+      const queueId = String(body?.queueId || '');
+      project.regenerationQueue = project.regenerationQueue.filter((item) => item.id !== queueId || item.status === 'generating');
+    } else if (action === 'refresh') {
+      return view;
+    } else if (action === 'upload-start') {
+      const relativePath = safeUploadRelativePath(body?.relativePath || body?.fileName);
+      const size = Math.max(0, Math.trunc(Number(body?.size) || 0));
+      if (size > 8 * 1024 * 1024 * 1024) throw new Error('Individual uploads are limited to 8 GB.');
+      const classification = classifyProjectAsset(relativePath);
+      if (!classification.supported) throw new Error(`Unsupported project asset type: ${classification.extension || 'unknown'}`);
+      const uploadId = randomBytes(18).toString('hex');
+      const temporaryRoot = path.join(PROJECTS_RUNTIME_ROOT, 'uploads');
+      await mkdir(temporaryRoot, { recursive: true });
+      const temporaryPath = path.join(temporaryRoot, `${uploadId}.part`);
+      await writeFile(temporaryPath, Buffer.alloc(0));
+      projectUploads.set(uploadId, { uploadId, projectId: project.id, relativePath, size, received: 0, temporaryPath, createdAt: Date.now() });
+      return { upload: { id: uploadId, received: 0, size } };
+    } else if (action === 'upload-finish') {
+      const uploadId = String(body?.uploadId || '');
+      const upload = projectUploads.get(uploadId);
+      if (!upload || upload.projectId !== project.id) throw new Error('The upload session expired or does not belong to this project.');
+      if (upload.received !== upload.size) throw new Error(`Upload is incomplete: received ${upload.received} of ${upload.size} bytes.`);
+      const destination = path.join(project.uploadRoot, ...upload.relativePath.split('/'));
+      if (!isInside(destination, [project.uploadRoot])) throw new Error('The upload destination is outside the project.');
+      await mkdir(path.dirname(destination), { recursive: true });
+      await rename(upload.temporaryPath, destination);
+      projectUploads.delete(uploadId);
+    } else {
+      throw new Error('Unsupported project action.');
+    }
+
+    project.updatedAt = new Date().toISOString();
+    await writeProjectsRecord(record);
+    return buildProjectsView(config, plan, record);
+  } finally {
+    projectMutationInFlight = false;
+  }
+}
+
+async function appendProjectUpload(req, uploadId) {
+  const upload = projectUploads.get(uploadId);
+  if (!upload) throw new Error('The upload session expired. Start the file upload again.');
+  const requestedOffset = Math.max(0, Math.trunc(Number(req.headers['x-ltx-upload-offset']) || 0));
+  if (requestedOffset !== upload.received) throw new Error(`Upload offset mismatch. Expected ${upload.received}.`);
+  const chunk = await readBinaryBody(req);
+  if (upload.received + chunk.length > upload.size) throw new Error('The upload exceeds its declared size.');
+  await appendFile(upload.temporaryPath, chunk);
+  upload.received += chunk.length;
+  return { id: uploadId, received: upload.received, size: upload.size };
 }
 
 async function buildState() {
@@ -1067,6 +1476,7 @@ async function buildState() {
   const workerOnline = Boolean(statusUpdated && now - statusUpdated.getTime() < 180_000 && Object.values(status.workers || {}).some((worker) => typeof worker === 'number' || worker?.alive !== false));
   const today = new Date();
   const todayFinals = finals.filter((file) => { const date = new Date(file.modifiedMs); return date.toDateString() === today.toDateString(); }).length;
+  await syncProjectRegeneration(config, status, plan, comfy);
   const studio = await buildStudioView(config, status, plan, parsed.current, finals, comfy);
   return {
     updatedAt: new Date().toISOString(), connection: { comfy: comfy.online, worker: workerOnline, apiUrl: config.comfyUrl },
@@ -1087,14 +1497,118 @@ async function buildState() {
   };
 }
 
-async function serveMedia(req, res, id, config) {
+function getMaintenanceView() {
+  return {
+    status: maintenanceState.status,
+    action: maintenanceState.action,
+    stage: maintenanceState.stage,
+    startedAt: maintenanceState.startedAt,
+    completedAt: maintenanceState.completedAt,
+    result: maintenanceState.result,
+  };
+}
+
+async function getMaintenanceRender(config) {
+  const [status, comfy] = await Promise.all([readJson(config.statusFile, {}), getComfyQueue(config)]);
+  const statusUpdated = parseDate(status.updated);
+  const workerOnline = Boolean(statusUpdated && Date.now() - statusUpdated.getTime() < 180_000 && getWorkerPids(status).some(processExists));
+  return {
+    active: workerOnline || comfy.running > 0 || comfy.pending > 0,
+    worker: workerOnline,
+    comfyRunning: comfy.running,
+    comfyPending: comfy.pending,
+  };
+}
+
+async function getEnvironmentView(force = false) {
+  const config = await getConfig();
+  const [render, comfyBlenderReceipt] = await Promise.all([getMaintenanceRender(config), readJson(COMFY_BLENDER_RECEIPT_PATH, null)]);
+  const cacheKey = `${config.comfyRoot.toLowerCase()}|${config.comfyUrl.toLowerCase()}|${render.active}|${render.worker}|${render.comfyRunning}|${render.comfyPending}`;
+  const decorate = (value) => ({ ...value, maintenance: getMaintenanceView() });
+  if (!force && environmentCache.value && environmentCache.key === cacheKey && environmentCache.expiresAt > Date.now()) {
+    return decorate(environmentCache.value);
+  }
+  if (!force && environmentCache.promise && environmentCache.key === cacheKey) return decorate(await environmentCache.promise);
+
+  const promise = buildEnvironmentAudit(config, render, { comfyBlenderReceipt }).then((value) => {
+    environmentCache = { key: cacheKey, expiresAt: Date.now() + 90_000, value, promise: null };
+    return value;
+  }).catch((error) => {
+    environmentCache.promise = null;
+    throw error;
+  });
+  environmentCache = { ...environmentCache, key: cacheKey, promise };
+  return decorate(await promise);
+}
+
+async function runEnvironmentMaintenance(body) {
+  const supportedActions = new Set(['install-comfyui-blender', 'install-comfyui-manager']);
+  if (!supportedActions.has(body?.action)) throw new Error('Unsupported environment maintenance action.');
+  if (body?.confirmed !== true) throw new Error('Explicit confirmation is required before changing ComfyUI, Blender, dependencies, or launch settings.');
+  if (maintenanceState.status === 'running') throw new Error('Another environment maintenance action is already running.');
+
+  const config = await getConfig();
+  const render = await getMaintenanceRender(config);
+  if (render.active) throw new Error('Setup is locked while an LTX worker or ComfyUI queue item is active. Wait for the queue to become idle.');
+
+  const startedAt = new Date().toISOString();
+  maintenanceState = { status: 'running', action: body.action, stage: 'Preparing guarded setup', startedAt, completedAt: null, result: null };
+  try {
+    let result;
+    if (body.action === 'install-comfyui-manager') {
+      result = await installComfyUiManager({
+        scriptPath: COMFY_MANAGER_SCRIPT_PATH,
+        comfyRoot: config.comfyRoot,
+        runnerFragment: config.workerCommandFragment,
+        backupRoot: MAINTENANCE_BACKUP_ROOT,
+        onStage: (stage) => { maintenanceState = { ...maintenanceState, stage }; },
+      });
+    } else {
+      result = await installComfyUiBlender({
+        scriptPath: COMFY_BLENDER_SCRIPT_PATH,
+        comfyRoot: config.comfyRoot,
+        comfyUrl: config.comfyUrl,
+        onStage: (stage) => { maintenanceState = { ...maintenanceState, stage }; },
+      });
+      const receipt = {
+        status: 'configured',
+        version: result.version,
+        blenderVersion: result.blenderVersion,
+        serverAddress: normalizeLoopbackComfyUrl(result.serverAddress),
+        configuredAt: new Date().toISOString(),
+      };
+      await mkdir(MAINTENANCE_ROOT, { recursive: true });
+      await writeFile(COMFY_BLENDER_RECEIPT_PATH, `${JSON.stringify(receipt, null, 2)}\n`, 'utf8');
+    }
+    const completedAt = new Date().toISOString();
+    maintenanceState = { ...maintenanceState, status: 'complete', stage: 'Setup complete', completedAt, result };
+    environmentCache = { key: '', expiresAt: 0, value: null, promise: null };
+    return { result, environment: await getEnvironmentView(true) };
+  } catch (error) {
+    maintenanceState = {
+      ...maintenanceState,
+      status: 'failed',
+      stage: 'Setup failed',
+      completedAt: new Date().toISOString(),
+      result: { error: error instanceof Error ? error.message : 'Environment setup failed.' },
+    };
+    throw error;
+  }
+}
+
+async function serveMedia(req, res, id, config, extraRoots = []) {
   let filePath;
   try { filePath = decodePath(id); } catch { return sendJson(res, 400, { error: 'Invalid media id' }); }
-  if (!isInside(filePath, [config.finalsDirectory, config.clipsDirectory, STUDIO_RUNTIME_ROOT])) return sendJson(res, 403, { error: 'Path is outside local media folders' });
+  if (!isInside(filePath, [config.finalsDirectory, config.clipsDirectory, STUDIO_RUNTIME_ROOT, ...extraRoots])) return sendJson(res, 403, { error: 'Path is outside local media folders' });
   let info;
-  try { info = await stat(filePath); } catch { return sendJson(res, 404, { error: 'Video not found' }); }
+  try { info = await stat(filePath); } catch { return sendJson(res, 404, { error: 'Media not found' }); }
+  if (!info.isFile()) return sendJson(res, 404, { error: 'Media not found' });
   const ext = path.extname(filePath).toLowerCase();
-  const types = { '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime', '.mkv': 'video/x-matroska' };
+  const types = {
+    '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime', '.mkv': 'video/x-matroska', '.avi': 'video/x-msvideo',
+    '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.tif': 'image/tiff', '.tiff': 'image/tiff', '.exr': 'image/x-exr',
+    '.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.flac': 'audio/flac', '.m4a': 'audio/mp4', '.ogg': 'audio/ogg',
+  };
   const range = req.headers.range;
   if (range) {
     const [startText, endText] = range.replace(/bytes=/, '').split('-');
@@ -1116,6 +1630,24 @@ const server = http.createServer(async (req, res) => {
   try {
     if (req.method === 'GET' && requestUrl.pathname === '/api/health') return sendJson(res, 200, { ok: true, name: 'LTX Watch local bridge' });
     if (req.method === 'GET' && requestUrl.pathname === '/api/state') return sendJson(res, 200, await buildState());
+    if (req.method === 'GET' && requestUrl.pathname === '/api/projects') {
+      const { config, plan, record } = await loadProjectsContext({ sync: true });
+      return sendJson(res, 200, await buildProjectsView(config, plan, record));
+    }
+    if (req.method === 'POST' && requestUrl.pathname === '/api/projects') {
+      if (req.headers['x-ltx-control-token'] !== CONTROL_TOKEN) return sendJson(res, 403, { error: 'Invalid local control token' });
+      const result = await controlProjects(await readBody(req));
+      return sendJson(res, 200, result.upload ? { ok: true, ...result } : { ok: true, projects: result });
+    }
+    if (req.method === 'POST' && requestUrl.pathname.startsWith('/api/project-upload/')) {
+      if (req.headers['x-ltx-control-token'] !== CONTROL_TOKEN) return sendJson(res, 403, { error: 'Invalid local control token' });
+      return sendJson(res, 200, { ok: true, upload: await appendProjectUpload(req, requestUrl.pathname.slice('/api/project-upload/'.length)) });
+    }
+    if (req.method === 'GET' && requestUrl.pathname === '/api/environment') return sendJson(res, 200, await getEnvironmentView(requestUrl.searchParams.get('refresh') === '1'));
+    if (req.method === 'POST' && requestUrl.pathname === '/api/environment/maintenance') {
+      if (req.headers['x-ltx-control-token'] !== CONTROL_TOKEN) return sendJson(res, 403, { error: 'Invalid local control token' });
+      return sendJson(res, 200, { ok: true, ...await runEnvironmentMaintenance(await readBody(req)) });
+    }
     if (req.method === 'GET' && requestUrl.pathname === '/api/config') return sendJson(res, 200, await getConfig());
     if (req.method === 'POST' && requestUrl.pathname === '/api/control') {
       if (req.headers['x-ltx-control-token'] !== CONTROL_TOKEN) return sendJson(res, 403, { error: 'Invalid local control token' });
@@ -1135,9 +1667,10 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && requestUrl.pathname === '/api/open') {
       const config = await getConfig();
+      const projectsRecord = await getProjectsRecord();
       const body = await readBody(req);
       const target = typeof body.path === 'string' ? body.path : '';
-      if (!target || !isInside(target, [config.comfyRoot, config.finalsDirectory, config.clipsDirectory, STUDIO_RUNTIME_ROOT])) return sendJson(res, 403, { error: 'Path is outside configured folders' });
+      if (!target || !isInside(target, [config.comfyRoot, config.finalsDirectory, config.clipsDirectory, STUDIO_RUNTIME_ROOT, ...projectRoots(projectsRecord)])) return sendJson(res, 403, { error: 'Path is outside configured folders' });
       if (!(await exists(target))) return sendJson(res, 404, { error: 'Path not found' });
       const info = await stat(target);
       const args = info.isDirectory() ? [target] : [`/select,${target}`];
@@ -1146,6 +1679,10 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { ok: true });
     }
     if (req.method === 'GET' && requestUrl.pathname.startsWith('/media/')) return serveMedia(req, res, requestUrl.pathname.slice('/media/'.length), await getConfig());
+    if (req.method === 'GET' && requestUrl.pathname.startsWith('/project-media/')) {
+      const [config, projectsRecord] = await Promise.all([getConfig(), getProjectsRecord()]);
+      return serveMedia(req, res, requestUrl.pathname.slice('/project-media/'.length), config, projectRoots(projectsRecord));
+    }
     return sendJson(res, 404, { error: 'Not found' });
   } catch (error) {
     return sendJson(res, 500, { error: error instanceof Error ? error.message : 'Unexpected local bridge error' });

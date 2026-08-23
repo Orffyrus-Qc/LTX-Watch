@@ -23,11 +23,18 @@ The app runs entirely on your computer. It does not upload prompts, videos, logs
 - One-click **Show in Explorer** actions
 - Windows process-tree pause/resume that preserves the current shot and VRAM
 - Auto-refreshing activity timeline parsed from generator events
+- Read-only Environment Doctor for ComfyUI, LTX models, Python packages, Git revisions, disks, video tools, and NVIDIA GPUs
+- Official installation/update actions plus native SAM 3.1 readiness and guarded GPU-role recommendations
+- Guarded migration from legacy ComfyUI Manager nodes to the current built-in Manager
+- One-click guarded installation and configuration of the official ComfyUI-Blender integration
 - Editable source paths, model label, worker match, and refresh interval
 - Loopback-only local bridge with an ephemeral control token
 - Optional **LTX Watch Studio** shot-by-shot review mode
 - Per-attempt correction notes and preserved regeneration history
 - Selectable Studio scene queue with one-click **Move first** ordering
+- Project Library imports an existing folder by reference or into an app-managed copy
+- Visual multi-shot selection, acceptance state, context attachments, and persistent selective-regeneration queue
+- First-class Blender/3D assets with one designated project backbone scene for shared cameras, blocking, and spatial continuity
 
 ## Requirements
 
@@ -37,6 +44,7 @@ The app runs entirely on your computer. It does not upload prompts, videos, logs
 - A local ComfyUI installation
 - An LTX workflow that writes video files to a local output directory
 - Optional: `ffprobe.exe` in the ComfyUI root for duration and resolution metadata
+- Optional: Blender 4.5 or Blender 5 for the ComfyUI-Blender integration
 
 The history and standard queue features work with ordinary ComfyUI output folders. The richest track/shot progression view uses the optional supervisor files described in [LTX compatibility](docs/LTX_COMPATIBILITY.md).
 
@@ -82,6 +90,8 @@ Then edit `local.config.json`. It is intentionally ignored by Git.
 ## Windows installer
 
 The prebuilt MSI is self-contained: it bundles a production build and a private Node.js runtime, so end users do not need to install Node or npm. It installs per-user under `%LOCALAPPDATA%\Programs\LTX Watch` and creates Desktop and Start Menu shortcuts.
+
+[Download the latest Windows MSI](https://github.com/Orffyrus-Qc/ltx-watch/releases/latest)
 
 To build the installer from source:
 
@@ -156,6 +166,65 @@ Studio refuses to launch a shot when any of these are true:
 
 The Python adapter also acquires the source runner's port lock before starting ComfyUI. Automated tests use a fake runner and never invoke a real model.
 
+## Project Library and Blender backbone
+
+Open **Projects** to turn an output folder or edit folder into a persistent local production workspace:
+
+1. Choose **Import project** and enter an absolute folder path.
+2. Use **Reference in place** to leave files untouched, or **Copy supported assets** to make a managed local working copy.
+3. Watch indexes video, stills, audio, text prompts, subtitles, JSON/YAML/TOML metadata, Blender scenes, and common 3D interchange files.
+4. Files with a leading shot number or `shot_####` name are grouped into shots and versions. A parent folder matching a configured plan slug makes that shot eligible for LTX regeneration.
+5. Select any number of mapped shots, enter one correction note, and add them to the persistent regeneration queue. Pause/resume applies to this queue between shots; it never interrupts a shot already running.
+6. Upload reference/context files in the browser, select them in the inspector, and attach them to one or more shots.
+7. Mark reviewed shots accepted or return them to review without deleting any media.
+
+Project state lives in ignored `projects.state.json`; managed copies and uploads live under ignored `.ltx-watch-projects`. Reference imports store paths only and never move source files. The bridge serves previews and Explorer actions only after validating paths against registered project roots.
+
+### Blender production backbone
+
+`.blend`, USD, FBX, OBJ, and GLTF/GLB files are first-class project assets. Choose one as the **Blender backbone** to record which scene owns the production camera, animation blocking, spatial layout, and continuity. Per-shot 3D files can also be attached as context.
+
+This release establishes the durable asset and shot relationships required for heavy Blender use. It does not yet render camera, depth, normal, or reference passes automatically. A future Blender adapter should consume the stored backbone and per-shot context through a narrow authenticated local endpoint, create versioned renders in a project-owned folder, and never modify the user's master `.blend` without a backup and explicit action.
+
+## Environment & setup
+
+Open **Environment** in the sidebar to run a read-only local scan. The doctor distinguishes between:
+
+- A ComfyUI installation with native LTX support
+- A complete or incomplete LTX 2.5 model pack
+- The optional standalone LTX Desktop application
+- Installed packages that satisfy the current ComfyUI checkout
+- Package changes that would be required by the latest upstream checkout
+- Clean, current, outdated, divergent, or Git-untrusted repositories
+- Primary, secondary-candidate, and auxiliary-only NVIDIA GPUs
+- Native SAM 3.1 nodes and their separately licensed model checkpoint
+- Built-in versus legacy custom-node ComfyUI Manager, its Python package, launch flag, and migration readiness
+- Blender, the Blender add-on, matching ComfyUI custom nodes, saved server configuration, and compatible integration updates
+
+The scan never imports PyTorch or CUDA, launches a workflow, downloads a model, accepts a license, or changes a repository. When a worker or ComfyUI queue item is active or pending, the UI explicitly locks maintenance actions.
+
+Most official actions open verified upstream pages in a new browser tab. Two narrow, explicit maintenance adapters can make local changes.
+
+**ComfyUI Manager → Migrate to built-in** follows the current official Manager installation model:
+
+1. Requires `manager_requirements.txt` and `--enable-manager` support in the installed ComfyUI core.
+2. Uses the Python environment belonging to ComfyUI and preflights the official requirements before installation.
+3. Recognizes only the configured LTX launcher adapter, backs it up, and adds `--enable-manager`.
+4. Verifies that an existing legacy `ComfyUI-Manager` checkout is clean and from the official repository, then archives it outside `custom_nodes`.
+5. Reports the backup paths and requires a later ComfyUI restart; Watch never restarts ComfyUI itself.
+
+**ComfyUI-Blender → Install & configure** automates both required halves of that integration:
+
+1. Detects the newest supported Blender installation. Blender 5 uses the latest ComfyUI-Blender release; Blender 4.5 uses the last compatible 3.3.4 release.
+2. Downloads the official release and matching tagged source from `alexisrolland/ComfyUI-Blender`, verifying the published SHA-256 digest when GitHub supplies one.
+3. Backs up a recognized existing integration, then installs or updates `custom_nodes\ComfyUI-Blender`.
+4. Enables the matching Blender add-on and saves the configured loopback `comfyUrl` as its server address.
+5. Reports whether ComfyUI must be restarted. Watch never restarts it automatically.
+
+Both actions require the confirmation dialog, the ephemeral local control token, a valid ComfyUI root, and an idle worker/queue. Blender setup also requires a closed Blender session. They refuse to overwrite unrecognized folders or Git checkouts with local changes and restore file backups when setup fails. The Manager adapter installs only the official Manager requirement and changes only a recognized launcher assignment; all other external-runner and GPU setup remains guided. Watch still does not silently install ComfyUI, Blender, drivers, model weights, or licensed models.
+
+The update comparison contacts the official GitHub API and official ComfyUI `requirements.txt` endpoint only while the Environment page is scanned. It sends repository commit hashes, not prompts, videos, local paths, machine names, or credentials.
+
 ## How it works
 
 ```mermaid
@@ -220,12 +289,18 @@ The bridge is an implementation detail, but these endpoints define the dashboard
 | --- | --- | --- |
 | `GET` | `/api/health` | Bridge health |
 | `GET` | `/api/state` | Aggregated job, queue, video, GPU, and control state |
+| `GET` | `/api/environment` | Read-only installation, dependency, update, model, tool, disk, and GPU audit |
+| `POST` | `/api/environment/maintenance` | Confirmed, authenticated, idle-only allowlisted Manager or Blender setup action |
 | `GET` | `/api/config` | Effective local configuration |
 | `POST` | `/api/config` | Save local configuration |
 | `POST` | `/api/control` | Pause or resume the verified worker tree |
 | `POST` | `/api/studio` | Select/reorder scenes, generate one shot, or accept the reviewed output |
+| `GET` | `/api/projects` | Scan and return the selected local project, assets, shots, context, and regeneration queue |
+| `POST` | `/api/projects` | Authenticated project import, state, context, upload-session, and selective-regeneration controls |
+| `POST` | `/api/project-upload/:id` | Authenticated chunked local file intake for a project upload session |
 | `POST` | `/api/open` | Open a configured file/folder in Explorer |
 | `GET` | `/media/:id` | Range-enabled local video stream |
+| `GET` | `/project-media/:id` | Range-enabled media stream constrained to registered project roots |
 
 `/api/control` requires the per-session `X-LTX-Control-Token` returned inside `/api/state`. Do not expose the bridge to a network interface.
 
@@ -234,15 +309,23 @@ The bridge is an implementation detail, but these endpoints define the dashboard
 ```text
 app/
   dashboard.tsx              React dashboard and interactions
+  project-workspace.tsx      Project/shot/context/Blender production workspace
   globals.css                Visual system and responsive layout
   layout.tsx                 Page metadata and fonts
+lib/
+  environment-audit.mjs      Read-only ComfyUI/LTX/dependency/GPU diagnostics
+  comfyui-blender-setup.mjs  Guarded ComfyUI-Blender maintenance adapter
+  comfyui-manager-setup.mjs  Guarded built-in Manager migration adapter
 local-server.mjs             Local aggregation, streaming, and control API
 scripts/
   ltx-studio-runner.py       One-shot adapter for a compatible local runner
+  install-comfyui-blender.ps1 Official release install, Blender setup, backup, and rollback
+  install-comfyui-manager.ps1 Official Manager requirements, launcher flag, migration, and rollback
   process-orchestrator.ps1   Windows process-tree suspend/resume
   run-local.mjs              Starts the dashboard and bridge together
   run-studio.mjs             Starts isolated Studio development ports
 studio-core.mjs              Queue and review-state invariants
+project-core.mjs             Project assets, shot mapping, and regeneration-queue invariants
 docs/
   AI_MAINTAINER_GUIDE.md     Safe workflow for coding agents
   LTX_COMPATIBILITY.md       Adapter contract and upgrade checklist
@@ -261,7 +344,9 @@ Validation commands:
 
 ```powershell
 node --check local-server.mjs
+node --check lib/comfyui-blender-setup.mjs
 node --check scripts/run-local.mjs
+npm test
 npm run build
 ```
 
@@ -321,10 +406,13 @@ Place `ffprobe.exe` in the configured ComfyUI root. Playback does not require FF
 
 - The bridge listens only on `127.0.0.1`.
 - Local paths and runtime state are excluded from Git.
+- Project manifests, uploads, managed copies, attached context, and regeneration notes remain in ignored local runtime files.
 - Media IDs are encoded paths, but the bridge validates every decoded path against configured output roots.
 - Explorer requests are restricted to configured local folders.
 - Control requests require an ephemeral token.
 - No telemetry or remote analytics are included.
+- Environment update checks contact only the documented official GitHub endpoints and never upload local media, prompts, logs, paths, or machine identifiers.
+- Official installer/model links open only after a user click; downloads and license acceptance remain outside Watch.
 
 Do not commit `local.config.json`, `.env` files, generated videos, ComfyUI logs, supervisor status files, or `orchestrator.state.json`.
 

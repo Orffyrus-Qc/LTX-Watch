@@ -1,0 +1,370 @@
+'use client';
+/* eslint-disable @next/next/no-img-element */
+
+import {
+  Box,
+  Check,
+  ChevronRight,
+  CircleAlert,
+  FileBox,
+  FileText,
+  Film,
+  FolderInput,
+  FolderOpen,
+  Image as ImageIcon,
+  Layers3,
+  LoaderCircle,
+  Pause,
+  Play,
+  Plus,
+  RefreshCw,
+  Search,
+  Upload,
+  Video,
+  X,
+  Zap,
+} from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { StudioVideo } from './studio-workspace';
+
+type ProjectAsset = {
+  id: string;
+  fullPath: string;
+  directory: string;
+  name: string;
+  relativePath: string;
+  kind: 'video' | 'image' | 'audio' | 'text' | 'data' | 'scene3d' | 'other';
+  extension: string;
+  size: number;
+  modifiedAt: string;
+  mediaUrl: string | null;
+  generated?: boolean;
+};
+
+type ProjectShot = {
+  shotKey: string;
+  shot: string;
+  sceneSlug: string | null;
+  title: string;
+  versions: ProjectAsset[];
+  currentAssetId: string | null;
+  status: string;
+  contextAssetIds: string[];
+  regeneratable: boolean;
+  mappedTrack: string | null;
+  attempts: { id: string; status: string; correction: string; outputPath: string | null }[];
+};
+
+type ProjectQueueItem = {
+  id: string;
+  shotKey: string;
+  track: string;
+  shot: string;
+  correction: string;
+  status: string;
+  queuedAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  error: string | null;
+};
+
+type ProjectSummary = {
+  id: string;
+  name: string;
+  mode: 'reference' | 'managed';
+  sourcePath: string;
+  queued: number;
+  review: number;
+};
+
+export type ProjectsView = {
+  selectedProjectId: string | null;
+  projects: ProjectSummary[];
+  project: null | {
+    id: string;
+    name: string;
+    mode: 'reference' | 'managed';
+    sourcePath: string;
+    rootPath: string;
+    uploadRoot: string;
+    queuePaused: boolean;
+    contextAssetIds: string[];
+    blenderBackboneAssetId: string | null;
+    blenderBackbone: ProjectAsset | null;
+    assets: ProjectAsset[];
+    contextAssets: ProjectAsset[];
+    blenderAssets: ProjectAsset[];
+    shots: ProjectShot[];
+    queue: ProjectQueueItem[];
+    counts: { assets: number; shots: number; mapped: number; selectedContext: number; queued: number; generating: number; review: number };
+  };
+};
+
+type Props = {
+  token?: string;
+  apiBase: string;
+  refreshSeconds?: number;
+  onToast: (message: string) => void;
+  onOpen: (path: string) => Promise<void>;
+  onPlay: (video: StudioVideo) => void;
+};
+
+function displayName(value: string) {
+  return value.replace(/_full$/i, '').replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function formatBytes(bytes: number) {
+  if (!bytes) return '0 MB';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  return `${(bytes / 1024 ** index).toFixed(index > 2 ? 1 : 0)} ${units[index]}`;
+}
+
+function AssetIcon({ kind, size = 16 }: { kind: ProjectAsset['kind']; size?: number }) {
+  if (kind === 'scene3d') return <Box size={size} />;
+  if (kind === 'video') return <Video size={size} />;
+  if (kind === 'image') return <ImageIcon size={size} />;
+  if (kind === 'text' || kind === 'data') return <FileText size={size} />;
+  return <FileBox size={size} />;
+}
+
+export default function ProjectWorkspace({ token, apiBase, refreshSeconds = 5, onToast, onOpen, onPlay }: Props) {
+  const [view, setView] = useState<ProjectsView | null>(null);
+  const [error, setError] = useState('');
+  const [pending, setPending] = useState('');
+  const [importOpen, setImportOpen] = useState(false);
+  const [folderPath, setFolderPath] = useState('');
+  const [projectName, setProjectName] = useState('');
+  const [importMode, setImportMode] = useState<'reference' | 'managed'>('reference');
+  const [selectedShots, setSelectedShots] = useState<string[]>([]);
+  const [selectedContext, setSelectedContext] = useState<string[]>([]);
+  const [correction, setCorrection] = useState('');
+  const [search, setSearch] = useState('');
+  const [filter, setFilter] = useState<'all' | 'mapped' | 'review' | 'accepted'>('all');
+  const fileInput = useRef<HTMLInputElement>(null);
+
+  const load = useCallback(async (quiet = false) => {
+    if (!quiet) setPending('refresh');
+    try {
+      const response = await fetch(`${apiBase}/api/projects`, { cache: 'no-store' });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'Could not load projects');
+      setView(payload as ProjectsView);
+      setError('');
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Could not load projects');
+    } finally {
+      if (!quiet) setPending('');
+    }
+  }, [apiBase]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(timer);
+  }, [load]);
+  useEffect(() => {
+    const interval = window.setInterval(() => void load(true), Math.max(2, refreshSeconds) * 1000);
+    return () => window.clearInterval(interval);
+  }, [load, refreshSeconds]);
+
+  async function action(name: string, body: Record<string, unknown>, message?: string) {
+    if (!token) throw new Error('Local control token is not ready yet.');
+    setPending(name);
+    try {
+      const response = await fetch(`${apiBase}/api/projects`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-LTX-Control-Token': token },
+        body: JSON.stringify({ action: name, projectId: view?.selectedProjectId, ...body }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'Project action failed');
+      if (payload.projects) {
+        setView(payload.projects as ProjectsView);
+        if (name === 'select-project' || name === 'import-folder') {
+          setSelectedShots([]);
+          setSelectedContext([]);
+        }
+      }
+      setError('');
+      if (message) onToast(message);
+      return payload;
+    } catch (requestError) {
+      const messageText = requestError instanceof Error ? requestError.message : 'Project action failed';
+      setError(messageText);
+      throw requestError;
+    } finally { setPending(''); }
+  }
+
+  async function importFolder() {
+    if (!folderPath.trim()) return;
+    try {
+      await action('import-folder', { path: folderPath, name: projectName, mode: importMode }, 'Project indexed locally');
+      setImportOpen(false);
+      setFolderPath('');
+      setProjectName('');
+    } catch { /* the action surfaces its own error */ }
+  }
+
+  async function uploadFiles(files: FileList | null) {
+    if (!files?.length || !view?.project || !token) return;
+    setPending('upload');
+    try {
+      for (const file of Array.from(files)) {
+        const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
+        const startResponse = await fetch(`${apiBase}/api/projects`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-LTX-Control-Token': token },
+          body: JSON.stringify({ action: 'upload-start', projectId: view.project.id, fileName: file.name, relativePath, size: file.size }),
+        });
+        const started = await startResponse.json();
+        if (!startResponse.ok) throw new Error(started.error || `Could not upload ${file.name}`);
+        const uploadId = started.upload.id as string;
+        const chunkSize = 2 * 1024 * 1024;
+        for (let offset = 0; offset < file.size; offset += chunkSize) {
+          const chunk = file.slice(offset, Math.min(file.size, offset + chunkSize));
+          const chunkResponse = await fetch(`${apiBase}/api/project-upload/${uploadId}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/octet-stream', 'X-LTX-Control-Token': token, 'X-LTX-Upload-Offset': String(offset) },
+            body: chunk,
+          });
+          if (!chunkResponse.ok) throw new Error((await chunkResponse.json()).error || `Upload failed for ${file.name}`);
+        }
+        const finishResponse = await fetch(`${apiBase}/api/projects`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-LTX-Control-Token': token },
+          body: JSON.stringify({ action: 'upload-finish', projectId: view.project.id, uploadId }),
+        });
+        const finished = await finishResponse.json();
+        if (!finishResponse.ok) throw new Error(finished.error || `Could not finish ${file.name}`);
+        if (finished.projects) setView(finished.projects as ProjectsView);
+      }
+      onToast(`${files.length} context file${files.length === 1 ? '' : 's'} added`);
+      setError('');
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'File upload failed');
+    } finally {
+      setPending('');
+      if (fileInput.current) fileInput.current.value = '';
+    }
+  }
+
+  const project = view?.project;
+  const filteredShots = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    return (project?.shots || []).filter((shot) => {
+      if (filter === 'mapped' && !shot.regeneratable) return false;
+      if (filter === 'review' && !['review', 'generating', 'queued', 'failed'].includes(shot.status)) return false;
+      if (filter === 'accepted' && shot.status !== 'accepted') return false;
+      return !term || `${shot.title} ${shot.shotKey} ${shot.mappedTrack || ''}`.toLowerCase().includes(term);
+    });
+  }, [project?.shots, search, filter]);
+  const selectedMapped = selectedShots.filter((key) => project?.shots.find((shot) => shot.shotKey === key)?.regeneratable);
+
+  function toggleShot(shotKey: string) {
+    setSelectedShots((current) => current.includes(shotKey) ? current.filter((key) => key !== shotKey) : [...current, shotKey]);
+  }
+
+  function playAsset(asset: ProjectAsset, title: string) {
+    if (asset.kind !== 'video' || !asset.mediaUrl) return;
+    onPlay({ id: asset.id, title, filename: asset.name, kind: 'clip', size: asset.size, modifiedAt: asset.modifiedAt, mediaUrl: asset.mediaUrl, directory: asset.directory });
+  }
+
+  if (!view && !error) return <div className="projects-loading"><LoaderCircle className="spinning" /><b>Indexing project workspace…</b></div>;
+
+  return <div className="projects-workspace">
+    <section className="projects-heading">
+      <div><p className="kicker">PROJECT & ASSET CONTROL</p><h2>Build the complete edit.</h2><p>Index scenes, review every shot, attach production context, and send only selected shots back through LTX.</p></div>
+      <div className="projects-heading-actions">
+        <button className="secondary-button" onClick={() => void load()} disabled={pending === 'refresh'}><RefreshCw size={14} className={pending === 'refresh' ? 'spinning' : ''} /> Refresh index</button>
+        <button className="project-primary" onClick={() => setImportOpen(true)}><FolderInput size={15} /> Import project</button>
+      </div>
+    </section>
+
+    {error && <div className="project-error"><CircleAlert size={15} /><span>{error}</span><button onClick={() => setError('')} aria-label="Dismiss error"><X size={14} /></button></div>}
+
+    {importOpen && <section className="project-import">
+      <div className="project-import-head"><div><FolderInput size={19} /><span><b>Import a production folder</b><small>Use an absolute Windows folder path. Reference mode leaves every source file in place.</small></span></div><button onClick={() => setImportOpen(false)} aria-label="Close import"><X size={15} /></button></div>
+      <div className="project-import-grid">
+        <label><span>FOLDER PATH</span><input value={folderPath} onChange={(event) => setFolderPath(event.target.value)} placeholder="C:\\Projects\\My Film\\shots" /></label>
+        <label><span>PROJECT NAME <small>OPTIONAL</small></span><input value={projectName} onChange={(event) => setProjectName(event.target.value)} placeholder="My Film" /></label>
+        <label><span>IMPORT MODE</span><select value={importMode} onChange={(event) => setImportMode(event.target.value as 'reference' | 'managed')}><option value="reference">Reference in place</option><option value="managed">Copy supported assets</option></select></label>
+        <button className="project-primary" disabled={!folderPath.trim() || Boolean(pending)} onClick={importFolder}>{pending === 'import-folder' ? <LoaderCircle size={15} className="spinning" /> : <FolderInput size={15} />} Index folder</button>
+      </div>
+    </section>}
+
+    {!project ? <section className="project-empty">
+      <Layers3 size={30} /><p className="kicker">NO PROJECT INDEXED</p><h2>Start with the folder that contains your edit.</h2><p>LTX Watch recognizes generated video, stills, prompts, subtitles, audio, JSON/YAML metadata, Blender scenes, and common interchange formats.</p><button className="project-primary" onClick={() => setImportOpen(true)}><Plus size={15} /> Import first project</button>
+    </section> : <>
+      <section className="project-switcher">
+        <div className="project-tabs">
+          {view?.projects.map((item) => <button key={item.id} className={item.id === view.selectedProjectId ? 'selected' : ''} onClick={() => void action('select-project', { projectId: item.id })}><span>{item.name}</span><small>{item.queued ? `${item.queued} queued` : item.mode}</small></button>)}
+        </div>
+        <button className="project-path" onClick={() => void onOpen(project.rootPath)} title={project.rootPath}><FolderOpen size={14} /><span>{project.rootPath}</span></button>
+      </section>
+
+      <section className="project-stats">
+        <div><small>INDEXED ASSETS</small><b>{project.counts.assets}</b></div><div><small>DISCOVERED SHOTS</small><b>{project.counts.shots}</b></div><div><small>LTX MAPPED</small><b>{project.counts.mapped}</b></div><div><small>REGEN QUEUE</small><b>{project.counts.queued + project.counts.generating}</b></div>
+      </section>
+
+      <section className="project-layout">
+        <div className="project-library">
+          <div className="project-tools">
+            <label className="search-box"><Search size={14} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search shots" /></label>
+            <div className="filter-tabs">{(['all', 'mapped', 'review', 'accepted'] as const).map((value) => <button key={value} className={filter === value ? 'selected' : ''} onClick={() => setFilter(value)}>{value}</button>)}</div>
+            <button className="context-upload" onClick={() => fileInput.current?.click()} disabled={pending === 'upload'}>{pending === 'upload' ? <LoaderCircle size={14} className="spinning" /> : <Upload size={14} />} Add files</button>
+            <input ref={fileInput} type="file" multiple hidden onChange={(event) => void uploadFiles(event.target.files)} />
+          </div>
+          <div className="project-select-row"><label><input type="checkbox" checked={filteredShots.length > 0 && filteredShots.every((shot) => selectedShots.includes(shot.shotKey))} onChange={(event) => setSelectedShots(event.target.checked ? [...new Set([...selectedShots, ...filteredShots.map((shot) => shot.shotKey)])] : selectedShots.filter((key) => !filteredShots.some((shot) => shot.shotKey === key)))} /> Select visible</label><span>{selectedShots.length} selected · {selectedMapped.length} ready for LTX</span></div>
+
+          <div className="project-shot-grid">
+            {filteredShots.map((shot) => {
+              const asset = shot.versions.find((item) => item.id === shot.currentAssetId) || shot.versions[0];
+              return <article className={`project-shot-card ${selectedShots.includes(shot.shotKey) ? 'selected' : ''}`} key={shot.shotKey}>
+                <button className="project-shot-select" onClick={() => toggleShot(shot.shotKey)} aria-label={`Select ${shot.title}`}><span>{selectedShots.includes(shot.shotKey) ? <Check size={12} /> : null}</span></button>
+                <button className="project-preview" onClick={() => asset && (asset.kind === 'video' ? playAsset(asset, shot.title) : toggleShot(shot.shotKey))}>
+                  {asset?.kind === 'video' && asset.mediaUrl ? <video src={`${asset.mediaUrl}#t=0.1`} muted playsInline preload="metadata" /> : asset?.kind === 'image' && asset.mediaUrl ? <img src={asset.mediaUrl} alt="" /> : <span className="project-file-preview"><AssetIcon kind={asset?.kind || 'other'} size={28} /></span>}
+                  {asset?.kind === 'video' && <span className="project-play"><Play size={16} fill="currentColor" /></span>}
+                  <span className={`project-status ${shot.status}`}>{shot.status}</span>
+                </button>
+                <div className="project-shot-copy"><div><h3>{shot.title}</h3><span>{shot.regeneratable ? <><Zap size={11} /> LTX MAPPED</> : 'REFERENCE ONLY'}</span></div><p>{asset?.name || 'No current asset'}</p><div><small>{shot.versions.length} version{shot.versions.length === 1 ? '' : 's'} · {shot.contextAssetIds.length} context</small>{asset && <button onClick={() => void onOpen(asset.fullPath)} title="Show in Explorer"><FolderOpen size={14} /></button>}</div></div>
+              </article>;
+            })}
+          </div>
+          {!filteredShots.length && <div className="project-empty-small"><Film size={24} /><b>No shots match this view</b><span>Shot files are detected by a leading number or “shot_####” in the filename.</span></div>}
+        </div>
+
+        <aside className="project-inspector">
+          <section className="project-panel project-bulk">
+            <div className="project-panel-head"><span><Zap size={14} /> SELECTIVE REGENERATION</span><b>{selectedMapped.length}</b></div>
+            <textarea value={correction} onChange={(event) => setCorrection(event.target.value)} maxLength={2000} placeholder="Describe the correction once for all selected shots: keep the same camera move, reduce motion, preserve character silhouette…" />
+            <button className="project-primary wide" disabled={!selectedMapped.length || Boolean(pending)} onClick={() => void action('queue-regeneration', { shotKeys: selectedMapped, correction }, `${selectedMapped.length} shot${selectedMapped.length === 1 ? '' : 's'} queued for regeneration`).then(() => { setSelectedShots([]); setCorrection(''); }).catch(() => undefined)}>{pending === 'queue-regeneration' ? <LoaderCircle size={14} className="spinning" /> : <Zap size={14} />} Queue selected shots</button>
+            <div className="bulk-secondary"><button disabled={!selectedShots.length || Boolean(pending)} onClick={() => void action('mark-status', { shotKeys: selectedShots, status: 'accepted' }, 'Selected shots accepted').catch(() => undefined)}><Check size={13} /> Accept</button><button disabled={!selectedShots.length || Boolean(pending)} onClick={() => void action('mark-status', { shotKeys: selectedShots, status: 'review' }, 'Selected shots returned to review').catch(() => undefined)}><RefreshCw size={13} /> Review</button></div>
+          </section>
+
+          <section className="project-panel blender-panel">
+            <div className="project-panel-head"><span><Box size={14} /> BLENDER BACKBONE</span><b>{project.blenderAssets.length}</b></div>
+            {project.blenderAssets.length ? <><select value={project.blenderBackboneAssetId || ''} onChange={(event) => void action('set-blender-backbone', { assetId: event.target.value || null }, event.target.value ? 'Blender backbone assigned' : 'Blender backbone cleared').catch(() => undefined)}><option value="">No master scene</option>{project.blenderAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.relativePath}</option>)}</select>{project.blenderBackbone && <button className="backbone-file" onClick={() => void onOpen(project.blenderBackbone!.fullPath)}><Box size={15} /><span><b>{project.blenderBackbone.name}</b><small>Master camera & blocking scene</small></span><ChevronRight size={14} /></button>}</> : <div className="panel-empty"><Box size={20} /><span>Upload or index a <code>.blend</code>, USD, FBX, GLTF, or OBJ file to establish the shared 3D scene.</span></div>}
+            <p className="panel-note">The project keeps this scene and per-shot 3D context attached. The Blender render-pass adapter is the next production layer; current LTX regeneration uses the mapped source scene and correction.</p>
+          </section>
+
+          <section className="project-panel">
+            <div className="project-panel-head"><span><Layers3 size={14} /> CONTEXT ASSETS</span><b>{project.contextAssets.length}</b></div>
+            <div className="context-list">
+              {project.contextAssets.slice(0, 60).map((asset) => <label key={asset.id}><input type="checkbox" checked={selectedContext.includes(asset.id)} onChange={(event) => setSelectedContext((current) => event.target.checked ? [...current, asset.id] : current.filter((id) => id !== asset.id))} /><AssetIcon kind={asset.kind} size={13} /><span><b>{asset.name}</b><small>{asset.kind} · {formatBytes(asset.size)}</small></span></label>)}
+              {!project.contextAssets.length && <div className="panel-empty"><FileBox size={20} /><span>Add prompts, reference images, audio, metadata, or 3D files.</span></div>}
+            </div>
+            <button className="inspector-action" disabled={!selectedShots.length || !selectedContext.length || Boolean(pending)} onClick={() => void action('attach-context', { shotKeys: selectedShots, assetIds: selectedContext }, 'Context attached to selected shots').then(() => setSelectedContext([])).catch(() => undefined)}><Layers3 size={13} /> Attach to {selectedShots.length || 0} selected</button>
+          </section>
+
+          <section className="project-panel queue-panel">
+            <div className="project-panel-head"><span><Film size={14} /> REGENERATION QUEUE</span><button onClick={() => void action('toggle-queue', { paused: !project.queuePaused }, project.queuePaused ? 'Project queue resumed' : 'Project queue paused').catch(() => undefined)}>{project.queuePaused ? <><Play size={12} /> Resume</> : <><Pause size={12} /> Pause</>}</button></div>
+            <div className="project-queue-list">
+              {project.queue.slice(0, 12).map((item) => <div className={`project-queue-item ${item.status}`} key={item.id}><span>{item.status === 'generating' ? <LoaderCircle size={13} className="spinning" /> : item.status === 'review' ? <Check size={13} /> : item.status === 'failed' ? <CircleAlert size={13} /> : <Film size={13} />}</span><div><b>{displayName(item.track)} · {item.shot}</b><small>{item.error || item.correction || item.status}</small></div>{item.status === 'queued' && <button onClick={() => void action('remove-queued', { queueId: item.id }).catch(() => undefined)} aria-label="Remove queued shot"><X size={12} /></button>}</div>)}
+              {!project.queue.length && <div className="panel-empty"><Film size={20} /><span>No selective regenerations queued.</span></div>}
+            </div>
+          </section>
+        </aside>
+      </section>
+    </>}
+  </div>;
+}

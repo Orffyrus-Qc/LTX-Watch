@@ -35,6 +35,8 @@ orchestrator.state.json
 .ltx-watch-studio/
 studio.state.json
 studio.log
+projects.state.json
+.ltx-watch-projects/
 
 # deployment and generated files
 .vercel

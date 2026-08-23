@@ -18,8 +18,9 @@ Before changing compatibility behavior, read these files in order:
 2. `docs/LTX_COMPATIBILITY.md`
 3. `docs/AI_MAINTAINER_GUIDE.md`
 4. `local-server.mjs`
-5. `app/dashboard.tsx`
-6. `scripts/process-orchestrator.ps1`
+5. `lib/environment-audit.mjs`
+6. `app/dashboard.tsx`
+7. `scripts/process-orchestrator.ps1`
 
 Use official upstream sources when investigating LTX or ComfyUI changes:
 
@@ -34,14 +35,18 @@ Do not rely on blog posts or copied endpoint lists when the upstream source or O
 
 - Never call the real `/api/control` pause/resume action during an automated check.
 - Never call a real `/api/studio` generate action during an automated check. Use the fixture runner under `tests/fixtures`.
+- Never enqueue a mapped shot through `/api/projects` during an automated or live UI check; a queued item may start a real Studio generation when the GPU is idle.
 - Never suspend, interrupt, terminate, restart, or clear a real ComfyUI/LTX job unless the user explicitly asks for that action.
 - Test `process-orchestrator.ps1` only against a temporary process created for the test.
 - Never replace pause/resume with process termination or ComfyUI `/interrupt` without explicit user approval and a documented migration.
 - Keep the local bridge bound to `127.0.0.1`. Do not change it to `0.0.0.0`.
+- Keep `/api/environment` read-only and safe while a real render is active. A live worker or running/pending ComfyUI queue item must lock maintenance guidance.
+- Keep `/api/environment/maintenance` token-protected, confirmation-gated, and limited to allowlisted actions. Revalidate that workers and both running/pending ComfyUI queues are idle immediately before changing files.
 - Preserve the per-session `X-LTX-Control-Token` check.
 - Validate decoded media and Explorer paths against configured roots before access.
 - Keep `local.config.json`, `.env*`, generated media, logs, status files, queue plans, and `orchestrator.state.json` out of Git.
 - Keep `studio.state.json`, `.ltx-watch-studio`, Studio prompt jobs, corrections, and attempt media out of Git.
+- Keep `projects.state.json`, `.ltx-watch-projects`, project uploads, context relationships, private paths, and regeneration notes out of Git.
 - Never commit absolute paths, usernames, tokens, prompts, generated media, or real job IDs from a user's machine.
 - Do not expose the control token in logs, persistent files, URLs, or error messages.
 - Preserve HTTP range support in `/media/:id`; browser playback depends on it.
@@ -77,13 +82,51 @@ Prefer changing one adapter function over changing the dashboard contract.
 
 Studio must refuse generation while the normal worker is alive, the configured ComfyUI port is online, another Studio job is active, or the runner contract cannot be validated. Queue promotion changes only Studio's ignored local ordering overlay; never rewrite a live supervisor plan.
 
+### Project and Blender backbone adapter
+
+`project-core.mjs` owns pure asset classification, shot identity/mapping, manifest normalization, upload-path validation, and selective-regeneration queue invariants. `app/project-workspace.tsx` owns project UI only. `local-server.mjs` owns scanning, chunked intake, registered-root media access, and translation from a project queue item to the guarded Studio adapter.
+
+Preserve these invariants:
+
+- Reference imports never move or rewrite source files. Managed imports copy only allowlisted asset types into `.ltx-watch-projects`.
+- Project media and Explorer paths are validated against registered project/upload roots or existing Studio/Comfy roots.
+- Upload relative paths reject traversal and reserved Windows filename characters; chunks must match the expected offset and declared size.
+- A project regeneration starts only when it was explicitly queued, the normal worker is absent, ComfyUI is offline, and no Studio job is active.
+- Context and Blender-backbone relationships are metadata. Do not send files or prompts to a paid provider without a separate provider adapter and explicit user action.
+- Treat `.blend` as a master production asset. A future Blender render adapter must create backups/versioned outputs, constrain scripts and paths, and never overwrite the master scene silently.
+
+### `lib/environment-audit.mjs`
+
+Owns read-only ComfyUI/LTX installation detection, model filename grouping, Python package checks, upstream revision comparison, disk checks, optional-tool readiness, and NVIDIA GPU role recommendations. It may run metadata commands, but it must never import Torch, initialize CUDA, mutate Git, install packages, download models, accept licenses, change drivers, rewrite an external runner, or launch a workflow. Keep official outbound URLs allowlisted in this module.
+
+### ComfyUI-Blender maintenance adapter
+
+`lib/comfyui-blender-setup.mjs` and `scripts/install-comfyui-blender.ps1` own the one allowlisted automated environment mutation. Preserve these invariants:
+
+- Accept only a valid configured ComfyUI root and loopback HTTP(S) server address.
+- Use only official `alexisrolland/ComfyUI-Blender` GitHub release/tag URLs.
+- Match Blender 5 to the latest release and Blender 4.5 to the last compatible v3.3.4 release.
+- Verify GitHub's published SHA-256 digest when present, refuse unrecognized targets or dirty Git checkouts, and back up existing files before replacement.
+- Require Blender to be closed, enable the add-on through Blender's background preferences API, save `server_address`, and never start a workflow.
+- Roll back changed files when setup fails and never restart ComfyUI automatically.
+
+### ComfyUI Manager maintenance adapter
+
+`lib/comfyui-manager-setup.mjs` and `scripts/install-comfyui-manager.ps1` own the built-in Manager migration action. Preserve these invariants:
+
+- Require current core support through `manager_requirements.txt` and `--enable-manager`.
+- Use only the configured ComfyUI Python environment and the requirement file inside that root.
+- Patch only the recognized launcher assignment, with an external backup made first.
+- Archive the legacy Manager only when it is a clean Git checkout from `Comfy-Org/ComfyUI-Manager` or its historical official `ltdrdata` origin.
+- Never configure wildcard Git trust, overwrite local changes, restart ComfyUI, or invoke the real installer during automated checks.
+
 ### `scripts/process-orchestrator.ps1`
 
 Owns Windows-native process-tree suspension and resumption. It must verify the root command line before controlling it. Suspend roots before descendants; resume descendants before roots. Keep operations idempotent at the HTTP layer so native suspend counts stay balanced.
 
 ### Runtime files
 
-`local.config.json` stores user-local settings. `orchestrator.state.json` stores pause state and timing adjustments. Both are ignored and must remain local.
+`local.config.json` stores user-local settings. `orchestrator.state.json` stores pause state and timing adjustments. `projects.state.json` stores project manifests and `.ltx-watch-projects` stores managed/uploaded assets. All are ignored and must remain local.
 
 Post-reboot recovery is a distinct state, not a native resume. A recovery action must validate the saved shot scope, keep earlier completed shots, archive rather than delete interrupted-shot files, constrain `recoveryScript` to `comfyRoot`, and wait for a fresh live worker PID. Automated checks must use a fixture supervisor and must never start the user's real generation script.
 
@@ -129,10 +172,13 @@ Always run:
 
 ```powershell
 node --check local-server.mjs
+node --check lib/environment-audit.mjs
+node --check lib/comfyui-blender-setup.mjs
 node --check scripts/run-local.mjs
 node --check scripts/run-studio.mjs
 node --check scripts/run-installed.mjs
 node --check scripts/serve-production.mjs
+npm test
 npm run build
 npm run build:msi
 npm run test:studio
@@ -142,6 +188,9 @@ With the local bridge running, validate only non-destructive routes:
 
 - `GET /api/health` returns 200.
 - `GET /api/state` returns the documented top-level fields.
+- `GET /api/environment` returns the documented diagnostic fields and does not change local state.
+- `GET /api/projects` may refresh an explicitly queued project workflow, so ensure the project fixture contains no queued items before validation.
+- An unauthorized `POST /api/environment/maintenance` is rejected with 403. Do not run a real maintenance action as an automated check.
 - An unauthorized `POST /api/control` is rejected with 403.
 - An authenticated invalid control action is rejected with 400.
 - A media range request returns 206 and the requested byte count.
