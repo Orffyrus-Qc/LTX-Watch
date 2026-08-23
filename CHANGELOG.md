@@ -22,6 +22,7 @@ All notable changes to LTX / Watch are documented here.
 
 ### Fixed
 
+- Projects now renders shots in batches and mounts media previews only near the viewport, preventing large libraries from freezing browser scrolling.
 - SAM 3.1 checkpoint verification now works even when the installer process cannot auto-load PowerShell's `Get-FileHash` command.
 - ComfyUI-Blender release verification uses the same module-independent .NET SHA-256 path.
 - ComfyUI-Blender setup receipts now recognize equivalent Blender versions such as `5.2` and `5.2.0`.

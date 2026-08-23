@@ -92,6 +92,7 @@ Preserve these invariants:
 - Reference imports never move or rewrite source files. Managed imports copy only allowlisted asset types into `.ltx-watch-projects`.
 - Project media and Explorer paths are validated against registered project/upload roots or existing Studio/Comfy roots.
 - Upload relative paths reject traversal and reserved Windows filename characters; chunks must match the expected offset and declared size.
+- Keep the shot library batched and mount video/image previews only near the viewport; large projects may contain hundreds of local videos.
 - A project regeneration starts only when it was explicitly queued, the normal worker is absent, ComfyUI is offline, and no Studio job is active.
 - Context and Blender-backbone relationships are metadata. Do not send files or prompts to a paid provider without a separate provider adapter and explicit user action.
 - Treat `.blend` as a master production asset. A future Blender render adapter must create backups/versioned outputs, constrain scripts and paths, and never overwrite the master scene silently.

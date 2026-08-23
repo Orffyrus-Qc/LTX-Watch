@@ -120,12 +120,58 @@ function formatBytes(bytes: number) {
   return `${(bytes / 1024 ** index).toFixed(index > 2 ? 1 : 0)} ${units[index]}`;
 }
 
+const SHOT_BATCH_SIZE = 36;
+
+function projectViewSignature(view: ProjectsView) {
+  const project = view.project;
+  return JSON.stringify({
+    selectedProjectId: view.selectedProjectId,
+    projects: view.projects.map((item) => [item.id, item.name, item.queued, item.review]),
+    project: project ? {
+      id: project.id,
+      queuePaused: project.queuePaused,
+      contextAssetIds: project.contextAssetIds,
+      blenderBackboneAssetId: project.blenderBackboneAssetId,
+      counts: project.counts,
+      shots: project.shots.map((shot) => [shot.shotKey, shot.status, shot.currentAssetId, shot.versions.length, shot.contextAssetIds.length]),
+      queue: project.queue.map((item) => [item.id, item.status, item.completedAt, item.error]),
+    } : null,
+  });
+}
+
 function AssetIcon({ kind, size = 16 }: { kind: ProjectAsset['kind']; size?: number }) {
   if (kind === 'scene3d') return <Box size={size} />;
   if (kind === 'video') return <Video size={size} />;
   if (kind === 'image') return <ImageIcon size={size} />;
   if (kind === 'text' || kind === 'data') return <FileText size={size} />;
   return <FileBox size={size} />;
+}
+
+function LazyProjectPreview({ asset }: { asset?: ProjectAsset }) {
+  const previewRef = useRef<HTMLSpanElement>(null);
+  const [nearViewport, setNearViewport] = useState(false);
+
+  useEffect(() => {
+    const preview = previewRef.current;
+    if (!preview) return;
+    if (!('IntersectionObserver' in window)) {
+      const timer = window.setTimeout(() => setNearViewport(true), 0);
+      return () => window.clearTimeout(timer);
+    }
+    const observer = new IntersectionObserver(([entry]) => {
+      setNearViewport(Boolean(entry?.isIntersecting));
+    }, { rootMargin: '320px 0px' });
+    observer.observe(preview);
+    return () => observer.disconnect();
+  }, []);
+
+  return <span className="project-media-slot" ref={previewRef}>
+    {nearViewport && asset?.kind === 'video' && asset.mediaUrl
+      ? <video src={`${asset.mediaUrl}#t=0.1`} muted playsInline preload="metadata" />
+      : nearViewport && asset?.kind === 'image' && asset.mediaUrl
+        ? <img src={asset.mediaUrl} alt="" loading="lazy" decoding="async" />
+        : <span className="project-file-preview"><AssetIcon kind={asset?.kind || 'other'} size={28} /></span>}
+  </span>;
 }
 
 export default function ProjectWorkspace({ token, apiBase, refreshSeconds = 5, onToast, onOpen, onPlay }: Props) {
@@ -141,7 +187,9 @@ export default function ProjectWorkspace({ token, apiBase, refreshSeconds = 5, o
   const [correction, setCorrection] = useState('');
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<'all' | 'mapped' | 'review' | 'accepted'>('all');
+  const [visibleCount, setVisibleCount] = useState(SHOT_BATCH_SIZE);
   const fileInput = useRef<HTMLInputElement>(null);
+  const viewSignature = useRef('');
 
   const load = useCallback(async (quiet = false) => {
     if (!quiet) setPending('refresh');
@@ -149,7 +197,12 @@ export default function ProjectWorkspace({ token, apiBase, refreshSeconds = 5, o
       const response = await fetch(`${apiBase}/api/projects`, { cache: 'no-store' });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || 'Could not load projects');
-      setView(payload as ProjectsView);
+      const nextView = payload as ProjectsView;
+      const nextSignature = projectViewSignature(nextView);
+      if (!quiet || nextSignature !== viewSignature.current) {
+        viewSignature.current = nextSignature;
+        setView(nextView);
+      }
       setError('');
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Could not load projects');
@@ -179,10 +232,13 @@ export default function ProjectWorkspace({ token, apiBase, refreshSeconds = 5, o
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || 'Project action failed');
       if (payload.projects) {
-        setView(payload.projects as ProjectsView);
+        const nextView = payload.projects as ProjectsView;
+        viewSignature.current = projectViewSignature(nextView);
+        setView(nextView);
         if (name === 'select-project' || name === 'import-folder') {
           setSelectedShots([]);
           setSelectedContext([]);
+          setVisibleCount(SHOT_BATCH_SIZE);
         }
       }
       setError('');
@@ -236,7 +292,11 @@ export default function ProjectWorkspace({ token, apiBase, refreshSeconds = 5, o
         });
         const finished = await finishResponse.json();
         if (!finishResponse.ok) throw new Error(finished.error || `Could not finish ${file.name}`);
-        if (finished.projects) setView(finished.projects as ProjectsView);
+        if (finished.projects) {
+          const nextView = finished.projects as ProjectsView;
+          viewSignature.current = projectViewSignature(nextView);
+          setView(nextView);
+        }
       }
       onToast(`${files.length} context file${files.length === 1 ? '' : 's'} added`);
       setError('');
@@ -258,6 +318,7 @@ export default function ProjectWorkspace({ token, apiBase, refreshSeconds = 5, o
       return !term || `${shot.title} ${shot.shotKey} ${shot.mappedTrack || ''}`.toLowerCase().includes(term);
     });
   }, [project?.shots, search, filter]);
+  const visibleShots = useMemo(() => filteredShots.slice(0, visibleCount), [filteredShots, visibleCount]);
   const selectedMapped = selectedShots.filter((key) => project?.shots.find((shot) => shot.shotKey === key)?.regeneratable);
 
   function toggleShot(shotKey: string) {
@@ -297,7 +358,7 @@ export default function ProjectWorkspace({ token, apiBase, refreshSeconds = 5, o
     </section> : <>
       <section className="project-switcher">
         <div className="project-tabs">
-          {view?.projects.map((item) => <button key={item.id} className={item.id === view.selectedProjectId ? 'selected' : ''} onClick={() => void action('select-project', { projectId: item.id })}><span>{item.name}</span><small>{item.queued ? `${item.queued} queued` : item.mode}</small></button>)}
+          {view?.projects.map((item) => <button key={item.id} className={item.id === view.selectedProjectId ? 'selected' : ''} onClick={() => { setVisibleCount(SHOT_BATCH_SIZE); void action('select-project', { projectId: item.id }); }}><span>{item.name}</span><small>{item.queued ? `${item.queued} queued` : item.mode}</small></button>)}
         </div>
         <button className="project-path" onClick={() => void onOpen(project.rootPath)} title={project.rootPath}><FolderOpen size={14} /><span>{project.rootPath}</span></button>
       </section>
@@ -309,20 +370,20 @@ export default function ProjectWorkspace({ token, apiBase, refreshSeconds = 5, o
       <section className="project-layout">
         <div className="project-library">
           <div className="project-tools">
-            <label className="search-box"><Search size={14} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search shots" /></label>
-            <div className="filter-tabs">{(['all', 'mapped', 'review', 'accepted'] as const).map((value) => <button key={value} className={filter === value ? 'selected' : ''} onClick={() => setFilter(value)}>{value}</button>)}</div>
+            <label className="search-box"><Search size={14} /><input value={search} onChange={(event) => { setVisibleCount(SHOT_BATCH_SIZE); setSearch(event.target.value); }} placeholder="Search shots" /></label>
+            <div className="filter-tabs">{(['all', 'mapped', 'review', 'accepted'] as const).map((value) => <button key={value} className={filter === value ? 'selected' : ''} onClick={() => { setVisibleCount(SHOT_BATCH_SIZE); setFilter(value); }}>{value}</button>)}</div>
             <button className="context-upload" onClick={() => fileInput.current?.click()} disabled={pending === 'upload'}>{pending === 'upload' ? <LoaderCircle size={14} className="spinning" /> : <Upload size={14} />} Add files</button>
             <input ref={fileInput} type="file" multiple hidden onChange={(event) => void uploadFiles(event.target.files)} />
           </div>
-          <div className="project-select-row"><label><input type="checkbox" checked={filteredShots.length > 0 && filteredShots.every((shot) => selectedShots.includes(shot.shotKey))} onChange={(event) => setSelectedShots(event.target.checked ? [...new Set([...selectedShots, ...filteredShots.map((shot) => shot.shotKey)])] : selectedShots.filter((key) => !filteredShots.some((shot) => shot.shotKey === key)))} /> Select visible</label><span>{selectedShots.length} selected · {selectedMapped.length} ready for LTX</span></div>
+          <div className="project-select-row"><label><input type="checkbox" checked={visibleShots.length > 0 && visibleShots.every((shot) => selectedShots.includes(shot.shotKey))} onChange={(event) => setSelectedShots(event.target.checked ? [...new Set([...selectedShots, ...visibleShots.map((shot) => shot.shotKey)])] : selectedShots.filter((key) => !visibleShots.some((shot) => shot.shotKey === key)))} /> Select visible</label><span>{selectedShots.length} selected · {selectedMapped.length} ready for LTX</span></div>
 
           <div className="project-shot-grid">
-            {filteredShots.map((shot) => {
+            {visibleShots.map((shot) => {
               const asset = shot.versions.find((item) => item.id === shot.currentAssetId) || shot.versions[0];
               return <article className={`project-shot-card ${selectedShots.includes(shot.shotKey) ? 'selected' : ''}`} key={shot.shotKey}>
                 <button className="project-shot-select" onClick={() => toggleShot(shot.shotKey)} aria-label={`Select ${shot.title}`}><span>{selectedShots.includes(shot.shotKey) ? <Check size={12} /> : null}</span></button>
                 <button className="project-preview" onClick={() => asset && (asset.kind === 'video' ? playAsset(asset, shot.title) : toggleShot(shot.shotKey))}>
-                  {asset?.kind === 'video' && asset.mediaUrl ? <video src={`${asset.mediaUrl}#t=0.1`} muted playsInline preload="metadata" /> : asset?.kind === 'image' && asset.mediaUrl ? <img src={asset.mediaUrl} alt="" /> : <span className="project-file-preview"><AssetIcon kind={asset?.kind || 'other'} size={28} /></span>}
+                  <LazyProjectPreview key={asset?.id || 'empty'} asset={asset} />
                   {asset?.kind === 'video' && <span className="project-play"><Play size={16} fill="currentColor" /></span>}
                   <span className={`project-status ${shot.status}`}>{shot.status}</span>
                 </button>
@@ -330,6 +391,7 @@ export default function ProjectWorkspace({ token, apiBase, refreshSeconds = 5, o
               </article>;
             })}
           </div>
+          {filteredShots.length > 0 && <div className="project-library-progress"><span>Showing {visibleShots.length} of {filteredShots.length} shots</span>{visibleShots.length < filteredShots.length && <button onClick={() => setVisibleCount((count) => Math.min(count + SHOT_BATCH_SIZE, filteredShots.length))}>Load {Math.min(SHOT_BATCH_SIZE, filteredShots.length - visibleShots.length)} more</button>}</div>}
           {!filteredShots.length && <div className="project-empty-small"><Film size={24} /><b>No shots match this view</b><span>Shot files are detected by a leading number or “shot_####” in the filename.</span></div>}
         </div>
 
