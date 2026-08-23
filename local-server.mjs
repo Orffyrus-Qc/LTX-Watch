@@ -18,6 +18,7 @@ import {
 } from './studio-core.mjs';
 import { buildEnvironmentAudit } from './lib/environment-audit.mjs';
 import { installComfyUiBlender, normalizeLoopbackComfyUrl } from './lib/comfyui-blender-setup.mjs';
+import { moveFile } from './lib/move-file.mjs';
 import { installSam3Model } from './lib/sam3-setup.mjs';
 import {
   PROJECT_FILE_LIMIT,
@@ -797,7 +798,7 @@ async function archiveStudioOutput(config, item, shot, scene) {
   const archiveDirectory = path.join(STUDIO_RUNTIME_ROOT, 'attempts', safeStudioSegment(item.section), safeStudioSegment(item.slug), safeStudioSegment(shot), stamp);
   await mkdir(archiveDirectory, { recursive: true });
   const destination = path.join(archiveDirectory, path.basename(output.fullPath));
-  await rename(output.fullPath, destination);
+  await moveFile(output.fullPath, destination);
 
   const attempts = Array.isArray(scene.attempts[shot]) ? scene.attempts[shot] : [];
   const recorded = attempts.find((attempt) => attempt.videoPath === output.fullPath);

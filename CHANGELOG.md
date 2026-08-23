@@ -22,6 +22,7 @@ All notable changes to LTX / Watch are documented here.
 
 ### Fixed
 
+- Shot regeneration can now archive an existing ComfyUI output when the output and LTX Watch history folders are on different Windows drives.
 - Completed source scenes can now be mapped for one-shot project regeneration even after the active remaining-work plan has dropped them.
 - Project correction and review controls now clearly separate queueing a regeneration from approving the current result; reference-only shots show why they have no compatible source mapping.
 - Projects now renders shots in batches and mounts media previews only near the viewport, preventing large libraries from freezing browser scrolling.
