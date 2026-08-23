@@ -47,6 +47,26 @@ function Get-NumericVersion {
   return $null
 }
 
+function Get-Sha256Hash {
+  param([Parameter(Mandatory)][string]$LiteralPath)
+
+  $stream = $null
+  $algorithm = $null
+  try {
+    $stream = [System.IO.File]::Open(
+      $LiteralPath,
+      [System.IO.FileMode]::Open,
+      [System.IO.FileAccess]::Read,
+      [System.IO.FileShare]::Read
+    )
+    $algorithm = [System.Security.Cryptography.SHA256]::Create()
+    return ([System.BitConverter]::ToString($algorithm.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+  } finally {
+    if ($algorithm) { $algorithm.Dispose() }
+    if ($stream) { $stream.Dispose() }
+  }
+}
+
 function Find-Blender {
   $paths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
   foreach ($base in @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:LOCALAPPDATA)) {
@@ -161,7 +181,7 @@ try {
   $digestVerified = $false
   if ([string]$asset.digest -match '^sha256:([a-fA-F0-9]{64})$') {
     $expectedHash = $Matches[1].ToLowerInvariant()
-    $actualHash = (Get-FileHash -LiteralPath $addonArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+    $actualHash = Get-Sha256Hash -LiteralPath $addonArchive
     if ($actualHash -ne $expectedHash) { throw 'The downloaded Blender add-on failed its official SHA-256 verification.' }
     $digestVerified = $true
   }

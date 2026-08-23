@@ -93,3 +93,9 @@ test('SAM 3.1 installer hashes with .NET without relying on Get-FileHash module 
   assert.match(script, /System\.Security\.Cryptography\.SHA256/);
   assert.doesNotMatch(script, /Get-FileHash/);
 });
+
+test('ComfyUI-Blender installer hashes with .NET without relying on Get-FileHash module loading', async () => {
+  const script = await readFile(new URL('../scripts/install-comfyui-blender.ps1', import.meta.url), 'utf8');
+  assert.match(script, /System\.Security\.Cryptography\.SHA256/);
+  assert.doesNotMatch(script, /Get-FileHash/);
+});
