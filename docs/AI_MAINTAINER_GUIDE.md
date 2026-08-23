@@ -141,6 +141,12 @@ When adapting a new worker launcher:
 
 If the new runner does not expose a stable PID, disable pause/resume (`canControl: false`) until a safe adapter exists.
 
+### Restart recovery
+
+A suspended process cannot survive a Windows reboot. Never call native resume on a PID recorded before the current system boot. The bridge must enter `recovery` and require a user action before launching anything.
+
+Recovery is allowed only when the pause record contains a validated `trackScope` and numeric shot ID, `recoveryScript` resolves inside `comfyRoot`, and a known ComfyUI Python environment exists. Archive current-shot videos instead of deleting them, then wait for a fresh status timestamp and live worker PID before reporting success. Test this flow with a fixture recovery script; never launch the real generator during automated validation.
+
 ## Timing behavior while paused
 
 `orchestrator.state.json` tracks accumulated pause duration scoped to the active track and shot. Progress and elapsed time should freeze while paused and exclude prior paused intervals after resume.
@@ -211,4 +217,3 @@ Before pushing publicly:
 4. Confirm `local.config.json` and `orchestrator.state.json` are ignored.
 5. Build from the exact staged source state.
 6. Push the commit and verify the public repository/default branch.
-

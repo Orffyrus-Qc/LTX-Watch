@@ -77,6 +77,8 @@ Owns Windows-native process-tree suspension and resumption. It must verify the r
 
 `local.config.json` stores user-local settings. `orchestrator.state.json` stores pause state and timing adjustments. Both are ignored and must remain local.
 
+Post-reboot recovery is a distinct state, not a native resume. A recovery action must validate the saved shot scope, keep earlier completed shots, archive rather than delete interrupted-shot files, constrain `recoveryScript` to `comfyRoot`, and wait for a fresh live worker PID. Automated checks must use a fixture supervisor and must never start the user's real generation script.
+
 ### Windows installer
 
 `scripts/build-msi.ps1` is the installer source of truth. It runs the production build, stages only runtime files, bundles the current Node.js executable and license, generates WiX source, and builds a per-user MSI with WiX Toolset 6.0.2. `scripts/serve-production.mjs` serves the bundled Vinext output without `node_modules`, while `scripts/run-installed.mjs` coordinates the installed UI and local bridge.

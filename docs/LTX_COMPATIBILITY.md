@@ -191,13 +191,23 @@ This value is intentionally specific. For a new runner, configure a unique scrip
 
 Pause state is persisted in `orchestrator.state.json` with:
 
-- Mode
+- Mode (`running`, `paused`, or `recovery`)
 - Root and affected PIDs
 - Pause/change timestamps
 - Track and shot scopes
 - Accumulated paused milliseconds
 
 This state keeps progress estimates frozen and balances native suspend/resume calls.
+
+If Windows restarts or every recorded paused root PID disappears, the bridge moves the controller into `recovery` instead of trying to resume a stale PID. When the user confirms **Retry interrupted shot**, the bridge:
+
+1. Reads the exact track/shot scope captured when Pause was pressed.
+2. Moves matching current-shot video files into `<ComfyUI>\.ltx-watch-recovery` without deleting them.
+3. Launches the configured `recoveryScript` with the ComfyUI virtual-environment Python.
+4. Waits for a fresh status-file worker PID.
+5. Returns to `running` only after the new worker is alive.
+
+The recovery supervisor must follow skip-if-valid-output semantics so completed earlier shots stay intact and the interrupted shot is generated from frame one. If an upstream runner no longer supports that contract, disable `recoveryScript` until a dedicated adapter is implemented.
 
 ## Dashboard state contract
 
@@ -243,4 +253,3 @@ For each new LTX/ComfyUI release:
 - `https://github.com/Lightricks/ComfyUI-LTXVideo`
 - `https://github.com/Comfy-Org/ComfyUI`
 - `https://github.com/Comfy-Org/ComfyUI/blob/master/openapi.yaml`
-

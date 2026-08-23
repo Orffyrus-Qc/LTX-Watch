@@ -2,6 +2,7 @@
   "displayName": "Creator",
   "modelLabel": "LTX Video 2.5",
   "workerCommandFragment": "run_full_album_auto.py",
+  "recoveryScript": "run_dual_gpu_album.py",
   "comfyRoot": "C:\\ComfyUI",
   "finalsDirectory": "C:\\ComfyUI\\output\\assembled",
   "clipsDirectory": "C:\\ComfyUI\\output\\video",

@@ -56,6 +56,7 @@ type Config = {
   displayName: string;
   modelLabel: string;
   workerCommandFragment: string;
+  recoveryScript: string;
   comfyRoot: string;
   finalsDirectory: string;
   clipsDirectory: string;
@@ -87,17 +88,20 @@ type MonitorState = {
     elapsedSeconds: number;
   };
   control: {
-    state: 'running' | 'paused';
+    state: 'running' | 'paused' | 'recovery';
     canControl: boolean;
     workerPids: number[];
     affectedPids: number[];
     changedAt: string | null;
+    recoveryReason: 'system-restarted' | 'process-ended' | null;
+    recoveryAvailable: boolean;
+    restartedShot: string | null;
     message: string;
     token: string;
   };
   queue: QueueItem[];
   videos: VideoItem[];
-  activity: { type: 'started' | 'queued' | 'complete' | 'final' | 'error' | 'paused' | 'resumed'; time?: string; title: string; detail: string }[];
+  activity: { type: 'started' | 'queued' | 'complete' | 'final' | 'error' | 'paused' | 'resumed' | 'recovery' | 'recovered'; time?: string; title: string; detail: string }[];
   gpus: { device: number; name: string; memoryMb: number; utilization: number; totalMemoryGb: number | null }[];
   stats: { finals: number; clips: number; todayFinals: number; queued: number };
   config: Config;
@@ -136,7 +140,7 @@ function titleFromSlug(value: string) {
 
 function ActivityIcon({ type }: { type: MonitorState['activity'][number]['type'] }) {
   if (type === 'complete' || type === 'final') return <Check size={14} />;
-  if (type === 'error') return <CircleAlert size={14} />;
+  if (type === 'error' || type === 'recovery' || type === 'recovered') return <CircleAlert size={14} />;
   if (type === 'queued') return <TimerReset size={14} />;
   if (type === 'paused') return <Pause size={14} />;
   if (type === 'resumed') return <Play size={14} />;
@@ -173,7 +177,10 @@ export default function Dashboard() {
     }
   }, []);
 
-  useEffect(() => { loadState(); }, [loadState]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => loadState(), 0);
+    return () => window.clearTimeout(timer);
+  }, [loadState]);
   useEffect(() => {
     const interval = window.setInterval(() => loadState(true), (state?.config.refreshSeconds || 5) * 1000);
     return () => window.clearInterval(interval);
@@ -217,7 +224,7 @@ export default function Dashboard() {
 
   async function toggleGenerator() {
     if (!state?.control?.canControl || controlPending) return;
-    const action = state.control.state === 'paused' ? 'resume' : 'pause';
+    const action = state.control.state === 'paused' || state.control.state === 'recovery' ? 'resume' : 'pause';
     setControlPending(true);
     try {
       const response = await fetch(`${API_BASE}/api/control`, {
@@ -227,7 +234,9 @@ export default function Dashboard() {
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || `Could not ${action} the generator`);
-      setToast(action === 'pause' ? 'Generation paused — VRAM is preserved' : 'Generation resumed');
+      setToast(payload.control?.recoveryReason || payload.control?.restartedShot
+        ? payload.control.message
+        : action === 'pause' ? 'Generation paused — VRAM is preserved' : 'Generation resumed');
       await loadState(true);
     } catch (requestError) {
       setToast(requestError instanceof Error ? requestError.message : `Could not ${action} the generator`);
@@ -239,7 +248,8 @@ export default function Dashboard() {
   const elapsedSeconds = current?.elapsedSeconds || 0;
   const mainGpu = state?.gpus[0];
   const live = Boolean(state?.connection.worker || state?.connection.comfy);
-  const isPaused = state?.control?.state === 'paused';
+  const recoveryRequired = state?.control?.state === 'recovery';
+  const isPaused = state?.control?.state === 'paused' || recoveryRequired;
   const greeting = new Date().getHours() < 12 ? 'Good morning' : new Date().getHours() < 18 ? 'Good afternoon' : 'Good evening';
 
   return (
@@ -271,9 +281,9 @@ export default function Dashboard() {
           <div className="header-actions">
             <button className="icon-button" onClick={() => loadState()} aria-label="Refresh data" title="Refresh data"><RefreshCw size={16} className={refreshing ? 'spinning' : ''} /></button>
             <button className="secondary-button" onClick={() => state?.config.finalsDirectory && openInExplorer(state.config.finalsDirectory)}><FolderOpen size={15} /> Open outputs</button>
-            <button className={`control-button ${isPaused ? 'resume' : 'pause'}`} onClick={toggleGenerator} disabled={!state?.control?.canControl || controlPending} title={isPaused ? 'Resume the suspended LTX worker' : 'Suspend the active LTX worker and its ComfyUI subprocesses'}>
+            <button className={`control-button ${isPaused ? 'resume' : 'pause'}`} onClick={toggleGenerator} disabled={!state?.control?.canControl || controlPending} title={recoveryRequired ? 'Restart the interrupted shot from the beginning' : isPaused ? 'Resume the suspended LTX worker' : 'Suspend the active LTX worker and its ComfyUI subprocesses'}>
               {controlPending ? <LoaderCircle size={15} className="spinning" /> : isPaused ? <Play size={15} fill="currentColor" /> : <Pause size={15} fill="currentColor" />}
-              <span>{controlPending ? 'Working…' : isPaused ? 'Resume render' : 'Pause render'}</span>
+              <span>{controlPending ? 'Working…' : recoveryRequired ? 'Retry interrupted shot' : isPaused ? 'Resume render' : 'Pause render'}</span>
             </button>
             <div className={`sync ${error ? 'sync-error' : ''}`}><span className="status-dot" /> {error ? 'BRIDGE OFFLINE' : 'LIVE · AUTO REFRESH'}</div>
           </div>
@@ -283,10 +293,10 @@ export default function Dashboard() {
 
         <section className={`hero ${active ? '' : 'hero-idle'} ${isPaused ? 'hero-paused' : ''}`} id="overview">
           <div className="hero-copy">
-            <div className="job-label"><span className="pulse" /> {isPaused ? 'GENERATION PAUSED' : active ? 'GENERATING NOW' : state?.connection.worker ? 'WORKER TRANSITIONING' : 'NO ACTIVE JOB'} <span>{current ? `SHOT ${Math.min(current.completedShots + 1, current.totalShots)} OF ${current.totalShots}` : 'STANDING BY'}</span></div>
+            <div className="job-label"><span className="pulse" /> {recoveryRequired ? 'SHOT RESTART REQUIRED' : isPaused ? 'GENERATION PAUSED' : active ? 'GENERATING NOW' : state?.connection.worker ? 'WORKER TRANSITIONING' : 'NO ACTIVE JOB'} <span>{current ? `SHOT ${Math.min(current.completedShots + 1, current.totalShots)} OF ${current.totalShots}` : 'STANDING BY'}</span></div>
             <h2>{current ? titleFromSlug(current.slug) : state?.queue[0] ? `Next: ${titleFromSlug(state.queue[0].slug)}` : 'Render queue complete'}</h2>
             <p>{current ? `${current.section.replace(/_/g, ' ')} · ${state?.config.modelLabel || 'LTX Video'} · Worker ${current.worker.toUpperCase()}` : `${state?.config.modelLabel || 'LTX Video'} · Local output monitor`}</p>
-            <div className="progress-row"><span>{isPaused ? 'Paused in place · VRAM remains allocated' : current?.stage || 'Waiting for the next generation event'}</span><strong>{current ? `${Math.round(current.progress)}%` : '—'}</strong></div>
+            <div className="progress-row"><span>{recoveryRequired ? `Resume will retry shot ${current?.currentShot || ''} from the beginning` : isPaused ? 'Paused in place · VRAM remains allocated' : current?.stage || 'Waiting for the next generation event'}</span><strong>{current ? `${Math.round(current.progress)}%` : '—'}</strong></div>
             <div className="progress"><span style={{ width: `${current?.progress || 0}%` }} /></div>
             <div className="metrics">
               <div><Clock3 size={18} /><span><small>ELAPSED</small><b>{current ? formatDuration(elapsedSeconds, true) : '—'}</b></span></div>
@@ -382,7 +392,7 @@ export default function Dashboard() {
           <div className="settings-fields">
             {([
               ['displayName', 'Display name'],
-              ['modelLabel', 'Model label'], ['workerCommandFragment', 'Worker command match'],
+              ['modelLabel', 'Model label'], ['workerCommandFragment', 'Worker command match'], ['recoveryScript', 'Recovery restart script'],
               ['comfyRoot', 'ComfyUI root'], ['finalsDirectory', 'Final videos folder'], ['clipsDirectory', 'Generated clips folder'],
               ['logFile', 'Progress log'], ['statusFile', 'Worker status JSON'], ['planFile', 'Queue plan JSON'], ['comfyUrl', 'ComfyUI address'],
             ] as const).map(([key, label]) => <label key={key}><span>{label}</span><input value={settings[key]} onChange={(event) => setSettings({ ...settings, [key]: event.target.value })} /></label>)}

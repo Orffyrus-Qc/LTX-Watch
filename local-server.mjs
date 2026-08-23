@@ -1,9 +1,9 @@
 import http from 'node:http';
-import { createReadStream } from 'node:fs';
-import { access, open, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { createReadStream, existsSync } from 'node:fs';
+import { access, mkdir, open, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { execFile, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { homedir, userInfo } from 'node:os';
+import { homedir, uptime, userInfo } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -15,12 +15,14 @@ const PORT = Number(process.env.LTX_WATCH_API_PORT || 4311);
 const CONTROL_TOKEN = randomBytes(24).toString('hex');
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.webm', '.mov', '.mkv']);
 const probeCache = new Map();
+let recoveryInFlight = false;
 
 function defaultConfig(comfyRoot) {
   return {
     displayName: process.env.LTX_WATCH_NAME || userInfo().username || 'Creator',
     modelLabel: process.env.LTX_WATCH_MODEL_LABEL || 'LTX Video 2.5',
     workerCommandFragment: 'run_full_album_auto.py',
+    recoveryScript: 'run_dual_gpu_album.py',
     comfyRoot,
     finalsDirectory: path.join(comfyRoot, 'output', 'assembled'),
     clipsDirectory: path.join(comfyRoot, 'output', 'video'),
@@ -58,10 +60,11 @@ async function getConfig() {
 
 function cleanConfig(input) {
   const next = {};
-  for (const key of ['displayName', 'modelLabel', 'workerCommandFragment', 'comfyRoot', 'finalsDirectory', 'clipsDirectory', 'logFile', 'statusFile', 'planFile', 'comfyUrl']) {
+  for (const key of ['displayName', 'modelLabel', 'workerCommandFragment', 'recoveryScript', 'comfyRoot', 'finalsDirectory', 'clipsDirectory', 'logFile', 'statusFile', 'planFile', 'comfyUrl']) {
     if (typeof input[key] === 'string') {
       const value = input[key].trim();
       if (key === 'workerCommandFragment' && value.length < 4) throw new Error('Worker command match must contain at least four characters.');
+      if (key === 'recoveryScript' && value && !/^[a-zA-Z0-9._\\/-]+\.py$/i.test(value)) throw new Error('Recovery script must be a Python file path.');
       next[key] = value;
     }
   }
@@ -316,34 +319,178 @@ async function getComfyQueue(config) {
 
 function getWorkerPids(status) {
   return Object.values(status?.workers || {}).map((worker) => {
+    if (typeof worker === 'object' && worker?.alive === false) return NaN;
     const value = typeof worker === 'number' ? worker : worker?.pid;
     return Number(value);
   }).filter((value) => Number.isInteger(value) && value > 0);
 }
 
+function processExists(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === 'EPERM';
+  }
+}
+
+function getSystemBootTimeMs() {
+  return Date.now() - (uptime() * 1000);
+}
+
+function getStalePauseReason(record) {
+  if (record?.mode !== 'paused') return null;
+  const pausedAtMs = new Date(record.pausedAt || 0).getTime();
+  if (Number.isFinite(pausedAtMs) && pausedAtMs > 0 && pausedAtMs < getSystemBootTimeMs() - 5_000) {
+    return 'system-restarted';
+  }
+  const roots = Array.isArray(record.rootPids) ? record.rootPids.map(Number).filter(Number.isInteger) : [];
+  if (!roots.length || !roots.some(processExists)) return 'process-ended';
+  return null;
+}
+
 async function getOrchestratorRecord() {
-  return await readJson(ORCHESTRATOR_STATE_PATH, {
+  const record = await readJson(ORCHESTRATOR_STATE_PATH, {
     mode: 'running', rootPids: [], affectedPids: [], changedAt: null,
     trackScope: null, trackPausedMs: 0, shotScope: null, shotPausedMs: 0,
   });
+  const recoveryReason = getStalePauseReason(record);
+  if (!recoveryReason) return record;
+
+  const now = new Date();
+  const next = {
+    ...record,
+    mode: 'recovery',
+    rootPids: [],
+    affectedPids: [],
+    changedAt: now.toISOString(),
+    recoveryDetectedAt: now.toISOString(),
+    recoveryReason,
+  };
+  await writeFile(ORCHESTRATOR_STATE_PATH, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+  return next;
 }
 
-function getControlView(record, status) {
-  const workerPids = getWorkerPids(status);
+function resolveRecoveryPlan(config, record) {
+  if (!config?.recoveryScript || !record?.shotScope) return null;
+  const scriptPath = path.resolve(config.comfyRoot, config.recoveryScript);
+  if (!isInside(scriptPath, [config.comfyRoot]) || path.extname(scriptPath).toLowerCase() !== '.py' || !existsSync(scriptPath)) return null;
+  const pythonCandidates = [
+    path.join(config.comfyRoot, 'venv', 'Scripts', 'python.exe'),
+    path.join(config.comfyRoot, '.venv', 'Scripts', 'python.exe'),
+    path.join(config.comfyRoot, 'python_embeded', 'python.exe'),
+    path.join(config.comfyRoot, 'python', 'python.exe'),
+  ];
+  const executable = pythonCandidates.find(existsSync);
+  return executable ? { executable, scriptPath } : null;
+}
+
+function parseShotScope(record) {
+  const [trackSlug, shot] = String(record?.shotScope || '').split('/');
+  if (!/^[a-zA-Z0-9._-]+$/.test(trackSlug || '') || !/^\d{4,}$/.test(shot || '')) return null;
+  return { trackSlug, shot };
+}
+
+async function archiveInterruptedShot(config, record) {
+  const scope = parseShotScope(record);
+  if (!scope) throw new Error('The interrupted shot could not be identified safely.');
+  const sourceDirectory = path.resolve(config.clipsDirectory, scope.trackSlug);
+  if (!isInside(sourceDirectory, [config.clipsDirectory])) throw new Error('The interrupted shot path is outside the configured clips folder.');
+
+  let names = [];
+  try { names = await readdir(sourceDirectory); } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  const candidates = names.filter((name) => name.startsWith(scope.shot) && VIDEO_EXTENSIONS.has(path.extname(name).toLowerCase()));
+  if (!candidates.length) return { ...scope, archived: [] };
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const archiveDirectory = path.join(config.comfyRoot, '.ltx-watch-recovery', `${stamp}_${scope.trackSlug}_${scope.shot}`);
+  await mkdir(archiveDirectory, { recursive: true });
+  const archived = [];
+  for (const name of candidates) {
+    const source = path.join(sourceDirectory, name);
+    const destination = path.join(archiveDirectory, name);
+    await rename(source, destination);
+    archived.push(destination);
+  }
+  return { ...scope, archived };
+}
+
+async function waitForRecoveryWorker(config, launchedAtMs, timeoutMs = 45_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const status = await readJson(config.statusFile, {});
+    const updated = parseDate(status.updated)?.getTime() || 0;
+    const workerPids = getWorkerPids(status).filter(processExists);
+    if (updated >= launchedAtMs - 1_000 && workerPids.length) return { status, workerPids };
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 500));
+  }
+  throw new Error(`The recovery script started, but no new worker appeared within ${Math.round(timeoutMs / 1000)} seconds. Check ltx-watch-recovery.log in the ComfyUI folder.`);
+}
+
+async function restartInterruptedShot(config, record) {
+  if (recoveryInFlight) throw new Error('Shot recovery is already starting. Wait for the worker to appear.');
+  recoveryInFlight = true;
+  try {
+    const recoveryPlan = resolveRecoveryPlan(config, record);
+    if (!recoveryPlan) throw new Error('Automatic shot recovery is unavailable. Configure a valid recoveryScript and ComfyUI Python environment.');
+    const shot = await archiveInterruptedShot(config, record);
+    const launchedAtMs = Date.now();
+    const logHandle = await open(path.join(config.comfyRoot, 'ltx-watch-recovery.log'), 'a');
+    try {
+      const child = spawn(recoveryPlan.executable, [recoveryPlan.scriptPath], {
+        cwd: config.comfyRoot,
+        detached: true,
+        stdio: ['ignore', logHandle.fd, logHandle.fd],
+        windowsHide: true,
+      });
+      await new Promise((resolveSpawn, rejectSpawn) => {
+        child.once('spawn', resolveSpawn);
+        child.once('error', rejectSpawn);
+      });
+      child.unref();
+    } finally {
+      await logHandle.close();
+    }
+    const worker = await waitForRecoveryWorker(config, launchedAtMs);
+    return { ...shot, ...worker, script: path.basename(recoveryPlan.scriptPath) };
+  } finally {
+    recoveryInFlight = false;
+  }
+}
+
+function getControlView(record, status, config) {
+  const statusUpdated = parseDate(status?.updated);
+  const statusIsFresh = !status?.updated || Boolean(statusUpdated && Date.now() - statusUpdated.getTime() < 180_000);
+  const statusWorkerPids = getWorkerPids(status).filter(processExists);
   const recordedRoots = Array.isArray(record.rootPids) ? record.rootPids.map(Number) : [];
-  const targetMatches = recordedRoots.length > 0 && recordedRoots.some((pid) => workerPids.includes(pid));
-  const paused = record.mode === 'paused' && targetMatches;
+  const liveRecordedRoots = recordedRoots.filter(processExists);
+  const paused = record.mode === 'paused' && liveRecordedRoots.length > 0;
+  const recovery = record.mode === 'recovery';
+  const workerPids = paused ? liveRecordedRoots : recovery ? [] : statusIsFresh ? statusWorkerPids : [];
+  const recoveryAvailable = recovery && Boolean(resolveRecoveryPlan(config, record));
+  const recoveryMessage = record.recoveryReason === 'system-restarted'
+    ? `Windows restarted while shot ${parseShotScope(record)?.shot || ''} was paused. Resume will restart that shot from the beginning.`
+    : record.recoveryReason === 'process-ended'
+      ? `The paused worker ended before it could resume. Resume will restart shot ${parseShotScope(record)?.shot || ''} from the beginning.`
+      : null;
   return {
-    state: paused ? 'paused' : 'running',
-    canControl: workerPids.length > 0,
+    state: recovery ? 'recovery' : paused ? 'paused' : 'running',
+    canControl: recovery ? recoveryAvailable : workerPids.length > 0,
     workerPids,
     affectedPids: paused ? record.affectedPids || [] : [],
     changedAt: record.changedAt || null,
-    message: paused
+    recoveryReason: record.recoveryReason || null,
+    recoveryAvailable,
+    restartedShot: record.restartedShot || null,
+    message: recoveryMessage || (paused
       ? 'The LTX worker and its active ComfyUI subprocesses are suspended.'
+      : record.restartedShot
+        ? `Shot ${record.restartedShot} restarted from the beginning after the interrupted process ended.`
       : workerPids.length
         ? 'The LTX worker is running normally.'
-        : 'No controllable LTX worker was found.',
+        : 'No controllable LTX worker was found.'),
     token: CONTROL_TOKEN,
   };
 }
@@ -372,10 +519,10 @@ async function controlGenerator(action) {
   const [status, record, logText] = await Promise.all([
     readJson(config.statusFile, {}), getOrchestratorRecord(), readTail(config.logFile),
   ]);
-  const currentView = getControlView(record, status);
-  if (!currentView.canControl) throw new Error('No active LTX worker is available to control.');
+  const currentView = getControlView(record, status, config);
   if (action === 'pause' && currentView.state === 'paused') return currentView;
-  if (action === 'resume' && currentView.state !== 'paused') return currentView;
+  if (action === 'resume' && currentView.state === 'running') return currentView;
+  if (!currentView.canControl) throw new Error('No active LTX worker is available to control.');
 
   const current = parseLog(logText).current;
   const now = new Date();
@@ -390,19 +537,75 @@ async function controlGenerator(action) {
       shotScope, shotPausedMs: record.shotScope === shotScope ? Number(record.shotPausedMs || 0) : 0,
     };
     await writeFile(ORCHESTRATOR_STATE_PATH, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
-    return getControlView(next, status);
+    return getControlView(next, status, config);
   }
 
-  const roots = Array.isArray(record.rootPids) && record.rootPids.length ? record.rootPids : currentView.workerPids;
-  await runProcessOrchestrator('resume', roots, config.workerCommandFragment);
+  if (currentView.state === 'recovery') {
+    const recovered = await restartInterruptedShot(config, record);
+    const pausedForMs = Math.max(0, now.getTime() - new Date(record.pausedAt || now).getTime());
+    const next = {
+      ...record,
+      mode: 'running',
+      rootPids: recovered.workerPids,
+      affectedPids: [],
+      pausedAt: null,
+      changedAt: new Date().toISOString(),
+      restartedAt: new Date().toISOString(),
+      restartedShot: recovered.shot,
+      recoveryScript: recovered.script,
+      archivedInterruptedFiles: recovered.archived,
+      recoveryReason: null,
+      trackPausedMs: Number(record.trackPausedMs || 0) + pausedForMs,
+      shotPausedMs: Number(record.shotPausedMs || 0) + pausedForMs,
+    };
+    await writeFile(ORCHESTRATOR_STATE_PATH, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+    return getControlView(next, recovered.status, config);
+  }
+
+  const roots = Array.isArray(record.rootPids) && record.rootPids.length
+    ? record.rootPids.map(Number).filter(processExists)
+    : currentView.workerPids;
+  try {
+    await runProcessOrchestrator('resume', roots, config.workerCommandFragment);
+  } catch (error) {
+    if (!/no longer exists/i.test(error?.message || '')) throw error;
+    const recoveryRecord = {
+      ...record,
+      mode: 'recovery',
+      rootPids: [],
+      affectedPids: [],
+      recoveryReason: 'process-ended',
+      recoveryDetectedAt: new Date().toISOString(),
+    };
+    await writeFile(ORCHESTRATOR_STATE_PATH, `${JSON.stringify(recoveryRecord, null, 2)}\n`, 'utf8');
+    const recovered = await restartInterruptedShot(config, recoveryRecord);
+    const pausedForMs = Math.max(0, now.getTime() - new Date(record.pausedAt || now).getTime());
+    const next = {
+      ...recoveryRecord,
+      mode: 'running',
+      rootPids: recovered.workerPids,
+      pausedAt: null,
+      changedAt: new Date().toISOString(),
+      restartedAt: new Date().toISOString(),
+      restartedShot: recovered.shot,
+      recoveryScript: recovered.script,
+      archivedInterruptedFiles: recovered.archived,
+      recoveryReason: null,
+      trackPausedMs: Number(record.trackPausedMs || 0) + pausedForMs,
+      shotPausedMs: Number(record.shotPausedMs || 0) + pausedForMs,
+    };
+    await writeFile(ORCHESTRATOR_STATE_PATH, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+    return getControlView(next, recovered.status, config);
+  }
   const pausedForMs = Math.max(0, now.getTime() - new Date(record.pausedAt || now).getTime());
   const next = {
-    ...record, mode: 'running', affectedPids: [], changedAt: now.toISOString(), resumedAt: now.toISOString(),
+    ...record, mode: 'running', rootPids: [], affectedPids: [], pausedAt: null,
+    changedAt: now.toISOString(), resumedAt: now.toISOString(), recoveryReason: null,
     trackPausedMs: Number(record.trackPausedMs || 0) + pausedForMs,
     shotPausedMs: Number(record.shotPausedMs || 0) + pausedForMs,
   };
   await writeFile(ORCHESTRATOR_STATE_PATH, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
-  return getControlView(next, status);
+  return getControlView(next, status, config);
 }
 
 async function buildState() {
@@ -413,7 +616,7 @@ async function buildState() {
     getComfyQueue(config), getOrchestratorRecord(),
   ]);
   const parsed = parseLog(logText);
-  const control = getControlView(orchestratorRecord, status);
+  const control = getControlView(orchestratorRecord, status, config);
   const completedShots = await countCompletedShots(config, parsed.current);
   const allFiles = [...finals, ...clips].sort((a, b) => b.modifiedMs - a.modifiedMs).slice(0, config.maxVideos);
   const videos = await mapWithConcurrency(allFiles, 4, async (file, index) => {
@@ -428,7 +631,9 @@ async function buildState() {
   const finalSlugs = new Set(finals.map((file) => path.basename(file.fullPath).replace(/_LTX[0-9P.]*_FULL\.mp4$/i, '').toLowerCase()));
   const queued = planTracks.filter((track) => track.slug !== parsed.current?.slug && !finalSlugs.has(track.slug?.toLowerCase())).map((track, index) => ({ ...track, position: index + 1 }));
   const now = Date.now();
-  const effectiveNow = control.state === 'paused' ? new Date(orchestratorRecord.pausedAt || now).getTime() : now;
+  const effectiveNow = control.state === 'paused' || control.state === 'recovery'
+    ? new Date(orchestratorRecord.pausedAt || now).getTime()
+    : now;
   const trackScope = parsed.current?.slug || null;
   const shotScope = parsed.current ? `${parsed.current.slug}/${parsed.current.currentShot || ''}` : null;
   const trackPausedMs = orchestratorRecord.trackScope === trackScope ? Number(orchestratorRecord.trackPausedMs || 0) : 0;
@@ -448,7 +653,12 @@ async function buildState() {
       elapsedSeconds: Math.max(0, (effectiveNow - new Date(parsed.current.startedAt || effectiveNow).getTime() - trackPausedMs) / 1000),
     } : null,
     control, queue: queued, comfyQueue: comfy, videos,
-    activity: control.changedAt ? [{ type: control.state === 'paused' ? 'paused' : 'resumed', time: control.changedAt, title: control.state === 'paused' ? 'Generation paused' : 'Generation resumed', detail: control.message }, ...parsed.activities] : parsed.activities,
+    activity: control.changedAt ? [{
+      type: control.state === 'recovery' ? 'recovery' : control.restartedShot ? 'recovered' : control.state === 'paused' ? 'paused' : 'resumed',
+      time: control.changedAt,
+      title: control.state === 'recovery' ? 'Shot restart required' : control.restartedShot ? 'Interrupted shot restarted' : control.state === 'paused' ? 'Generation paused' : 'Generation resumed',
+      detail: control.message,
+    }, ...parsed.activities] : parsed.activities,
     gpus: parseGpuSnapshot(status.gpu_snapshot, plan),
     stats: { finals: finals.length, clips: clips.length, todayFinals, queued: queued.length },
     config,

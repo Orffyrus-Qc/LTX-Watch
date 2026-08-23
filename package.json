@@ -1,6 +1,6 @@
 {
   "name": "ltx-video-monitor",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A private local dashboard for LTX Video and ComfyUI generation progress, queues, history, playback, and process control.",
   "private": true,
   "homepage": "https://github.com/Orffyrus-Qc/ltx-watch#readme",

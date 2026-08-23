@@ -86,6 +86,7 @@ The generated MSI is not code-signed. Windows may show an unknown-publisher warn
 | `displayName` | Greeting shown in the header | `Creator` |
 | `modelLabel` | Model/version label shown in the UI | `LTX Video 2.5` |
 | `workerCommandFragment` | Text used to verify the worker before process control | `run_full_album_auto.py` |
+| `recoveryScript` | Supervisor script used to retry an interrupted shot after reboot | `run_dual_gpu_album.py` |
 | `comfyRoot` | ComfyUI installation root | `C:\ComfyUI` |
 | `finalsDirectory` | Finished/assembled videos | `C:\ComfyUI\output\assembled` |
 | `clipsDirectory` | Raw generated clips | `C:\ComfyUI\output\video` |
@@ -142,7 +143,9 @@ Important behavior:
 - The current shot remains in memory.
 - GPU memory remains allocated while paused.
 - The paused state is saved locally, so closing the browser does not resume the job.
-- Restart LTX / Watch and press **Resume render** to continue.
+- Restarting only LTX / Watch preserves the suspended worker; press **Resume render** to continue in place.
+- A Windows restart destroys the suspended process. LTX / Watch detects this and changes the button to **Retry interrupted shot**.
+- Recovery archives any video file already written for the interrupted shot under `<ComfyUI>\.ltx-watch-recovery`, launches `recoveryScript`, and regenerates that same shot from the beginning. Earlier completed shots are left untouched.
 - The controller verifies `workerCommandFragment` before touching a process, reducing the risk of PID reuse targeting an unrelated program.
 - Automated tests must never pause a real generator; see [AGENTS.md](AGENTS.md).
 
