@@ -24,6 +24,7 @@ All notable changes to LTX / Watch are documented here.
 
 - SAM 3.1 checkpoint verification now works even when the installer process cannot auto-load PowerShell's `Get-FileHash` command.
 - ComfyUI-Blender release verification uses the same module-independent .NET SHA-256 path.
+- ComfyUI-Blender setup receipts now recognize equivalent Blender versions such as `5.2` and `5.2.0`.
 
 ## 1.3.0 — 2026-08-23
 

@@ -6,6 +6,7 @@ import {
   analyzeRequirements,
   chooseComfyBlenderChannel,
   compareVersions,
+  isComfyBlenderReceiptCurrent,
   parseBlenderVersion,
   parseGpuCsv,
   parseRequirements,
@@ -40,6 +41,14 @@ test('numeric package versions compare independently of CUDA build suffixes', ()
   assert.equal(compareVersions('2.13.0+cu130', '2.13.0'), 0);
   assert.equal(compareVersions('1.49.6', '1.48.7'), 1);
   assert.equal(compareVersions('0.5.9', '0.5.10'), -1);
+});
+
+test('ComfyUI-Blender receipts compare equivalent Blender version text semantically', () => {
+  const receipt = { status: 'configured', serverAddress: 'http://127.0.0.1:8188', version: '4.5.1', blenderVersion: '5.2' };
+  const installed = { serverAddress: 'http://127.0.0.1:8188', addonVersion: '4.5.1', customNodesVersion: '4.5.1', blenderVersion: '5.2.0' };
+  assert.equal(isComfyBlenderReceiptCurrent(receipt, installed), true);
+  assert.equal(isComfyBlenderReceiptCurrent(receipt, { ...installed, serverAddress: 'http://127.0.0.1:8189' }), false);
+  assert.equal(isComfyBlenderReceiptCurrent(receipt, { ...installed, addonVersion: '4.5.2' }), false);
 });
 
 test('GPU policy keeps sub-16 GB cards out of the primary LTX role', () => {
