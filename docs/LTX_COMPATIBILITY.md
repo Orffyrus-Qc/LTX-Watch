@@ -130,8 +130,6 @@ The doctor selects the largest card with at least approximately 16 GB as the pri
 
 Project-specific runner editing remains outside the generic adapter. The doctor may recognize safeguards such as device isolation, VRAM reservation, pinned-memory protection, and isolated runtime folders, but it must not rewrite the runner or launch a smoke workflow while another job is active.
 
-The sole launcher-editing exception is the Manager maintenance adapter. It recognizes one exact, versioned `args.server_extra_args = []` assignment, backs the file up, and changes it to include `--enable-manager`. Unknown launcher shapes remain manual.
-
 ### Optional tools
 
 Prefer native ComfyUI SAM 3 support over community wrappers when available. A native node file and licensed model checkpoint are separate checks. The guarded `install-sam3` action may download only ComfyUI's documented Comfy-Org checkpoint after the user explicitly confirms the SAM License; it must not automate access to Meta's gated repository. Keep advanced LTX nodes optional and link to the official Lightricks repository.
@@ -156,12 +154,6 @@ For the `install-comfyui-blender` action, `POST /api/environment/maintenance` re
 6. Rolls files back on failure and reports whether a later ComfyUI restart is required. It never restarts ComfyUI itself.
 
 Blender must be closed during the action. Blender versions below 4.5 are not automated. If upstream changes the release archive layout, add-on module name, preference property, or compatibility boundary, update the dedicated adapter and its parser tests without weakening URL, idle-state, backup, or confirmation checks.
-
-### ComfyUI Manager integration
-
-The audit distinguishes the current built-in Manager from the legacy `custom_nodes\ComfyUI-Manager` form. It checks `manager_requirements.txt`, the `comfyui-manager` package, `--enable-manager` in the configured launcher, legacy Git state, and whether the launcher is a recognized automatic target.
-
-The `install-comfyui-manager` maintenance action is token-protected, confirmation-gated, and idle-only. It installs the official Manager requirement with ComfyUI's Python, backs up the recognized launcher, enables the flag, and moves a clean official legacy checkout into the LTX Watch maintenance backup directory. It refuses dirty, unrecognized, or non-official legacy folders and never restarts ComfyUI. If core no longer exposes the official requirement file or flag, update the adapter against current Comfy-Org documentation rather than guessing.
 
 ## Supported baseline
 

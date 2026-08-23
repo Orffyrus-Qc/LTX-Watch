@@ -71,19 +71,12 @@ For an LTX or ComfyUI update:
 5. Keep exact Git trust warnings visible. Never set `safe.directory=*`.
 6. Keep official links allowlisted in `OFFICIAL_LINKS`; never accept a URL supplied by a browser request.
 7. Treat a live worker or running ComfyUI queue item as a maintenance lock.
-8. Keep external runner setup guided except for the versioned, reversible Manager launch-flag adapter.
+8. Keep external runner setup guided; do not rewrite project-specific launch arguments automatically.
 9. Add or update parser tests in `tests/environment-audit.test.mjs`.
 
 Any updater or installer must be implemented as a separate authenticated maintenance adapter with explicit confirmation, idle-state revalidation, backup, progress reporting, validation, and rollback. Do not turn the read-only audit route into a mutating endpoint.
 
-The maintenance endpoint allowlists `install-comfyui-manager`, `install-comfyui-blender`, and `install-sam3`. ComfyUI Manager setup follows the current built-in installation documented by Comfy-Org. Preserve these rules:
-
-1. Require `manager_requirements.txt` and the core `--enable-manager` option; do not silently fall back to installing the legacy custom node on a new setup.
-2. Install requirements only with the Python environment inside the configured ComfyUI root, and run pip's dry-run preflight first.
-3. Patch only the recognized `args.server_extra_args = []` launcher assignment or accept an already configured flag. Back up the launcher first.
-4. Archive a legacy Manager only when its Git origin is official and its working tree is clean. Never set global Git trust.
-5. Restore launcher and legacy-node file changes on failure, report that Python package changes may remain, and never restart ComfyUI automatically.
-6. Keep the real action out of automated tests; validate the result parser and PowerShell syntax instead.
+The maintenance endpoint allowlists `install-comfyui-blender` and `install-sam3` only.
 
 For ComfyUI-Blender:
 

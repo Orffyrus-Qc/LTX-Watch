@@ -18,7 +18,6 @@ import {
 } from './studio-core.mjs';
 import { buildEnvironmentAudit } from './lib/environment-audit.mjs';
 import { installComfyUiBlender, normalizeLoopbackComfyUrl } from './lib/comfyui-blender-setup.mjs';
-import { installComfyUiManager } from './lib/comfyui-manager-setup.mjs';
 import { installSam3Model } from './lib/sam3-setup.mjs';
 import {
   PROJECT_FILE_LIMIT,
@@ -43,7 +42,6 @@ const PROJECTS_STATE_PATH = path.join(APP_ROOT, 'projects.state.json');
 const PROJECTS_RUNTIME_ROOT = path.join(APP_ROOT, '.ltx-watch-projects');
 const PROJECT_UPLOAD_CHUNK_LIMIT = 4 * 1024 * 1024;
 const COMFY_BLENDER_SCRIPT_PATH = path.join(APP_ROOT, 'scripts', 'install-comfyui-blender.ps1');
-const COMFY_MANAGER_SCRIPT_PATH = path.join(APP_ROOT, 'scripts', 'install-comfyui-manager.ps1');
 const SAM3_SCRIPT_PATH = path.join(APP_ROOT, 'scripts', 'install-sam3.ps1');
 const MAINTENANCE_ROOT = path.join(process.env.LOCALAPPDATA || APP_ROOT, 'LTX Watch', 'maintenance');
 const COMFY_BLENDER_RECEIPT_PATH = path.join(MAINTENANCE_ROOT, 'comfyui-blender.json');
@@ -1544,7 +1542,7 @@ async function getEnvironmentView(force = false) {
 }
 
 async function runEnvironmentMaintenance(body) {
-  const supportedActions = new Set(['install-comfyui-blender', 'install-comfyui-manager', 'install-sam3']);
+  const supportedActions = new Set(['install-comfyui-blender', 'install-sam3']);
   if (!supportedActions.has(body?.action)) throw new Error('Unsupported environment maintenance action.');
   if (body?.confirmed !== true) throw new Error('Explicit confirmation is required before changing ComfyUI, Blender, dependencies, or launch settings.');
   if (body?.action === 'install-sam3' && body?.licenseAccepted !== true) throw new Error('SAM 3.1 installation requires confirmation that the SAM License was reviewed and accepted.');
@@ -1558,15 +1556,7 @@ async function runEnvironmentMaintenance(body) {
   maintenanceState = { status: 'running', action: body.action, stage: 'Preparing guarded setup', startedAt, completedAt: null, result: null };
   try {
     let result;
-    if (body.action === 'install-comfyui-manager') {
-      result = await installComfyUiManager({
-        scriptPath: COMFY_MANAGER_SCRIPT_PATH,
-        comfyRoot: config.comfyRoot,
-        runnerFragment: config.workerCommandFragment,
-        backupRoot: MAINTENANCE_BACKUP_ROOT,
-        onStage: (stage) => { maintenanceState = { ...maintenanceState, stage }; },
-      });
-    } else if (body.action === 'install-sam3') {
+    if (body.action === 'install-sam3') {
       result = await installSam3Model({
         scriptPath: SAM3_SCRIPT_PATH,
         comfyRoot: config.comfyRoot,

@@ -111,16 +111,6 @@ Owns read-only ComfyUI/LTX installation detection, model filename grouping, Pyth
 - Require Blender to be closed, enable the add-on through Blender's background preferences API, save `server_address`, and never start a workflow.
 - Roll back changed files when setup fails and never restart ComfyUI automatically.
 
-### ComfyUI Manager maintenance adapter
-
-`lib/comfyui-manager-setup.mjs` and `scripts/install-comfyui-manager.ps1` own the built-in Manager migration action. Preserve these invariants:
-
-- Require current core support through `manager_requirements.txt` and `--enable-manager`.
-- Use only the configured ComfyUI Python environment and the requirement file inside that root.
-- Patch only the recognized launcher assignment, with an external backup made first.
-- Archive the legacy Manager only when it is a clean Git checkout from `Comfy-Org/ComfyUI-Manager` or its historical official `ltdrdata` origin.
-- Never configure wildcard Git trust, overwrite local changes, restart ComfyUI, or invoke the real installer during automated checks.
-
 ### SAM 3.1 maintenance adapter
 
 `lib/sam3-setup.mjs` and `scripts/install-sam3.ps1` own the one allowlisted model download. Preserve these invariants:

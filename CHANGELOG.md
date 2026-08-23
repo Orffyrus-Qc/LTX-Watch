@@ -26,19 +26,6 @@ All notable changes to LTX / Watch are documented here.
 - ComfyUI-Blender release verification uses the same module-independent .NET SHA-256 path.
 - ComfyUI-Blender setup receipts now recognize equivalent Blender versions such as `5.2` and `5.2.0`.
 
-## 1.3.0 — 2026-08-23
-
-### Added
-
-- Read-only detection of built-in, legacy, pending, and migration-ready ComfyUI Manager states.
-- Guarded, authenticated, idle-only migration to ComfyUI's built-in Manager using the official `manager_requirements.txt`.
-- Recognized-launcher backup and `--enable-manager` configuration, plus clean legacy-node archival and file rollback.
-
-### Changed
-
-- Environment maintenance now supports separate allowlisted Manager and Blender actions.
-- MSI staging and AI maintainer guidance include the Manager adapter.
-
 ## 1.2.0 — 2026-08-23
 
 ### Added
