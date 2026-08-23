@@ -320,6 +320,7 @@ export default function ProjectWorkspace({ token, apiBase, refreshSeconds = 5, o
   }, [project?.shots, search, filter]);
   const visibleShots = useMemo(() => filteredShots.slice(0, visibleCount), [filteredShots, visibleCount]);
   const selectedMapped = selectedShots.filter((key) => project?.shots.find((shot) => shot.shotKey === key)?.regeneratable);
+  const selectedUnmapped = selectedShots.filter((key) => !project?.shots.find((shot) => shot.shotKey === key)?.regeneratable);
 
   function toggleShot(shotKey: string) {
     setSelectedShots((current) => current.includes(shotKey) ? current.filter((key) => key !== shotKey) : [...current, shotKey]);
@@ -328,6 +329,15 @@ export default function ProjectWorkspace({ token, apiBase, refreshSeconds = 5, o
   function playAsset(asset: ProjectAsset, title: string) {
     if (asset.kind !== 'video' || !asset.mediaUrl) return;
     onPlay({ id: asset.id, title, filename: asset.name, kind: 'clip', size: asset.size, modifiedAt: asset.modifiedAt, mediaUrl: asset.mediaUrl, directory: asset.directory });
+  }
+
+  async function markSelectedStatus(status: 'accepted' | 'review') {
+    if (!selectedShots.length) return;
+    if (status === 'accepted') {
+      const confirmed = window.confirm(`Approve the current result for ${selectedShots.length} selected shot${selectedShots.length === 1 ? '' : 's'}?\n\nThis does not submit the correction or create a regeneration job.`);
+      if (!confirmed) return;
+    }
+    await action('mark-status', { shotKeys: selectedShots, status }, status === 'accepted' ? 'Current shot results approved' : 'Selected shots returned to review');
   }
 
   if (!view && !error) return <div className="projects-loading"><LoaderCircle className="spinning" /><b>Indexing project workspace…</b></div>;
@@ -387,7 +397,7 @@ export default function ProjectWorkspace({ token, apiBase, refreshSeconds = 5, o
                   {asset?.kind === 'video' && <span className="project-play"><Play size={16} fill="currentColor" /></span>}
                   <span className={`project-status ${shot.status}`}>{shot.status}</span>
                 </button>
-                <div className="project-shot-copy"><div><h3>{shot.title}</h3><span>{shot.regeneratable ? <><Zap size={11} /> LTX MAPPED</> : 'REFERENCE ONLY'}</span></div><p>{asset?.name || 'No current asset'}</p><div><small>{shot.versions.length} version{shot.versions.length === 1 ? '' : 's'} · {shot.contextAssetIds.length} context</small>{asset && <button onClick={() => void onOpen(asset.fullPath)} title="Show in Explorer"><FolderOpen size={14} /></button>}</div></div>
+                <div className="project-shot-copy"><div><h3>{shot.title}</h3><span>{shot.regeneratable ? <><Zap size={11} /> LTX MAPPED</> : 'REFERENCE ONLY · NOT QUEUEABLE'}</span></div><p>{asset?.name || 'No current asset'}</p><div><small>{shot.versions.length} version{shot.versions.length === 1 ? '' : 's'} · {shot.contextAssetIds.length} context</small>{asset && <button onClick={() => void onOpen(asset.fullPath)} title="Show in Explorer"><FolderOpen size={14} /></button>}</div></div>
               </article>;
             })}
           </div>
@@ -398,9 +408,11 @@ export default function ProjectWorkspace({ token, apiBase, refreshSeconds = 5, o
         <aside className="project-inspector">
           <section className="project-panel project-bulk">
             <div className="project-panel-head"><span><Zap size={14} /> SELECTIVE REGENERATION</span><b>{selectedMapped.length}</b></div>
-            <textarea value={correction} onChange={(event) => setCorrection(event.target.value)} maxLength={2000} placeholder="Describe the correction once for all selected shots: keep the same camera move, reduce motion, preserve character silhouette…" />
-            <button className="project-primary wide" disabled={!selectedMapped.length || Boolean(pending)} onClick={() => void action('queue-regeneration', { shotKeys: selectedMapped, correction }, `${selectedMapped.length} shot${selectedMapped.length === 1 ? '' : 's'} queued for regeneration`).then(() => { setSelectedShots([]); setCorrection(''); }).catch(() => undefined)}>{pending === 'queue-regeneration' ? <LoaderCircle size={14} className="spinning" /> : <Zap size={14} />} Queue selected shots</button>
-            <div className="bulk-secondary"><button disabled={!selectedShots.length || Boolean(pending)} onClick={() => void action('mark-status', { shotKeys: selectedShots, status: 'accepted' }, 'Selected shots accepted').catch(() => undefined)}><Check size={13} /> Accept</button><button disabled={!selectedShots.length || Boolean(pending)} onClick={() => void action('mark-status', { shotKeys: selectedShots, status: 'review' }, 'Selected shots returned to review').catch(() => undefined)}><RefreshCw size={13} /> Review</button></div>
+            <textarea disabled={!selectedMapped.length && !correction} value={correction} onChange={(event) => setCorrection(event.target.value)} maxLength={2000} placeholder={selectedShots.length && !selectedMapped.length ? 'This selection has no compatible LTX scene mapping.' : 'Describe the correction once for all selected shots: keep the same camera move, reduce motion, preserve character silhouette…'} />
+            {Boolean(selectedUnmapped.length) && <div className="project-selection-warning"><CircleAlert size={13} /><span><b>{selectedUnmapped.length} reference-only shot{selectedUnmapped.length === 1 ? '' : 's'} cannot be queued.</b> Only shots matching a scene and shot number in the active LTX plan can regenerate.</span></div>}
+            <button className="project-primary wide" disabled={!selectedMapped.length || Boolean(pending)} onClick={() => void action('queue-regeneration', { shotKeys: selectedMapped, correction }, `${selectedMapped.length} shot${selectedMapped.length === 1 ? '' : 's'} queued for regeneration`).then(() => { setSelectedShots([]); setCorrection(''); }).catch(() => undefined)}>{pending === 'queue-regeneration' ? <LoaderCircle size={14} className="spinning" /> : <Zap size={14} />} {!selectedShots.length ? 'Select mapped shots to regenerate' : !selectedMapped.length ? 'No mapped shots to regenerate' : `Submit correction & queue ${selectedMapped.length} shot${selectedMapped.length === 1 ? '' : 's'}`}</button>
+            <div className="project-review-label">REVIEW THE CURRENT RESULT <span>Does not queue a render</span></div>
+            <div className="bulk-secondary"><button disabled={!selectedShots.length || Boolean(pending) || Boolean(correction.trim())} title={correction.trim() ? 'Clear the correction before approving the current result.' : 'Approve the current result without creating a render job.'} onClick={() => void markSelectedStatus('accepted').catch(() => undefined)}><Check size={13} /> Approve current</button><button disabled={!selectedShots.length || Boolean(pending)} onClick={() => void markSelectedStatus('review').catch(() => undefined)}><RefreshCw size={13} /> Keep in review</button></div>
           </section>
 
           <section className="project-panel blender-panel">

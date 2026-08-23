@@ -22,6 +22,7 @@ All notable changes to LTX / Watch are documented here.
 
 ### Fixed
 
+- Project correction and review controls now clearly separate queueing a regeneration from approving the current result; reference-only shots show why they cannot enter the active LTX plan.
 - Projects now renders shots in batches and mounts media previews only near the viewport, preventing large libraries from freezing browser scrolling.
 - SAM 3.1 checkpoint verification now works even when the installer process cannot auto-load PowerShell's `Get-FileHash` command.
 - ComfyUI-Blender release verification uses the same module-independent .NET SHA-256 path.
