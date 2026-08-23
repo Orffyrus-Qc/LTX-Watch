@@ -194,9 +194,9 @@ export default function StudioWorkspace({ studio, token, apiBase, onRefresh, onT
             </div>
 
             <div className="studio-correction">
-              <div><label htmlFor="studio-correction">CORRECTION FOR THE NEXT ATTEMPT</label><span>{correction.length}/2000</span></div>
+              <div><label htmlFor="studio-correction">NON-SPOKEN DIRECTOR NOTE</label><span>{correction.length}/2000</span></div>
               <textarea id="studio-correction" value={correction} maxLength={2000} onChange={(event) => setCorrection(event.target.value)} placeholder="Example: slow the camera drift, keep the face perfectly stable, and reduce the light flicker…" disabled={Boolean(studio.activeJob)} />
-              <p>These notes are appended only to this shot&apos;s local LTX prompt. They are kept out of command lines and Git.</p>
+              <p>The note guides performance and staging but is never spoken or shown. For exact speech, begin a separate line with <b>DIALOGUE:</b></p>
             </div>
 
             <div className="studio-actions">

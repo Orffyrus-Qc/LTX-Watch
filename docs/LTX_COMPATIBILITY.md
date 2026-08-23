@@ -15,7 +15,7 @@ A model checkpoint update does not automatically require an app update. Code cha
 
 ## Studio single-shot adapter
 
-LTX Watch Studio launches `scripts/ltx-studio-runner.py` with an ignored local JSON job. The job identifies one section, track slug, numeric shot, correction note, GPU, and port. Correction text is never placed in the process command line.
+LTX Watch Studio launches `scripts/ltx-studio-runner.py` with an ignored local JSON job. The job identifies one section, track slug, numeric shot, correction note, GPU, and port. Correction text is never placed in the process command line. The adapter wraps ordinary corrections as non-spoken director metadata and reserves separate lines beginning with `DIALOGUE:` for exact spoken words.
 
 The configured `studioSourceRunner` must resolve inside `comfyRoot` and expose these Python callables:
 

@@ -144,7 +144,7 @@ Studio is a deliberate review loop rather than an unattended batch:
 2. Select any waiting scene. Use **Move first** to put it at the front of Studio's persistent queue.
 3. Generate the current shot, or review an existing compatible output.
 4. If the result needs work, describe the correction and press **Regenerate shot**.
-5. Studio archives the previous attempt locally and generates the same shot from frame one with the correction appended to its prompt.
+5. Studio archives the previous attempt locally and generates the same shot from frame one. Corrections are wrapped as non-spoken director notes so characters do not repeat production instructions. To request exact speech, put `DIALOGUE:` at the beginning of a separate line.
 6. Press **Accept & next shot** only when satisfied. Studio records the accepted attempt and advances to the next unaccepted shot.
 7. After the final shot is accepted, Studio advances to the next queued scene. The normal album runner can later skip the accepted clip files and assemble the scene.
 
@@ -173,7 +173,7 @@ Open **Projects** to turn an output folder or edit folder into a persistent loca
 2. Use **Reference in place** to leave files untouched, or **Copy supported assets** to make a managed local working copy.
 3. Watch indexes video, stills, audio, text prompts, subtitles, JSON/YAML/TOML metadata, Blender scenes, and common 3D interchange files.
 4. Files with a leading shot number or `shot_####` name are grouped into shots and versions. A parent folder matching either the active plan or a scene reported by the compatible Studio source runner makes that shot eligible for LTX regeneration. This keeps completed/assembled scenes available for later one-shot corrections without putting the whole scene back into the album queue.
-5. Select any number of mapped shots, enter one correction note, and add them to the persistent regeneration queue. Pause/resume applies to this queue between shots; it never interrupts a shot already running.
+5. Select any number of mapped shots, enter one non-spoken director note, and add them to the persistent regeneration queue. Use a separate `DIALOGUE:` line only when exact spoken words are intended. Pause/resume applies to this queue between shots; it never interrupts a shot already running.
 6. Upload reference/context files in the browser, select them in the inspector, and attach them to one or more shots.
 7. Mark reviewed shots accepted or return them to review without deleting any media.
 

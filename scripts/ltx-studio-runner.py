@@ -11,6 +11,8 @@ import importlib.util
 import json
 import math
 import os
+import re
+import subprocess
 import sys
 import time
 import traceback
@@ -89,6 +91,52 @@ def find_shot(module, job):
     raise RuntimeError("The requested scene/shot was not found in the source runner timing data.")
 
 
+def build_correction_prompt(correction):
+    direction_lines = []
+    dialogue_lines = []
+    for line in correction.splitlines():
+        dialogue = re.match(r"^\s*(?:spoken\s+)?dialogue\s*:\s*(.+?)\s*$", line, re.IGNORECASE)
+        if dialogue:
+            dialogue_lines.append(dialogue.group(1))
+        else:
+            direction_lines.append(line)
+    direction = "\n".join(direction_lines).strip()
+
+    sections = [
+        "NON-SPOKEN DIRECTOR REVISION — production metadata only; it does not exist inside the scene.",
+        "Never let a character, narrator, caption, subtitle, sign, screen, or sound quote, read, repeat, or refer to the director note.",
+        "Apply only the note's intended changes to performance, emotion, blocking, action, camera, pacing, lighting, tone, and story meaning while preserving the source frame.",
+        "<director_note>",
+        direction or "Use the separately approved dialogue below without turning these production instructions into scene content.",
+        "</director_note>",
+        "If speech is needed to realize the note, write natural in-scene speech appropriate to the characters; do not reuse the wording of the director note.",
+    ]
+    if dialogue_lines:
+        sections.extend([
+            "APPROVED SPOKEN DIALOGUE — only this block supplies exact words to speak:",
+            "<spoken_dialogue>",
+            "\n".join(dialogue_lines),
+            "</spoken_dialogue>",
+        ])
+    return "\n".join(sections)
+
+
+def hide_source_runner_windows(module):
+    if os.name != "nt":
+        return
+    source_subprocess = getattr(module, "subprocess", None)
+    if source_subprocess is None or getattr(source_subprocess, "_ltx_watch_hidden", False):
+        return
+    original_popen = source_subprocess.Popen
+
+    def hidden_popen(*args, **kwargs):
+        kwargs["creationflags"] = int(kwargs.get("creationflags", 0)) | subprocess.CREATE_NO_WINDOW
+        return original_popen(*args, **kwargs)
+
+    source_subprocess.Popen = hidden_popen
+    source_subprocess._ltx_watch_hidden = True
+
+
 def configure_runner(module, job):
     comfy_root = os.path.dirname(os.path.abspath(job["sourceRunner"]))
     log_path = os.path.join(comfy_root, "ltx-watch-studio-runner.log")
@@ -102,13 +150,10 @@ def configure_runner(module, job):
         "--only-tracks", job["slug"],
     ])
     module.apply_args(args)
+    hide_source_runner_windows(module)
     base_prompt = str(getattr(module, "GENERIC_MOTION_PROMPT", "")).strip()
     if job["correction"]:
-        module.GENERIC_MOTION_PROMPT = (
-            base_prompt
-            + "\n\nCreator correction for this reviewed attempt. Apply it while preserving the source frame: "
-            + job["correction"]
-        )
+        module.GENERIC_MOTION_PROMPT = base_prompt + "\n\n" + build_correction_prompt(job["correction"])
 
 
 def newest_output(module, slug, shot):

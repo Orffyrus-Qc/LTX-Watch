@@ -51,6 +51,10 @@ def release_lock(_path):
 def run_shot(shot, _duration, slug):
     if "slow the camera" not in GENERIC_MOTION_PROMPT:
         raise RuntimeError("Correction text was not applied to the prompt.")
+    prompt_path = os.environ.get("LTX_STUDIO_FIXTURE_PROMPT")
+    if prompt_path:
+        with open(prompt_path, "w", encoding="utf-8") as handle:
+            handle.write(GENERIC_MOTION_PROMPT)
     directory = os.path.join(OUTPUT_ROOT, slug)
     os.makedirs(directory, exist_ok=True)
     with open(os.path.join(directory, f"{shot}_00001_.mp4"), "wb") as handle:

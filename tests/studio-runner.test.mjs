@@ -15,13 +15,14 @@ test('single-shot adapter applies a correction and returns a review output', asy
   try {
     const resultPath = path.join(fixtureRoot, 'result.json');
     const jobPath = path.join(fixtureRoot, 'job.json');
+    const promptPath = path.join(fixtureRoot, 'prompt.txt');
     await writeFile(jobPath, JSON.stringify({
       sourceRunner: path.join(testRoot, 'fixtures', 'fake_album_runner.py'),
       section: 'album',
       track: 'Scene One',
       slug: 'scene_one_full',
       shot: '0001',
-      correction: 'slow the camera and reduce the flicker',
+      correction: 'slow the camera and reduce the flicker\nDIALOGUE: Stay with me.',
       port: 18188,
       cudaDevice: 0,
       resultPath,
@@ -30,7 +31,7 @@ test('single-shot adapter applies a correction and returns a review output', asy
       cwd: fixtureRoot,
       encoding: 'utf8',
       windowsHide: true,
-      env: { ...process.env, LTX_STUDIO_FIXTURE_OUTPUT: path.join(fixtureRoot, 'output') },
+      env: { ...process.env, LTX_STUDIO_FIXTURE_OUTPUT: path.join(fixtureRoot, 'output'), LTX_STUDIO_FIXTURE_PROMPT: promptPath },
     });
     if (run.error?.code === 'ENOENT') {
       context.skip(`Python executable not available: ${python}`);
@@ -40,6 +41,11 @@ test('single-shot adapter applies a correction and returns a review output', asy
     const result = JSON.parse(await readFile(resultPath, 'utf8'));
     assert.equal(result.status, 'review');
     assert.match(result.outputPath, /0001_00001_\.mp4$/);
+    const prompt = await readFile(promptPath, 'utf8');
+    assert.match(prompt, /NON-SPOKEN DIRECTOR REVISION/);
+    assert.match(prompt, /<director_note>\s*slow the camera and reduce the flicker\s*<\/director_note>/);
+    assert.match(prompt, /<spoken_dialogue>\s*Stay with me\.\s*<\/spoken_dialogue>/);
+    assert.doesNotMatch(prompt, /<director_note>[\s\S]*DIALOGUE:/);
   } finally {
     await rm(fixtureRoot, { recursive: true, force: true });
   }

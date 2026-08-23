@@ -22,6 +22,8 @@ All notable changes to LTX / Watch are documented here.
 
 ### Fixed
 
+- Correction notes are now isolated as non-spoken director metadata, preventing characters, narration, captions, or screens from repeating production instructions; explicit `DIALOGUE:` lines remain available for intended speech.
+- Studio-launched ComfyUI subprocesses no longer open a visible Python console window on Windows.
 - Shot regeneration can now archive an existing ComfyUI output when the output and LTX Watch history folders are on different Windows drives.
 - Completed source scenes can now be mapped for one-shot project regeneration even after the active remaining-work plan has dropped them.
 - Project correction and review controls now clearly separate queueing a regeneration from approving the current result; reference-only shots show why they have no compatible source mapping.
