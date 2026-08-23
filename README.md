@@ -7,7 +7,7 @@
 
 ![LTX Watch dashboard showing active generation progress, queued jobs, output history, and live activity](docs/images/ltx-watch-dashboard.png)
 
-**LTX / Watch** is a private, local-first dashboard for monitoring LTX Video jobs running through ComfyUI. The Studio branch adds a human-in-the-loop workspace where each shot is generated, reviewed, corrected, and explicitly accepted before moving forward.
+**LTX / Watch** is a private, local-first dashboard and production workspace for LTX Video jobs running through ComfyUI. It includes a human-in-the-loop Studio where each shot is generated, reviewed, corrected, and explicitly accepted before moving forward.
 
 The app runs entirely on your computer. It does not upload prompts, videos, logs, or credentials.
 
@@ -28,7 +28,7 @@ The app runs entirely on your computer. It does not upload prompts, videos, logs
 - One-click guarded installation and configuration of the official ComfyUI-Blender integration
 - Editable source paths, model label, worker match, and refresh interval
 - Loopback-only local bridge with an ephemeral control token
-- Optional **LTX Watch Studio** shot-by-shot review mode
+- Integrated **LTX Watch Studio** shot-by-shot review mode
 - Per-attempt correction notes and preserved regeneration history
 - Selectable Studio scene queue with one-click **Move first** ordering
 - Project Library imports an existing folder by reference or into an app-managed copy
@@ -59,17 +59,15 @@ npm run dev
 
 Open <http://localhost:3000>. On Windows, you can also double-click **Start LTX Watch.bat** after installing dependencies.
 
-### Studio branch test launch
+### Isolated development launch
 
-Studio is developed on the `feature/ltx-watch-studio` branch and can run beside the normal dashboard without replacing it:
+Studio and Projects are included in the normal application at <http://localhost:3000>. Contributors can also run the same application on isolated development ports so it can remain open beside another LTX Watch instance:
 
 ```powershell
-git switch feature/ltx-watch-studio
-npm install
 npm run dev:studio
 ```
 
-Open <http://localhost:3001>. Its local bridge uses `127.0.0.1:4312`; the normal Watch ports remain 3000/4311. Studio can be browsed while a batch is active, but its Generate button remains safely locked until the album worker and configured ComfyUI port are idle.
+Open <http://localhost:3001>. Its local bridge uses `127.0.0.1:4312`; the standard ports remain 3000/4311. Studio can be browsed while a batch is active, but its Generate button remains safely locked until the album worker and configured ComfyUI port are idle.
 
 LTX / Watch searches common ComfyUI locations automatically:
 

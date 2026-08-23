@@ -2,7 +2,7 @@
 
 All notable changes to LTX / Watch are documented here.
 
-## 1.4.0 — Studio branch
+## 1.4.0 — 2026-08-23
 
 ### Added
 
@@ -22,6 +22,11 @@ All notable changes to LTX / Watch are documented here.
 - Range-enabled project media previews and Explorer actions constrained to registered local roots.
 - Guarded **Install model** button for native SAM 3.1 with explicit license confirmation, idle-state locking, official Comfy-Org download, pinned size/SHA-256 verification, backup, and failure cleanup.
 
+### Changed
+
+- Studio and Projects are now part of the official application rather than a separate test branch.
+- ComfyUI Manager integration and its project dependency were removed; LTX Watch now uses narrow, guarded maintenance adapters for supported actions.
+
 ### Fixed
 
 - Correction notes are now isolated as non-spoken director metadata, preventing characters, narration, captions, or screens from repeating production instructions; explicit `DIALOGUE:` lines remain available for intended speech.
@@ -33,6 +38,18 @@ All notable changes to LTX / Watch are documented here.
 - SAM 3.1 checkpoint verification now works even when the installer process cannot auto-load PowerShell's `Get-FileHash` command.
 - ComfyUI-Blender release verification uses the same module-independent .NET SHA-256 path.
 - ComfyUI-Blender setup receipts now recognize equivalent Blender versions such as `5.2` and `5.2.0`.
+- Active selective-regeneration progress is now visible at the top of Projects instead of only inside the queue panel below the fold.
+
+## 1.3.0 — 2026-08-23
+
+### Added
+
+- Read-only detection of built-in, legacy, pending, and migration-ready ComfyUI Manager states.
+- Guarded migration to ComfyUI's built-in Manager, later removed in 1.4.0 in favor of narrower maintenance adapters.
+
+### Changed
+
+- Environment maintenance supported separate Manager and Blender actions in this release.
 
 ## 1.2.0 — 2026-08-23
 

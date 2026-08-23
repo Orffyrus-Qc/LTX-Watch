@@ -500,7 +500,7 @@ export default function Dashboard() {
         </button>
         <nav aria-label="Main navigation">
           <button className={`nav-item ${workspace === 'watch' ? 'active' : ''}`} onClick={() => setWorkspace('watch')}><Gauge size={18} />Overview</button>
-          <button className={`nav-item ${workspace === 'studio' ? 'active' : ''}`} onClick={() => setWorkspace('studio')}><Clapperboard size={18} />Studio <span className="studio-nav-dot">BETA</span></button>
+          <button className={`nav-item ${workspace === 'studio' ? 'active' : ''}`} onClick={() => setWorkspace('studio')}><Clapperboard size={18} />Studio</button>
           <button className={`nav-item ${workspace === 'projects' ? 'active' : ''}`} onClick={() => setWorkspace('projects')}><FolderKanban size={18} />Projects <span className="studio-nav-dot">NEW</span></button>
           <button className="nav-item" onClick={() => { setWorkspace('watch'); window.setTimeout(() => document.getElementById('history')?.scrollIntoView({ behavior: 'smooth' }), 0); }}><History size={18} />History</button>
           <button className="nav-item" onClick={() => { setWorkspace('watch'); setQueueOpen(true); }}><ListVideo size={18} />Queue <span className="nav-count">{state?.queue.length || 0}</span></button>
