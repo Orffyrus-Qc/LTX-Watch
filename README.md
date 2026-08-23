@@ -145,7 +145,7 @@ Important behavior:
 - The paused state is saved locally, so closing the browser does not resume the job.
 - Restarting only LTX / Watch preserves the suspended worker; press **Resume render** to continue in place.
 - A Windows restart destroys the suspended process. LTX / Watch detects this and changes the button to **Retry interrupted shot**.
-- Recovery archives any video file already written for the interrupted shot under `<ComfyUI>\.ltx-watch-recovery`, launches `recoveryScript`, and regenerates that same shot from the beginning. Earlier completed shots are left untouched.
+- Recovery archives any video file already written for the interrupted shot under `<ComfyUI>\.ltx-watch-recovery`, launches `recoveryScript` in the background, and regenerates that same shot from the beginning. Earlier completed shots are left untouched.
 - The controller verifies `workerCommandFragment` before touching a process, reducing the risk of PID reuse targeting an unrelated program.
 - Automated tests must never pause a real generator; see [AGENTS.md](AGENTS.md).
 

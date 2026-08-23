@@ -2,6 +2,12 @@
 
 All notable changes to LTX / Watch are documented here.
 
+## 1.0.2 — 2026-08-23
+
+### Fixed
+
+- Start interrupted-shot recovery with Windows' background Python launcher so Resume does not leave a black console window open.
+
 ## 1.0.1 — 2026-08-23
 
 ### Fixed

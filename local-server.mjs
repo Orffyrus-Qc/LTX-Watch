@@ -376,6 +376,12 @@ function resolveRecoveryPlan(config, record) {
   const scriptPath = path.resolve(config.comfyRoot, config.recoveryScript);
   if (!isInside(scriptPath, [config.comfyRoot]) || path.extname(scriptPath).toLowerCase() !== '.py' || !existsSync(scriptPath)) return null;
   const pythonCandidates = [
+    // Prefer the windowless launcher so a recovery started from the dashboard
+    // stays in the background. All output is already captured in the recovery log.
+    path.join(config.comfyRoot, 'venv', 'Scripts', 'pythonw.exe'),
+    path.join(config.comfyRoot, '.venv', 'Scripts', 'pythonw.exe'),
+    path.join(config.comfyRoot, 'python_embeded', 'pythonw.exe'),
+    path.join(config.comfyRoot, 'python', 'pythonw.exe'),
     path.join(config.comfyRoot, 'venv', 'Scripts', 'python.exe'),
     path.join(config.comfyRoot, '.venv', 'Scripts', 'python.exe'),
     path.join(config.comfyRoot, 'python_embeded', 'python.exe'),

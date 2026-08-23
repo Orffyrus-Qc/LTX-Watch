@@ -203,7 +203,7 @@ If Windows restarts or every recorded paused root PID disappears, the bridge mov
 
 1. Reads the exact track/shot scope captured when Pause was pressed.
 2. Moves matching current-shot video files into `<ComfyUI>\.ltx-watch-recovery` without deleting them.
-3. Launches the configured `recoveryScript` with the ComfyUI virtual-environment Python.
+3. Launches the configured `recoveryScript` with the ComfyUI virtual-environment `pythonw.exe` when available (falling back to `python.exe`) so recovery stays in the background.
 4. Waits for a fresh status-file worker PID.
 5. Returns to `running` only after the new worker is alive.
 
