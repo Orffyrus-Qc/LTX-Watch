@@ -66,6 +66,10 @@ type ProjectQueueItem = {
   startedAt: string | null;
   completedAt: string | null;
   error: string | null;
+  stage?: string;
+  progress?: number;
+  elapsedSeconds?: number;
+  remainingSeconds?: number;
 };
 
 type ProjectSummary = {
@@ -120,6 +124,16 @@ function formatBytes(bytes: number) {
   return `${(bytes / 1024 ** index).toFixed(index > 2 ? 1 : 0)} ${units[index]}`;
 }
 
+function formatQueueTime(seconds = 0) {
+  const rounded = Math.max(0, Math.round(seconds));
+  const hours = Math.floor(rounded / 3600);
+  const minutes = Math.floor((rounded % 3600) / 60);
+  const remainder = rounded % 60;
+  if (hours) return `${hours}h ${String(minutes).padStart(2, '0')}m`;
+  if (minutes) return `${minutes}m ${String(remainder).padStart(2, '0')}s`;
+  return `${remainder}s`;
+}
+
 const SHOT_BATCH_SIZE = 36;
 
 function projectViewSignature(view: ProjectsView) {
@@ -134,7 +148,7 @@ function projectViewSignature(view: ProjectsView) {
       blenderBackboneAssetId: project.blenderBackboneAssetId,
       counts: project.counts,
       shots: project.shots.map((shot) => [shot.shotKey, shot.status, shot.currentAssetId, shot.versions.length, shot.contextAssetIds.length]),
-      queue: project.queue.map((item) => [item.id, item.status, item.completedAt, item.error]),
+      queue: project.queue.map((item) => [item.id, item.status, item.completedAt, item.error, item.stage, item.progress]),
     } : null,
   });
 }
@@ -434,7 +448,15 @@ export default function ProjectWorkspace({ token, apiBase, refreshSeconds = 5, o
           <section className="project-panel queue-panel">
             <div className="project-panel-head"><span><Film size={14} /> REGENERATION QUEUE</span><button onClick={() => void action('toggle-queue', { paused: !project.queuePaused }, project.queuePaused ? 'Project queue resumed' : 'Project queue paused').catch(() => undefined)}>{project.queuePaused ? <><Play size={12} /> Resume</> : <><Pause size={12} /> Pause</>}</button></div>
             <div className="project-queue-list">
-              {project.queue.slice(0, 12).map((item) => <div className={`project-queue-item ${item.status}`} key={item.id}><span>{item.status === 'generating' ? <LoaderCircle size={13} className="spinning" /> : item.status === 'review' ? <Check size={13} /> : item.status === 'failed' ? <CircleAlert size={13} /> : <Film size={13} />}</span><div><b>{displayName(item.track)} · {item.shot}</b><small>{item.error || item.correction || item.status}</small></div>{item.status === 'queued' && <button onClick={() => void action('remove-queued', { queueId: item.id }).catch(() => undefined)} aria-label="Remove queued shot"><X size={12} /></button>}</div>)}
+              {project.queue.slice(0, 12).map((item) => <div className={`project-queue-item ${item.status}`} key={item.id}>
+                <span>{item.status === 'generating' ? <LoaderCircle size={13} className="spinning" /> : item.status === 'review' ? <Check size={13} /> : item.status === 'failed' ? <CircleAlert size={13} /> : <Film size={13} />}</span>
+                <div><b>{displayName(item.track)} · {item.shot}</b>{item.status === 'generating' && item.progress != null ? <>
+                  <div className="project-queue-progress-label"><span>{item.stage || 'Generating shot'}</span><b>{item.progress}%</b></div>
+                  <div className="project-queue-progress" role="progressbar" aria-label={`Shot ${item.shot} regeneration progress`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={item.progress}><span style={{ width: `${item.progress}%` }} /></div>
+                  <small>{formatQueueTime(item.elapsedSeconds)} elapsed · ~{formatQueueTime(item.remainingSeconds)} remaining</small>
+                </> : <small>{item.error || item.correction || item.status}</small>}</div>
+                {item.status === 'queued' && <button onClick={() => void action('remove-queued', { queueId: item.id }).catch(() => undefined)} aria-label="Remove queued shot"><X size={12} /></button>}
+              </div>)}
               {!project.queue.length && <div className="panel-empty"><Film size={20} /><span>No selective regenerations queued.</span></div>}
             </div>
           </section>

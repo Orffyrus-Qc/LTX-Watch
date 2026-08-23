@@ -87,6 +87,7 @@ Copy-InstallerFile (Join-Path $projectRoot 'lib\environment-audit.mjs') (Join-Pa
 Copy-InstallerFile (Join-Path $projectRoot 'lib\comfyui-core-update.mjs') (Join-Path $stageRoot 'lib\comfyui-core-update.mjs')
 Copy-InstallerFile (Join-Path $projectRoot 'lib\comfyui-blender-setup.mjs') (Join-Path $stageRoot 'lib\comfyui-blender-setup.mjs')
 Copy-InstallerFile (Join-Path $projectRoot 'lib\sam3-setup.mjs') (Join-Path $stageRoot 'lib\sam3-setup.mjs')
+Copy-InstallerFile (Join-Path $projectRoot 'lib\studio-progress.mjs') (Join-Path $stageRoot 'lib\studio-progress.mjs')
 Copy-InstallerFile (Join-Path $projectRoot 'local.config.example.json') (Join-Path $stageRoot 'local.config.example.json')
 Copy-InstallerFile (Join-Path $projectRoot 'README.md') (Join-Path $stageRoot 'README.md')
 Copy-InstallerFile (Join-Path $installerRoot 'LTX Watch.cmd') (Join-Path $stageRoot 'LTX Watch.cmd')

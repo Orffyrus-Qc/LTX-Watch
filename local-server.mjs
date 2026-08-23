@@ -21,6 +21,7 @@ import { updateComfyUiCore } from './lib/comfyui-core-update.mjs';
 import { installComfyUiBlender, normalizeLoopbackComfyUrl } from './lib/comfyui-blender-setup.mjs';
 import { moveFile } from './lib/move-file.mjs';
 import { installSam3Model } from './lib/sam3-setup.mjs';
+import { studioJobProgress } from './lib/studio-progress.mjs';
 import {
   PROJECT_FILE_LIMIT,
   buildProjectShots,
@@ -55,6 +56,7 @@ const VIDEO_EXTENSIONS = new Set(['.mp4', '.webm', '.mov', '.mkv']);
 const probeCache = new Map();
 let environmentCache = { key: '', expiresAt: 0, value: null, promise: null };
 let maintenanceState = { status: 'idle', action: null, stage: null, startedAt: null, completedAt: null, result: null };
+const studioProgressHighWater = new Map();
 let recoveryInFlight = false;
 let studioMutationInFlight = false;
 let projectMutationInFlight = false;
@@ -849,7 +851,7 @@ async function startStudioJob({ config, record, item, scene, shot, correction, m
   scene.status = 'generating';
   scene.updatedAt = startedAt;
   record.selectedSceneKey = item.sceneKey;
-  record.activeJob = { id, sceneKey: item.sceneKey, shot, pid: null, jobPath, resultPath, startedAt, ...metadata };
+  record.activeJob = { id, sceneKey: item.sceneKey, slug: item.slug, shot, pid: null, jobPath, resultPath, startedAt, ...metadata };
   await writeStudioRecord(record);
 
   const logHandle = await open(path.join(APP_ROOT, 'studio.log'), 'a');
@@ -1207,6 +1209,31 @@ function decorateProjectAsset(asset) {
   };
 }
 
+async function activeProjectProgress(config, activeJob) {
+  if (!activeJob?.id || !activeJob?.projectQueueId) {
+    studioProgressHighWater.clear();
+    return null;
+  }
+  const slug = String(activeJob.slug || activeJob.sceneKey || '').split('/').at(-1);
+  const shot = String(activeJob.shot || '');
+  if (!slug || !shot) return null;
+  for (const id of studioProgressHighWater.keys()) {
+    if (id !== activeJob.id) studioProgressHighWater.delete(id);
+  }
+  const [runnerLog, serverLog] = await Promise.all([
+    readTail(path.join(config.comfyRoot, 'ltx-watch-studio-runner.log'), 1_000_000),
+    readTail(path.join(config.comfyRoot, `server_log_ltx-watch-studio_${safeStudioSegment(slug)}_${safeStudioSegment(shot)}.txt`), 1_000_000),
+  ]);
+  const progress = studioJobProgress({
+    runnerLog,
+    serverLog,
+    startedAt: activeJob.startedAt,
+    previousProgress: studioProgressHighWater.get(activeJob.id) || 0,
+  });
+  studioProgressHighWater.set(activeJob.id, progress.progress);
+  return { queueId: activeJob.projectQueueId, ...progress };
+}
+
 async function buildProjectsView(config, plan, record = null) {
   const projectsRecord = record || await getProjectsRecord();
   const summaries = Object.values(projectsRecord.projects).map((project) => ({
@@ -1232,6 +1259,16 @@ async function buildProjectsView(config, plan, record = null) {
   }
   const contextAssets = assets.filter((asset) => !asset.identity || ['text', 'data', 'scene3d', 'audio', 'image'].includes(asset.kind));
   const blenderAssets = assets.filter((asset) => asset.kind === 'scene3d');
+  const studioRecord = await getStudioRecord();
+  const activeProgress = await activeProjectProgress(config, studioRecord.activeJob);
+  const queueProgress = activeProgress ? {
+    stage: activeProgress.stage,
+    progress: activeProgress.progress,
+    elapsedSeconds: activeProgress.elapsedSeconds,
+    remainingSeconds: activeProgress.remainingSeconds,
+    averageSeconds: activeProgress.averageSeconds,
+  } : null;
+  const queue = project.regenerationQueue.slice().reverse().map((item) => activeProgress?.queueId === item.id ? { ...item, ...queueProgress } : item);
   return {
     selectedProjectId: projectsRecord.selectedProjectId,
     projects: summaries,
@@ -1242,7 +1279,7 @@ async function buildProjectsView(config, plan, record = null) {
       contextAssets,
       blenderAssets,
       blenderBackbone: blenderAssets.find((asset) => asset.id === project.blenderBackboneAssetId) || null,
-      queue: project.regenerationQueue.slice().reverse(),
+      queue,
       counts: {
         assets: assets.length,
         shots: shots.length,

@@ -33,6 +33,7 @@ The app runs entirely on your computer. It does not upload prompts, videos, logs
 - Selectable Studio scene queue with one-click **Move first** ordering
 - Project Library imports an existing folder by reference or into an app-managed copy
 - Visual multi-shot selection, acceptance state, context attachments, and persistent selective-regeneration queue
+- Live regeneration stage, progress percentage, elapsed time, and estimated remaining time in the Projects queue
 - First-class Blender/3D assets with one designated project backbone scene for shared cameras, blocking, and spatial continuity
 
 ## Requirements
@@ -313,6 +314,7 @@ lib/
   comfyui-core-update.mjs    Guarded official fast-forward core/dependency updater
   comfyui-blender-setup.mjs  Guarded ComfyUI-Blender maintenance adapter
   sam3-setup.mjs             Pinned, verified SAM 3.1 model-install adapter
+  studio-progress.mjs        Monotonic Studio/Projects render progress estimator
 local-server.mjs             Local aggregation, streaming, and control API
 scripts/
   ltx-studio-runner.py       One-shot adapter for a compatible local runner
