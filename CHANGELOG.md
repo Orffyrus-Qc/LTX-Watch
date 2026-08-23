@@ -18,6 +18,7 @@ All notable changes to LTX / Watch are documented here.
 - Persistent selective-regeneration queue that reuses Studio's guarded single-shot adapter and can pause safely between shots.
 - First-class Blender and 3D project assets with a designated master backbone scene for shared camera, animation blocking, and spatial continuity.
 - Range-enabled project media previews and Explorer actions constrained to registered local roots.
+- Guarded **Install model** button for native SAM 3.1 with explicit license confirmation, idle-state locking, official Comfy-Org download, pinned size/SHA-256 verification, backup, and failure cleanup.
 
 ## 1.3.0 — 2026-08-23
 

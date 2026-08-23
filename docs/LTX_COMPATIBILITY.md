@@ -83,7 +83,7 @@ The audit may:
 The audit must not:
 
 - Import `torch`, initialize CUDA, or launch ComfyUI
-- Run `git fetch`, `git pull`, package installation, model downloads, driver installers, or custom-node installers
+- Run `git fetch`, `git pull`, package installation, model downloads, driver installers, or custom-node installers (the separate authenticated maintenance endpoint owns its narrow allowlisted actions)
 - Accept model licenses or persist credentials
 - Return prompts, media, log contents, machine names, or absolute model file paths
 - Modify a custom external runner or enable a secondary LTX worker
@@ -134,7 +134,13 @@ The sole launcher-editing exception is the Manager maintenance adapter. It recog
 
 ### Optional tools
 
-Prefer native ComfyUI SAM 3 support over community wrappers when available. A native node file and a licensed model checkpoint are separate checks. Do not automate model access or license acceptance. Keep advanced LTX nodes optional and link to the official Lightricks repository.
+Prefer native ComfyUI SAM 3 support over community wrappers when available. A native node file and licensed model checkpoint are separate checks. The guarded `install-sam3` action may download only ComfyUI's documented Comfy-Org checkpoint after the user explicitly confirms the SAM License; it must not automate access to Meta's gated repository. Keep advanced LTX nodes optional and link to the official Lightricks repository.
+
+### SAM 3.1 model installation
+
+The `install-sam3` maintenance action requires the session token, `{ "confirmed": true, "licenseAccepted": true }`, native SAM 3.1 core nodes, and an idle worker plus running/pending ComfyUI queue. It downloads `sam3.1_multiplex_fp16.safetensors` from the exact Comfy-Org URL documented in the official ComfyUI workflow template, validates the pinned 1,745,546,848-byte size and SHA-256 digest, and only then moves it to `models/checkpoints`.
+
+If the canonical destination already contains an unverified file, the installer moves it to the maintenance backup directory first and restores it when download or verification fails. Partial downloads use a unique `.part` name and are removed on failure. If the model filename, digest, size, license, repository, or native node path changes, update the adapter and its parser/constants test against official ComfyUI and Comfy-Org sources; never silently follow a redirect to an unofficial mirror.
 
 ### ComfyUI-Blender integration
 

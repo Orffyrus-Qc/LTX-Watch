@@ -12,6 +12,7 @@ import {
 } from '../lib/environment-audit.mjs';
 import { normalizeLoopbackComfyUrl, parseInstallerResult } from '../lib/comfyui-blender-setup.mjs';
 import { parseManagerInstallerResult } from '../lib/comfyui-manager-setup.mjs';
+import { SAM3_MODEL, parseSam3InstallerResult } from '../lib/sam3-setup.mjs';
 
 test('requirements are normalized and checked without importing packages', () => {
   const requirements = [
@@ -75,4 +76,13 @@ test('Manager setup results use a separate explicit result marker', () => {
   const payload = parseManagerInstallerResult('pip output\nLTX_WATCH_MANAGER_RESULT:{"ok":true,"mode":"built-in","version":"4.2.2"}\n');
   assert.deepEqual(payload, { ok: true, mode: 'built-in', version: '4.2.2' });
   assert.equal(parseManagerInstallerResult('LTX_WATCH_RESULT:{"ok":true}'), null);
+});
+
+test('SAM 3.1 setup pins the official checkpoint and parses only its result marker', () => {
+  assert.equal(SAM3_MODEL.url, 'https://huggingface.co/Comfy-Org/sam3.1/resolve/main/checkpoints/sam3.1_multiplex_fp16.safetensors');
+  assert.equal(SAM3_MODEL.size, 1_745_546_848);
+  assert.match(SAM3_MODEL.sha256, /^[a-f0-9]{64}$/);
+  const payload = parseSam3InstallerResult('download output\nLTX_WATCH_SAM3_RESULT:{"ok":true,"verified":true}\n');
+  assert.deepEqual(payload, { ok: true, verified: true });
+  assert.equal(parseSam3InstallerResult('LTX_WATCH_MANAGER_RESULT:{"ok":true}'), null);
 });

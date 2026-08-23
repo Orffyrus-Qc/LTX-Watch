@@ -24,7 +24,7 @@ The app runs entirely on your computer. It does not upload prompts, videos, logs
 - Windows process-tree pause/resume that preserves the current shot and VRAM
 - Auto-refreshing activity timeline parsed from generator events
 - Read-only Environment Doctor for ComfyUI, LTX models, Python packages, Git revisions, disks, video tools, and NVIDIA GPUs
-- Official installation/update actions plus native SAM 3.1 readiness and guarded GPU-role recommendations
+- Guarded one-click SAM 3.1 checkpoint installation plus native-node readiness and GPU-role recommendations
 - Guarded migration from legacy ComfyUI Manager nodes to the current built-in Manager
 - One-click guarded installation and configuration of the official ComfyUI-Blender integration
 - Editable source paths, model label, worker match, and refresh interval
@@ -203,7 +203,9 @@ Open **Environment** in the sidebar to run a read-only local scan. The doctor di
 
 The scan never imports PyTorch or CUDA, launches a workflow, downloads a model, accepts a license, or changes a repository. When a worker or ComfyUI queue item is active or pending, the UI explicitly locks maintenance actions.
 
-Most official actions open verified upstream pages in a new browser tab. Two narrow, explicit maintenance adapters can make local changes.
+Most official actions open verified upstream pages in a new browser tab. Three narrow, explicit maintenance adapters can make local changes.
+
+**SAM 3.1 → Install model** is available when native SAM 3.1 nodes are present. It requires an explicit confirmation that the user reviewed and accepts Meta's SAM License, an idle worker/ComfyUI queue, and enough free disk space. Watch downloads the exact checkpoint documented by ComfyUI from the official Comfy-Org repository into `models\checkpoints`, then verifies its pinned 1,745,546,848-byte size and SHA-256 digest before making it visible. Partial downloads are removed; an existing unverified checkpoint is backed up and restored on failure. Watch does not update ComfyUI core automatically when the native nodes are missing.
 
 **ComfyUI Manager → Migrate to built-in** follows the current official Manager installation model:
 
@@ -221,7 +223,7 @@ Most official actions open verified upstream pages in a new browser tab. Two nar
 4. Enables the matching Blender add-on and saves the configured loopback `comfyUrl` as its server address.
 5. Reports whether ComfyUI must be restarted. Watch never restarts it automatically.
 
-Both actions require the confirmation dialog, the ephemeral local control token, a valid ComfyUI root, and an idle worker/queue. Blender setup also requires a closed Blender session. They refuse to overwrite unrecognized folders or Git checkouts with local changes and restore file backups when setup fails. The Manager adapter installs only the official Manager requirement and changes only a recognized launcher assignment; all other external-runner and GPU setup remains guided. Watch still does not silently install ComfyUI, Blender, drivers, model weights, or licensed models.
+All three actions require a confirmation dialog, the ephemeral local control token, a valid ComfyUI root, and an idle worker/queue. Blender setup also requires a closed Blender session. They refuse unsafe targets and preserve backups when setup fails. The Manager adapter installs only the official Manager requirement and changes only a recognized launcher assignment. The SAM adapter installs only the pinned licensed checkpoint after the user explicitly accepts its license. Watch still does not silently install ComfyUI, Blender, drivers, other model weights, or externally gated models.
 
 The update comparison contacts the official GitHub API and official ComfyUI `requirements.txt` endpoint only while the Environment page is scanned. It sends repository commit hashes, not prompts, videos, local paths, machine names, or credentials.
 
@@ -290,7 +292,7 @@ The bridge is an implementation detail, but these endpoints define the dashboard
 | `GET` | `/api/health` | Bridge health |
 | `GET` | `/api/state` | Aggregated job, queue, video, GPU, and control state |
 | `GET` | `/api/environment` | Read-only installation, dependency, update, model, tool, disk, and GPU audit |
-| `POST` | `/api/environment/maintenance` | Confirmed, authenticated, idle-only allowlisted Manager or Blender setup action |
+| `POST` | `/api/environment/maintenance` | Confirmed, authenticated, idle-only allowlisted Manager, Blender, or SAM 3.1 setup action |
 | `GET` | `/api/config` | Effective local configuration |
 | `POST` | `/api/config` | Save local configuration |
 | `POST` | `/api/control` | Pause or resume the verified worker tree |
@@ -316,11 +318,13 @@ lib/
   environment-audit.mjs      Read-only ComfyUI/LTX/dependency/GPU diagnostics
   comfyui-blender-setup.mjs  Guarded ComfyUI-Blender maintenance adapter
   comfyui-manager-setup.mjs  Guarded built-in Manager migration adapter
+  sam3-setup.mjs             Pinned, verified SAM 3.1 model-install adapter
 local-server.mjs             Local aggregation, streaming, and control API
 scripts/
   ltx-studio-runner.py       One-shot adapter for a compatible local runner
   install-comfyui-blender.ps1 Official release install, Blender setup, backup, and rollback
   install-comfyui-manager.ps1 Official Manager requirements, launcher flag, migration, and rollback
+  install-sam3.ps1           Official checkpoint download, digest validation, backup, and rollback
   process-orchestrator.ps1   Windows process-tree suspend/resume
   run-local.mjs              Starts the dashboard and bridge together
   run-studio.mjs             Starts isolated Studio development ports

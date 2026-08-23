@@ -42,6 +42,7 @@ Do not rely on blog posts or copied endpoint lists when the upstream source or O
 - Keep the local bridge bound to `127.0.0.1`. Do not change it to `0.0.0.0`.
 - Keep `/api/environment` read-only and safe while a real render is active. A live worker or running/pending ComfyUI queue item must lock maintenance guidance.
 - Keep `/api/environment/maintenance` token-protected, confirmation-gated, and limited to allowlisted actions. Revalidate that workers and both running/pending ComfyUI queues are idle immediately before changing files.
+- Never invoke the real `install-sam3` maintenance action during automated validation; it downloads a licensed 1.63 GiB checkpoint.
 - Preserve the per-session `X-LTX-Control-Token` check.
 - Validate decoded media and Explorer paths against configured roots before access.
 - Keep `local.config.json`, `.env*`, generated media, logs, status files, queue plans, and `orchestrator.state.json` out of Git.
@@ -120,6 +121,16 @@ Owns read-only ComfyUI/LTX installation detection, model filename grouping, Pyth
 - Archive the legacy Manager only when it is a clean Git checkout from `Comfy-Org/ComfyUI-Manager` or its historical official `ltdrdata` origin.
 - Never configure wildcard Git trust, overwrite local changes, restart ComfyUI, or invoke the real installer during automated checks.
 
+### SAM 3.1 maintenance adapter
+
+`lib/sam3-setup.mjs` and `scripts/install-sam3.ps1` own the one allowlisted model download. Preserve these invariants:
+
+- Require native `comfy_extras/nodes_sam3.py`, explicit SAM License confirmation, the local control token, and an idle worker plus running/pending ComfyUI queue.
+- Download only the exact official Comfy-Org checkpoint URL documented by ComfyUI.
+- Pin and verify both the 1,745,546,848-byte size and SHA-256 digest before moving the checkpoint into `models/checkpoints`.
+- Download into a uniquely named partial file, remove it on failure, back up an existing unverified canonical checkpoint, and restore it if installation fails.
+- Never update ComfyUI core, accept a gated Hugging Face agreement, restart ComfyUI, weaken the URL allowlist, or run the real download during tests.
+
 ### `scripts/process-orchestrator.ps1`
 
 Owns Windows-native process-tree suspension and resumption. It must verify the root command line before controlling it. Suspend roots before descendants; resume descendants before roots. Keep operations idempotent at the HTTP layer so native suspend counts stay balanced.
@@ -191,6 +202,7 @@ With the local bridge running, validate only non-destructive routes:
 - `GET /api/environment` returns the documented diagnostic fields and does not change local state.
 - `GET /api/projects` may refresh an explicitly queued project workflow, so ensure the project fixture contains no queued items before validation.
 - An unauthorized `POST /api/environment/maintenance` is rejected with 403. Do not run a real maintenance action as an automated check.
+- An authenticated `install-sam3` request without `licenseAccepted: true` is rejected. Do not submit an accepted request during validation.
 - An unauthorized `POST /api/control` is rejected with 403.
 - An authenticated invalid control action is rejected with 400.
 - A media range request returns 206 and the requested byte count.

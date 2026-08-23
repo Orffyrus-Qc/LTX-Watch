@@ -185,9 +185,11 @@ type EnvironmentState = {
     sam3: {
       nativeInstalled: boolean;
       modelInstalled: boolean;
+      automatedSetupSupported: boolean;
+      downloadBytes: number;
       state: 'ready' | 'model-required' | 'core-update-required' | 'unavailable';
       detail: string;
-      links: { model: string; license: string };
+      links: { model: string; license: string; guide: string };
     };
     ltxAdvanced: { installed: boolean; detail: string; url: string };
     comfyManager?: {
@@ -304,6 +306,7 @@ export default function Dashboard() {
   const [environment, setEnvironment] = useState<EnvironmentState | null>(null);
   const [environmentLoading, setEnvironmentLoading] = useState(false);
   const [maintenancePending, setMaintenancePending] = useState(false);
+  const [maintenanceAction, setMaintenanceAction] = useState('');
   const [environmentError, setEnvironmentError] = useState('');
   const [queueOpen, setQueueOpen] = useState(false);
   const [settings, setSettings] = useState<Config | null>(null);
@@ -389,6 +392,7 @@ export default function Dashboard() {
     const verb = integration.updateAvailable ? 'update' : integration.ready ? 'reconfigure' : integration.customNodesInstalled && integration.addonInstalled ? 'verify and configure' : 'install';
     const confirmed = window.confirm(`LTX Watch will ${verb} ComfyUI-Blender using the official release, enable it in Blender, and save ${state.config.comfyUrl} as its server address. Blender must be closed. Continue?`);
     if (!confirmed) return;
+    setMaintenanceAction('install-comfyui-blender');
     setMaintenancePending(true);
     setEnvironmentError('');
     try {
@@ -409,6 +413,7 @@ export default function Dashboard() {
       setEnvironmentError(message);
     } finally {
       setMaintenancePending(false);
+      setMaintenanceAction('');
     }
   }
 
@@ -417,6 +422,7 @@ export default function Dashboard() {
     if (!manager || !manager.automatedSetupSupported || !state?.control.token || maintenancePending || environment?.render.changesLocked) return;
     const confirmed = window.confirm('LTX Watch will install the official built-in ComfyUI Manager dependency, back up and enable --enable-manager in the detected LTX launcher, and archive the clean legacy Manager outside custom_nodes. ComfyUI must be restarted afterward. Continue?');
     if (!confirmed) return;
+    setMaintenanceAction('install-comfyui-manager');
     setMaintenancePending(true);
     setEnvironmentError('');
     try {
@@ -435,6 +441,35 @@ export default function Dashboard() {
       setEnvironmentError(message);
     } finally {
       setMaintenancePending(false);
+      setMaintenanceAction('');
+    }
+  }
+
+  async function setupSam3() {
+    const sam3 = environment?.tools.sam3;
+    if (!sam3?.automatedSetupSupported || !state?.control.token || maintenancePending || environment?.render.changesLocked) return;
+    const confirmed = window.confirm(`LTX Watch will download the official 1.63 GiB SAM 3.1 checkpoint from Comfy-Org into ${state.config.comfyRoot}\\models\\checkpoints and verify its pinned size and SHA-256 digest. An existing unverified file will be backed up. The model is provided under Meta's SAM License; by continuing, you confirm that you reviewed and accept that license. ComfyUI must be restarted afterward. Continue?`);
+    if (!confirmed) return;
+    setMaintenanceAction('install-sam3');
+    setMaintenancePending(true);
+    setEnvironmentError('');
+    try {
+      const response = await fetch(`${API_BASE}/api/environment/maintenance`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-LTX-Control-Token': state.control.token },
+        body: JSON.stringify({ action: 'install-sam3', confirmed: true, licenseAccepted: true }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'SAM 3.1 setup failed');
+      setEnvironment(payload.environment as EnvironmentState);
+      setToast(payload.result?.installed ? 'SAM 3.1 installed and verified — restart ComfyUI when idle' : 'SAM 3.1 checkpoint verified');
+    } catch (requestError) {
+      const message = requestError instanceof Error ? requestError.message : 'SAM 3.1 setup failed';
+      await loadEnvironment(true);
+      setEnvironmentError(message);
+    } finally {
+      setMaintenancePending(false);
+      setMaintenanceAction('');
     }
   }
 
@@ -640,7 +675,7 @@ export default function Dashboard() {
             </section>
 
             {environment.render.changesLocked && <div className="maintenance-lock"><Pause size={15} /><div><b>Maintenance changes are locked while rendering</b><span>Diagnostics and official links remain available. Do not update ComfyUI, packages, models, drivers, or GPU profiles until the current job stops.</span></div></div>}
-            {(maintenancePending || environment.maintenance?.status === 'running') && <div className="maintenance-progress" role="status"><LoaderCircle size={15} className="spinning" /><div><b>{environment.maintenance?.action === 'install-comfyui-manager' ? 'Configuring ComfyUI Manager' : environment.maintenance?.action === 'install-comfyui-blender' ? 'Configuring ComfyUI-Blender' : 'Preparing guarded setup'}</b><span>{environment.maintenance?.stage || 'Validating the official integration…'}</span></div></div>}
+            {(maintenancePending || environment.maintenance?.status === 'running') && <div className="maintenance-progress" role="status"><LoaderCircle size={15} className="spinning" /><div><b>{(maintenanceAction || environment.maintenance?.action) === 'install-comfyui-manager' ? 'Configuring ComfyUI Manager' : (maintenanceAction || environment.maintenance?.action) === 'install-comfyui-blender' ? 'Configuring ComfyUI-Blender' : (maintenanceAction || environment.maintenance?.action) === 'install-sam3' ? 'Installing SAM 3.1' : 'Preparing guarded setup'}</b><span>{environment.maintenance?.stage || 'Validating the official integration…'}</span></div></div>}
 
             <div className="doctor-grid" aria-label="Environment checks">
               {environment.checks.map((check) => <article className={`doctor-card ${check.state}`} key={check.id}>
@@ -692,7 +727,7 @@ export default function Dashboard() {
             <section className="environment-section tools-section">
               <div className="environment-section-head"><div><Wrench size={16} /><span><small>OPTIONAL CAPABILITIES</small><h3>Useful ComfyUI tools</h3></span></div><b>Curated only</b></div>
               <div className="tool-grid">
-                <article className="tool-card"><span className="tool-icon"><Sparkles size={18} /></span><div><small>NATIVE COMFYUI</small><h4>SAM 3.1 masks & tracking</h4><p>{environment.tools.sam3.detail}</p><div><span className={`tool-state ${environment.tools.sam3.state}`}>{environment.tools.sam3.state.replaceAll('-', ' ')}</span><a href={environment.tools.sam3.links.model} target="_blank" rel="noreferrer">Official model <ExternalLink size={12} /></a></div></div></article>
+                <article className="tool-card"><span className="tool-icon"><Sparkles size={18} /></span><div><small>NATIVE COMFYUI</small><h4>SAM 3.1 masks & tracking</h4><p>{environment.tools.sam3.detail}</p><div className="tool-card-actions"><span className={`tool-state ${environment.tools.sam3.state}`}>{environment.tools.sam3.state.replaceAll('-', ' ')}</span><button className="tool-setup-button" onClick={setupSam3} disabled={maintenancePending || environment.render.changesLocked || !environment.tools.sam3.automatedSetupSupported} title={!environment.tools.sam3.nativeInstalled ? 'Update ComfyUI core before installing the model.' : environment.tools.sam3.modelInstalled ? 'The SAM 3.1 checkpoint is already installed.' : 'Downloads and verifies the official 1.63 GiB checkpoint.'}>{maintenancePending ? <LoaderCircle size={12} className="spinning" /> : environment.tools.sam3.modelInstalled ? <Check size={12} /> : <Download size={12} />}{environment.tools.sam3.modelInstalled ? 'Installed' : 'Install model'}</button><a href={environment.tools.sam3.links.license} target="_blank" rel="noreferrer">License <ExternalLink size={12} /></a><a href={environment.tools.sam3.links.guide} target="_blank" rel="noreferrer">Guide <ExternalLink size={12} /></a></div></div></article>
                 <article className="tool-card"><span className="tool-icon"><Film size={18} /></span><div><small>OFFICIAL LIGHTRICKS</small><h4>Advanced LTX nodes</h4><p>{environment.tools.ltxAdvanced.detail}</p><div><span className={`tool-state ${environment.tools.ltxAdvanced.installed ? 'ready' : 'optional'}`}>{environment.tools.ltxAdvanced.installed ? 'installed' : 'optional'}</span><a href={environment.tools.ltxAdvanced.url} target="_blank" rel="noreferrer">Review project <ExternalLink size={12} /></a></div></div></article>
                 {environment.tools.comfyManager && <article className="tool-card"><span className="tool-icon"><Settings2 size={18} /></span><div><small>OFFICIAL COMFYUI</small><h4>ComfyUI Manager</h4><p>{environment.tools.comfyManager.detail}</p><div className="tool-card-actions"><span className={`tool-state ${environment.tools.comfyManager.ready ? 'ready' : environment.tools.comfyManager.state}`}>{environment.tools.comfyManager.state.replaceAll('-', ' ')}</span><button className="tool-setup-button" onClick={setupComfyManager} disabled={maintenancePending || environment.render.changesLocked || !environment.tools.comfyManager.automatedSetupSupported} title={!environment.tools.comfyManager.automatedSetupSupported ? 'The detected launcher is not a safe automatic setup target, or the legacy repository has local changes.' : undefined}>{maintenancePending ? <LoaderCircle size={12} className="spinning" /> : <Download size={12} />}{environment.tools.comfyManager.state === 'migration-available' ? 'Migrate to built-in' : environment.tools.comfyManager.state === 'activation-required' ? 'Enable Manager' : environment.tools.comfyManager.ready ? 'Verify setup' : 'Install & enable'}</button><a href={environment.tools.comfyManager.docsUrl} target="_blank" rel="noreferrer">Guide <ExternalLink size={12} /></a></div></div></article>}
                 {environment.tools.comfyBlender && <article className="tool-card comfy-blender-card"><span className="tool-icon"><PackageCheck size={18} /></span><div><small>BLENDER BRIDGE</small><h4>ComfyUI-Blender</h4><p>{environment.tools.comfyBlender.detail}</p><div className="tool-card-actions"><span className={`tool-state ${environment.tools.comfyBlender.ready ? 'ready' : environment.tools.comfyBlender.state}`}>{environment.tools.comfyBlender.state.replaceAll('-', ' ')}</span><button className="tool-setup-button" onClick={setupComfyBlender} disabled={maintenancePending || environment.render.changesLocked || !environment.tools.comfyBlender.blenderDetected || !environment.tools.comfyBlender.supported}>{maintenancePending ? <LoaderCircle size={12} className="spinning" /> : <Download size={12} />}{environment.tools.comfyBlender.updateAvailable ? 'Update & configure' : environment.tools.comfyBlender.ready ? 'Reconfigure' : environment.tools.comfyBlender.customNodesInstalled && environment.tools.comfyBlender.addonInstalled ? 'Verify & configure' : 'Install & configure'}</button><a href={environment.tools.comfyBlender.projectUrl} target="_blank" rel="noreferrer">Project <ExternalLink size={12} /></a></div></div></article>}
