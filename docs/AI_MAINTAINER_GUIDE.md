@@ -143,6 +143,7 @@ When LTX or ComfyUI updates the official full-workflow templates:
 8. Test `create-core.mjs` and `ltx-create-runner.py --validate-job` only. Never press **Queue creation** or submit `/api/create` `enqueue` during automated validation.
 9. Keep Create cancellation job-scoped: the authenticated bridge writes only the private marker; the owning runner interrupts only its isolated loopback server and releases the normal lock. Never implement cancellation as an unverified PID kill or a request to an arbitrary configured ComfyUI instance.
 10. Keep Create deletion recoverable and server-owned: accept only a completed job ID, derive its stored output path, revalidate the configured clip root and video extension, move it to the Windows Recycle Bin, and remove history only after success. Never accept a browser-supplied delete path.
+11. Treat reference uploads as exact file identities, never as model enums. Stage unique first/last images directly in ComfyUI's enumerated input root before server startup, preserve `image_upload` widget values verbatim, and remove staged copies after the server stops.
 
 Context uploads are an explicit local contract. Preserve the extension allowlist, kind-specific size limits, ordered 4 MiB offsets, exact final length, server-selected destination, and private-runtime revalidation. Image files are I2V/FLF2V anchors; video is reduced to first/end anchors through fixed FFmpeg arguments; audio replaces the final soundtrack and must never be described as visual conditioning. Do not add arbitrary transcoder flags from the browser.
 

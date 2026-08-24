@@ -25,6 +25,7 @@ All notable changes to LTX / Watch are documented here.
 - Completed Create cards can move their generated video to the Windows Recycle Bin after confirmation; the history record is removed only after the recoverable file operation succeeds.
 - Windows Recycle Bin deletion now passes the video path outside the PowerShell command expression, so drive-letter paths cannot be parsed as code.
 - Create and Studio now force no-window process creation for descendant ComfyUI, Blender, FFmpeg, and helper processes, preventing background Python console popups.
+- First-frame and first/last-frame Create jobs now stage unique root-level ComfyUI inputs, preserve upload selectors exactly instead of reconciling them as model enums, and remove the staged copies after generation.
 
 ## 1.4.0 — 2026-08-23
 

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -121,6 +121,7 @@ test('Create runner reconciles an unambiguous renamed model enum', async (contex
     '  "renamed": module.reconcile_combo_value("gemma4_e2b_it_int8_convrot.safetensors", choices),',
     '  "existing": module.reconcile_combo_value("gemma4_e2b_it_bf16.safetensors", choices),',
     '  "ambiguous": module.reconcile_combo_value("gemma4_e2b_it.safetensors", choices),',
+    '  "imageUpload": module.reconcile_widget_value("ltx_watch_create_fixture_reference_1.png", [["example.png"], {"image_upload": True}]),',
     '  "subgraph": compiled["393"]["inputs"]["clip_name"],',
     '}))',
   ].join('\n');
@@ -139,7 +140,59 @@ test('Create runner reconciles an unambiguous renamed model enum', async (contex
   assert.equal(result.renamed, 'gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors');
   assert.equal(result.existing, 'gemma4_e2b_it_bf16.safetensors');
   assert.equal(result.ambiguous, 'gemma4_e2b_it.safetensors');
+  assert.equal(result.imageUpload, 'ltx_watch_create_fixture_reference_1.png');
   assert.equal(result.subgraph, 'gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors');
+});
+
+test('Create stages reference images at the ComfyUI input root and cleans them', async (context) => {
+  const python = process.env.LTX_STUDIO_TEST_PYTHON || (process.platform === 'win32' ? 'python.exe' : 'python3');
+  const root = await mkdtemp(path.join(tmpdir(), 'ltx-watch-reference-'));
+  try {
+    const runtimeRoot = path.join(root, 'runtime');
+    const comfyRoot = path.join(root, 'comfy');
+    const sourcePath = path.join(runtimeRoot, 'reference.png');
+    await mkdir(path.join(comfyRoot, 'input'), { recursive: true });
+    await mkdir(runtimeRoot, { recursive: true });
+    await writeFile(sourcePath, 'private reference fixture', 'utf8');
+    const code = [
+      'import importlib.util, json, os',
+      'from pathlib import Path',
+      'spec = importlib.util.spec_from_file_location("ltx_create_reference_test", os.environ["LTX_CREATE_RUNNER"])',
+      'module = importlib.util.module_from_spec(spec)',
+      'spec.loader.exec_module(module)',
+      'runtime = Path(os.environ["LTX_REFERENCE_RUNTIME"])',
+      'comfy = Path(os.environ["LTX_REFERENCE_COMFY"])',
+      'job = {"id": "create-fixture", "useBlender": False, "videoContextPath": None, "referenceMode": "first-frame", "referencePaths": [str(runtime / "reference.png")]}',
+      'names, staged = module.prepare_reference_files(job, runtime, comfy, object())',
+      'before = [item.is_file() for item in staged]',
+      'parents = [item.parent == comfy / "input" for item in staged]',
+      'module.cleanup_reference_files(staged)',
+      'print(json.dumps({"names": names, "before": before, "parents": parents, "after": [item.exists() for item in staged]}))',
+    ].join('\n');
+    const run = spawnSync(python, ['-c', code], {
+      cwd: root,
+      encoding: 'utf8',
+      windowsHide: true,
+      env: {
+        ...process.env,
+        LTX_CREATE_RUNNER: path.join(appRoot, 'scripts', 'ltx-create-runner.py'),
+        LTX_REFERENCE_RUNTIME: runtimeRoot,
+        LTX_REFERENCE_COMFY: comfyRoot,
+      },
+    });
+    if (run.error?.code === 'ENOENT') {
+      context.skip(`Python executable not available: ${python}`);
+      return;
+    }
+    assert.equal(run.status, 0, run.stderr || run.stdout);
+    const result = JSON.parse(run.stdout);
+    assert.deepEqual(result.names, ['ltx_watch_create_create-fixture_reference_1.png']);
+    assert.deepEqual(result.before, [true]);
+    assert.deepEqual(result.parents, [true]);
+    assert.deepEqual(result.after, [false]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('Create retry replaces a stale result before the new runner is spawned', async () => {

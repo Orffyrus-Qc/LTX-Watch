@@ -164,6 +164,14 @@ def reconcile_combo_value(value, definition):
     return candidates[0] if len(candidates) == 1 else value
 
 
+def reconcile_widget_value(value, definition):
+    """Never treat an uploaded file selector as a renamed model enum."""
+    options = definition[1] if isinstance(definition, list) and len(definition) > 1 and isinstance(definition[1], dict) else {}
+    if options.get("image_upload"):
+        return value
+    return reconcile_combo_value(value, definition)
+
+
 def locate_template(comfy_root: Path, mode: str):
     names = {
         "text": "video_ltx2_5_t2v.json",
@@ -328,11 +336,11 @@ class WorkflowCompiler:
                         compiled_inputs[dotted] = linked[dotted] if dotted in linked else widgets.pop(0) if widgets else None
                     continue
                 if name in linked:
-                    compiled_inputs[name] = linked[name] if is_connection else reconcile_combo_value(linked[name], definition)
+                    compiled_inputs[name] = linked[name] if is_connection else reconcile_widget_value(linked[name], definition)
                     if not is_connection and widgets:
                         widgets.pop(0)
                 elif not is_connection and widgets:
-                    compiled_inputs[name] = reconcile_combo_value(widgets.pop(0), definition)
+                    compiled_inputs[name] = reconcile_widget_value(widgets.pop(0), definition)
             for name, value in linked.items():
                 compiled_inputs.setdefault(name, value)
             if class_type == "SaveVideo":
@@ -427,15 +435,32 @@ def prepare_reference_files(job, runtime_root: Path, comfy_root: Path, source_ru
         references = [Path(item) for item in job.get("referencePaths", [])]
         if any(not item.is_file() or not inside(item, [runtime_root]) for item in references):
             raise RuntimeError("A reference frame is missing from the private Create job folder.")
-    destination = comfy_root / "input" / "ltx-watch-create" / job["id"]
+    destination = comfy_root / "input"
     destination.mkdir(parents=True, exist_ok=True)
+    job_token = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(job["id"]))[:80]
+    if not job_token:
+        raise RuntimeError("The Create job id cannot stage a reference frame.")
     relative_names = []
-    for index, source in enumerate(references):
-        suffix = source.suffix.lower() if source.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"} else ".png"
-        target = destination / f"reference_{index + 1}{suffix}"
-        shutil.copy2(source, target)
-        relative_names.append(f"ltx-watch-create/{job['id']}/{target.name}")
-    return relative_names
+    staged_paths = []
+    try:
+        for index, source in enumerate(references):
+            suffix = source.suffix.lower() if source.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"} else ".png"
+            target = destination / f"ltx_watch_create_{job_token}_reference_{index + 1}{suffix}"
+            shutil.copy2(source, target)
+            staged_paths.append(target)
+            relative_names.append(target.name)
+    except Exception:
+        cleanup_reference_files(staged_paths)
+        raise
+    return relative_names, staged_paths
+
+
+def cleanup_reference_files(staged_paths):
+    for staged_path in staged_paths:
+        try:
+            Path(staged_path).unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def newest_output(output_root: Path, prefix: str, started_at: float):
@@ -512,7 +537,6 @@ def run_job(job):
     if any(not callable(getattr(source, name, None)) for name in required_functions):
         raise RuntimeError("The configured source runner does not expose the required guarded server lifecycle.")
 
-    references = prepare_reference_files(job, runtime_root, comfy_root, source)
     mode = job["referenceMode"]
     if job.get("useBlender") and mode == "text":
         mode = "first-frame"
@@ -534,6 +558,7 @@ def run_job(job):
 
     server = None
     server_log = None
+    staged_reference_paths = []
     cancel_stop = threading.Event()
     cancel_seen = threading.Event()
     cancel_watcher = threading.Thread(
@@ -545,6 +570,7 @@ def run_job(job):
     cancel_watcher.start()
     try:
         require_not_canceled(job)
+        references, staged_reference_paths = prepare_reference_files(job, runtime_root, comfy_root, source)
         progress(job, "Starting isolated ComfyUI", 8)
         server, server_log = source.start_comfy_server("ltx_watch_create", job["id"][:8], safer=bool(job.get("safer", False)))
         if server is None or not source.wait_for_server(base_url):
@@ -578,9 +604,12 @@ def run_job(job):
     finally:
         cancel_stop.set()
         cancel_watcher.join(timeout=2)
-        if server is not None:
-            source.stop_comfy_server(server, server_log, base_url)
-        source.release_lock(str(lock_path))
+        try:
+            if server is not None:
+                source.stop_comfy_server(server, server_log, base_url)
+        finally:
+            cleanup_reference_files(staged_reference_paths)
+            source.release_lock(str(lock_path))
 
     output = newest_output(comfy_root / "output", job["outputPrefix"], started)
     if not output:
