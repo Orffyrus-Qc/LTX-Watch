@@ -20,6 +20,7 @@ All notable changes to LTX / Watch are documented here.
 
 ### Fixed
 
+- Dashboard GPU utilization and VRAM now come from live `nvidia-smi` sampling instead of a frozen supervisor-file snapshot; legacy snapshot data is labeled and used only as a fallback.
 - Create reconciles an outdated official-template model filename, including values passed through exposed subgraph constants, with ComfyUI's live enum only when family and model-format markers identify one unambiguous installed checkpoint. This covers the renamed Gemma INT8 ConvRot checkpoint without silently switching precision.
 - Active Create renders can be canceled through an authenticated private marker. The owning runner interrupts only its isolated ComfyUI server, releases its lock, records a distinct Canceled state, and permits a clean Retry.
 - Completed Create cards can move their generated video to the Windows Recycle Bin after confirmation; the history record is removed only after the recoverable file operation succeeds.

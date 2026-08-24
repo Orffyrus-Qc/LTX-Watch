@@ -68,7 +68,7 @@ Compatibility-sensitive functions:
 
 - `getComfyQueue`
 - `parseLog`
-- `parseGpuSnapshot`
+- `getGpuTelemetry` and `lib/gpu-telemetry.mjs`
 - `countCompletedShots`
 - `walkVideos`
 - `friendlyName`

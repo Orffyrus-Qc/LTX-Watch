@@ -17,7 +17,7 @@ The app runs entirely on your computer. It does not upload prompts, videos, logs
 
 - Live active-track, shot, stage, elapsed-time, and remaining-time estimates
 - Planned-job queue plus ComfyUI running/pending queue status
-- GPU utilization and allocated-memory telemetry
+- Live NVIDIA GPU utilization and used-memory telemetry, with a clearly labeled supervisor-snapshot fallback
 - Searchable final-video and raw-clip history
 - MP4/WebM/MOV/MKV playback directly in the browser
 - One-click **Show in Explorer** actions
@@ -301,7 +301,8 @@ LTX / Watch intentionally separates standard ComfyUI data from project-specific 
 | Standard | `GET /queue` | Live ComfyUI running/pending counts |
 | Standard | Local video folders | History, playback, sizes, timestamps |
 | Optional | Progress log | Track, shot, stage, estimates, activity |
-| Optional | Status JSON | Worker PID and GPU snapshot |
+| Local GPU | `nvidia-smi` | Live utilization and used/total VRAM |
+| Optional | Status JSON | Worker PID and legacy GPU snapshot fallback |
 | Optional | Plan JSON | Planned track queue and shot counts |
 
 See [docs/LTX_COMPATIBILITY.md](docs/LTX_COMPATIBILITY.md) for accepted schemas, log events, filename conventions, and the update procedure for a future LTX or ComfyUI release.

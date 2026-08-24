@@ -117,7 +117,7 @@ type MonitorState = {
   queue: QueueItem[];
   videos: VideoItem[];
   activity: { type: 'started' | 'queued' | 'complete' | 'final' | 'error' | 'paused' | 'resumed' | 'recovery' | 'recovered'; time?: string; title: string; detail: string }[];
-  gpus: { device: number; name: string; memoryMb: number; utilization: number; totalMemoryGb: number | null }[];
+  gpus: { device: number; name: string; memoryMb: number; totalMemoryMb?: number | null; utilization: number; totalMemoryGb: number | null; source?: 'nvidia-smi' | 'status-file'; sampledAt?: string | null }[];
   stats: { finals: number; clips: number; todayFinals: number; queued: number };
   config: Config;
   studio: StudioView;
@@ -488,7 +488,7 @@ export default function Dashboard() {
   const current = state?.current;
   const active = Boolean(current);
   const elapsedSeconds = current?.elapsedSeconds || 0;
-  const mainGpu = state?.gpus[0];
+  const mainGpu = state?.gpus.find((gpu) => gpu.device === state.config.studioGpu) || state?.gpus[0];
   const live = Boolean(state?.connection.worker || state?.connection.comfy);
   const recoveryRequired = state?.control?.state === 'recovery';
   const isPaused = state?.control?.state === 'paused' || recoveryRequired;
@@ -516,7 +516,7 @@ export default function Dashboard() {
           {mainGpu ? <>
             <div className="gpu-line"><span>GPU {mainGpu.device}</span><strong>{mainGpu.utilization}%</strong></div>
             <div className="mini-meter"><span style={{ width: `${mainGpu.utilization}%` }} /></div>
-            <small>{mainGpu.name.replace('NVIDIA GeForce ', '')} · {(mainGpu.memoryMb / 1024).toFixed(1)} GB allocated</small>
+            <small>{mainGpu.name.replace('NVIDIA GeForce ', '')} · {(mainGpu.memoryMb / 1024).toFixed(1)}{mainGpu.totalMemoryMb ? ` / ${(mainGpu.totalMemoryMb / 1024).toFixed(1)}` : ''} GB used{mainGpu.source === 'status-file' ? ' · runner snapshot' : ''}</small>
           </> : <small>Waiting for GPU telemetry</small>}
         </div>
       </aside>

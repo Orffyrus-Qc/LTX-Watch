@@ -19,7 +19,7 @@ Classify the request before editing:
 | Output folder or extension changes | Update configuration defaults and `walkVideos` |
 | Final filename suffix changes | Update generic suffix cleanup in `friendlyName` and final-slug detection |
 | Progress log format changes | Update `parseLog` and preserve legacy patterns |
-| Status JSON changes | Update `parseGpuSnapshot`, `getWorkerPids`, or both |
+| Status JSON changes | Update `parseLegacyGpuSnapshot`, `getWorkerPids`, or both; preserve live `nvidia-smi` telemetry |
 | Queue plan JSON changes | Normalize the new plan before building `queued` |
 | Worker launch command changes | Change `workerCommandFragment`; preserve command verification |
 | LTX model component/filename changes | Update `MODEL_GROUPS` in `lib/environment-audit.mjs` and keep legacy matches |

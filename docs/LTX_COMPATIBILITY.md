@@ -9,7 +9,9 @@ LTX / Watch has four independent compatibility layers:
 1. **Model label** — presentation only; configured with `modelLabel`.
 2. **ComfyUI HTTP** — standard running/pending queue availability.
 3. **Filesystem media** — final videos, clips, metadata, and playback.
-4. **Supervisor adapter** — optional detailed track/shot progress, GPU snapshot, planned queue, and worker PID.
+4. **Supervisor adapter** — optional detailed track/shot progress, legacy GPU snapshot fallback, planned queue, and worker PID.
+
+Live dashboard GPU telemetry comes from a short, read-only `nvidia-smi` CSV query. The bridge caches the result briefly and falls back to the supervisor snapshot only when NVIDIA telemetry is unavailable. Normalized GPU entries identify their `source` and `sampledAt` time so stale supervisor data is never presented as live sampling.
 
 A model checkpoint update does not automatically require an app update. Code changes are needed only when one of the consumed interfaces changes.
 
@@ -347,13 +349,13 @@ Accepted worker forms:
 }
 ```
 
-Worker PIDs enable pause/resume. GPU entries are parsed as:
+Worker PIDs enable pause/resume. GPU entries are retained as a compatibility fallback and parsed as:
 
 ```text
 device index, GPU name, allocated MiB, utilization percent
 ```
 
-If the upstream source exposes structured GPU JSON, prefer it and retain the string parser as a legacy fallback.
+If the upstream source exposes structured GPU JSON, normalize it and retain the string parser as a legacy fallback. Live NVIDIA cards normally use `nvidia-smi` instead of either supervisor shape.
 
 ## Planned queue JSON
 

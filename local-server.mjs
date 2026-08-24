@@ -22,6 +22,7 @@ import { installComfyUiBlender, normalizeLoopbackComfyUrl } from './lib/comfyui-
 import { moveFile } from './lib/move-file.mjs';
 import { installSam3Model } from './lib/sam3-setup.mjs';
 import { studioJobProgress } from './lib/studio-progress.mjs';
+import { parseLegacyGpuSnapshot, parseLiveGpuCsv } from './lib/gpu-telemetry.mjs';
 import {
   PROJECT_FILE_LIMIT,
   buildProjectShots,
@@ -86,6 +87,7 @@ let sourcePlanCache = { key: '', expiresAt: 0, value: [], promise: null };
 const projectUploads = new Map();
 const createUploads = new Map();
 let blenderCache = { expiresAt: 0, value: null };
+let gpuTelemetryCache = { expiresAt: 0, value: null, promise: null };
 
 function defaultConfig(comfyRoot) {
   return {
@@ -323,22 +325,27 @@ async function mapWithConcurrency(items, concurrency, mapper) {
   return results;
 }
 
-function parseGpuSnapshot(snapshot, plan) {
-  if (!snapshot) return [];
-  const cards = new Map();
-  for (const key of ['gpu0', 'gpu1']) {
-    const item = plan?.[key];
-    if (item) cards.set(Number(item.device), item.card || '');
-  }
-  return snapshot.split('|').map((part) => {
-    const match = part.trim().match(/^(\d+),\s*(.*?),\s*(\d+)\s*MiB,\s*(\d+)\s*%$/);
-    if (!match) return null;
-    const totalMatch = cards.get(Number(match[1]))?.match(/(\d+)GB/i);
-    return {
-      device: Number(match[1]), name: match[2], memoryMb: Number(match[3]), utilization: Number(match[4]),
-      totalMemoryGb: totalMatch ? Number(totalMatch[1]) : null,
-    };
-  }).filter(Boolean);
+async function getGpuTelemetry(status, plan) {
+  const now = Date.now();
+  if (gpuTelemetryCache.value && gpuTelemetryCache.expiresAt > now) return gpuTelemetryCache.value;
+  if (gpuTelemetryCache.promise) return gpuTelemetryCache.promise;
+  gpuTelemetryCache.promise = (async () => {
+    const sampledAt = new Date().toISOString();
+    const output = await execFileAsync('nvidia-smi', [
+      '--query-gpu=index,name,memory.used,memory.total,utilization.gpu',
+      '--format=csv,noheader,nounits',
+    ], { timeout: 3_000 });
+    const live = parseLiveGpuCsv(output, sampledAt);
+    const fallbackSampledAt = parseDate(status?.updated)?.toISOString() || null;
+    const value = live.length ? live : parseLegacyGpuSnapshot(status?.gpu_snapshot, plan, fallbackSampledAt);
+    gpuTelemetryCache = { expiresAt: Date.now() + 2_000, value, promise: null };
+    return value;
+  })().catch(() => {
+    const value = parseLegacyGpuSnapshot(status?.gpu_snapshot, plan, parseDate(status?.updated)?.toISOString() || null);
+    gpuTelemetryCache = { expiresAt: Date.now() + 2_000, value, promise: null };
+    return value;
+  });
+  return gpuTelemetryCache.promise;
 }
 
 function parseLog(logText) {
@@ -1986,6 +1993,7 @@ async function buildState() {
     getComfyQueue(config), getOrchestratorRecord(),
   ]);
   const parsed = parseLog(logText);
+  const gpus = await getGpuTelemetry(status, plan);
   const control = getControlView(orchestratorRecord, status, config);
   const completedShots = await countCompletedShots(config, parsed.current);
   const allFiles = [...finals, ...clips].sort((a, b) => b.modifiedMs - a.modifiedMs).slice(0, config.maxVideos);
@@ -2031,7 +2039,7 @@ async function buildState() {
       title: control.state === 'recovery' ? 'Shot restart required' : control.restartedShot ? 'Interrupted shot restarted' : control.state === 'paused' ? 'Generation paused' : 'Generation resumed',
       detail: control.message,
     }, ...parsed.activities] : parsed.activities,
-    gpus: parseGpuSnapshot(status.gpu_snapshot, plan),
+    gpus,
     stats: { finals: finals.length, clips: clips.length, todayFinals, queued: queued.length },
     config,
   };
