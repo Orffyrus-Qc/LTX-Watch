@@ -70,17 +70,20 @@ def _hidden_kwargs(current: dict[str, Any]) -> dict[str, Any]:
     return options
 
 
-def _hidden_popen(*popen_args: Any, **popen_kwargs: Any):
-    arguments = list(popen_args)
-    if arguments:
-        arguments[0] = _wrap_python_command(arguments[0])
-    elif "args" in popen_kwargs:
-        popen_kwargs["args"] = _wrap_python_command(popen_kwargs["args"])
-    return _ORIGINAL_POPEN(*arguments, **_hidden_kwargs(popen_kwargs))
+class _HiddenPopen(_ORIGINAL_POPEN):
+    """Drop-in Popen subclass so libraries such as asyncio may subclass it."""
+
+    def __init__(self, *popen_args: Any, **popen_kwargs: Any):
+        arguments = list(popen_args)
+        if arguments:
+            arguments[0] = _wrap_python_command(arguments[0])
+        elif "args" in popen_kwargs:
+            popen_kwargs["args"] = _wrap_python_command(popen_kwargs["args"])
+        super().__init__(*arguments, **_hidden_kwargs(popen_kwargs))
 
 
 def install_hidden_subprocess_tree() -> None:
-    subprocess.Popen = _hidden_popen  # type: ignore[assignment]
+    subprocess.Popen = _HiddenPopen
 
 
 def main() -> int:
@@ -94,6 +97,9 @@ def main() -> int:
         raise SystemExit("The hidden Python wrapper cannot run itself.")
     install_hidden_subprocess_tree()
     sys.argv = [str(script_path), *script_arguments]
+    # Match `python target.py`: imports beside the trusted target must resolve
+    # from the target directory, not from this adapter's scripts directory.
+    sys.path[0] = str(script_path.parent)
     runpy.run_path(str(script_path), run_name="__main__")
     return 0
 

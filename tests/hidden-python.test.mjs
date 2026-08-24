@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
@@ -45,5 +46,28 @@ test('Hidden-process adapter recursively wraps Python scripts', (context) => {
   if (process.platform === 'win32') {
     assert.notEqual(result.flags, 0);
     assert.equal(result.hasStartup, true);
+  }
+});
+
+test('Hidden-process adapter preserves imports beside the target script', async (context) => {
+  const python = process.env.LTX_STUDIO_TEST_PYTHON || (process.platform === 'win32' ? 'python.exe' : 'python3');
+  const root = await mkdtemp(path.join(tmpdir(), 'ltx-hidden-import-'));
+  try {
+    const target = path.join(root, 'target.py');
+    await writeFile(path.join(root, 'sibling_module.py'), 'VALUE = "target imports ready"\n', 'utf8');
+    await writeFile(target, 'import asyncio\nfrom sibling_module import VALUE\nprint(VALUE)\n', 'utf8');
+    const run = spawnSync(python, [path.join(appRoot, 'scripts', 'run-hidden-python.py'), '--script', target], {
+      cwd: appRoot,
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+    if (run.error?.code === 'ENOENT') {
+      context.skip(`Python executable not available: ${python}`);
+      return;
+    }
+    assert.equal(run.status, 0, run.stderr || run.stdout);
+    assert.equal(run.stdout.trim(), 'target imports ready');
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
