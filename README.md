@@ -32,7 +32,7 @@ The app runs entirely on your computer. It does not upload prompts, videos, logs
 - Experimental **Create** workspace for original local LTX 2.5 text-to-video, image-to-video, and first/last-frame generation
 - Unified private drag-and-drop context tray for images, videos, songs, and `.blend` scenes
 - Optional Blender-backed reference frames rendered from an immutable copy of a project backbone
-- Private persistent Create drafts, variation queue, live progress, playback, retry, pause-between-jobs, and **Move first** ordering
+- Private persistent Create drafts, variation queue, live progress, active-render cancellation, playback, recoverable output deletion, retry, pause-between-jobs, and **Move first** ordering
 - Per-attempt correction notes and preserved regeneration history
 - Selectable Studio scene queue with one-click **Move first** ordering
 - Project Library imports an existing folder by reference or into an app-managed copy
@@ -154,9 +154,11 @@ The experimental `feature/text-to-video` branch adds **Create** as a separate wo
 
 Create state, prompts, uploads, runner logs, and job JSON live in ignored `create.state.json` and `.ltx-watch-create/`. Only the ignored JSON job path appears on the Python process command line. Outputs are written beneath the configured ComfyUI video folder and remain playable from Create history.
 
+Each completed Create card can show its video in Explorer, play it, or delete it after confirmation. Delete revalidates the job's server-stored output path and moves the video to the Windows Recycle Bin before removing the history card.
+
 Context files remain local. Dropped audio is not visual conditioning: it is looped or trimmed to the generated video's length and replaces the generated audio track after rendering. Dropped video is currently reduced to first/end visual anchors rather than used as full motion conditioning.
 
-The queue **Pause** control stops automatic launch of the next waiting creation; it does not suspend an active sampling process. Use **Move first** to reprioritize a waiting variation and **Retry** for a failed job. Automated checks must never press **Queue creation** or call the authenticated enqueue action against a real local bridge.
+The queue **Pause** control stops automatic launch of the next waiting creation; it does not suspend an active sampling process. **Cancel render** asks the owning Create runner to interrupt only the isolated ComfyUI server it launched, then releases the normal lock and records a retryable Canceled result. Use **Move first** to reprioritize a waiting variation and **Retry** for a failed or canceled job. Automated checks must never press **Queue creation**, cancel a real render, or call the authenticated enqueue action against a real local bridge.
 
 ## LTX Watch Studio workflow
 

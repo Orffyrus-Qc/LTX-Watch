@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { createReadStream, existsSync } from 'node:fs';
-import { access, appendFile, copyFile, mkdir, open, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
+import { access, appendFile, copyFile, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { execFile, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { homedir, uptime, userInfo } from 'node:os';
@@ -269,6 +269,19 @@ function execFileAsync(command, args, options = {}) {
   return new Promise((resolve) => {
     execFile(command, args, { windowsHide: true, timeout: options.timeout || 5000, maxBuffer: options.maxBuffer || 512_000 }, (error, stdout) => {
       resolve(error ? null : stdout);
+    });
+  });
+}
+
+function recycleFile(filePath) {
+  const script = [
+    'Add-Type -AssemblyName Microsoft.VisualBasic',
+    '[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($args[0], [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs, [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin, [Microsoft.VisualBasic.FileIO.UICancelOption]::ThrowException)',
+  ].join('; ');
+  return new Promise((resolve, reject) => {
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script, filePath], { windowsHide: true, timeout: 30_000, maxBuffer: 512_000 }, (error, _stdout, stderr) => {
+      if (error) return reject(new Error(stderr?.trim() || error.message || 'Windows could not move the video to the Recycle Bin.'));
+      resolve();
     });
   });
 }
@@ -1209,9 +1222,17 @@ async function syncCreateJob(record, config) {
   const result = await readJson(job.resultPath, null);
   const runnerPid = Number(result?.runnerPid || job.pid);
   if ((!result || result.status === 'generating') && processExists(runnerPid)) {
-    job.stage = String(result?.stage || job.stage || 'Starting local runner').slice(0, 120);
+    job.stage = job.cancelRequestedAt ? 'Cancel requested · stopping safely' : String(result?.stage || job.stage || 'Starting local runner').slice(0, 120);
     job.progress = Math.min(99, Math.max(Number(job.progress || 0), Number(result?.progress || 0)));
     job.promptId = typeof result?.promptId === 'string' ? result.promptId : job.promptId || null;
+    return true;
+  }
+  if (result?.status === 'canceled') {
+    job.status = 'canceled';
+    job.stage = 'Canceled';
+    job.error = null;
+    job.completedAt = result.completedAt || new Date().toISOString();
+    record.activeJobId = null;
     return true;
   }
   if (result?.status === 'complete' && typeof result.outputPath === 'string' && isInside(result.outputPath, [config.clipsDirectory])) {
@@ -1222,6 +1243,7 @@ async function syncCreateJob(record, config) {
       job.progress = 100;
       job.outputPath = result.outputPath;
       job.completedAt = result.completedAt || new Date().toISOString();
+      job.cancelRequestedAt = null;
       record.activeJobId = null;
       return true;
     }
@@ -1243,6 +1265,8 @@ async function startCreateJob(record, job, config, backbone) {
   await mkdir(jobsDirectory, { recursive: true });
   const jobPath = path.join(jobsDirectory, 'job.json');
   const resultPath = path.join(jobsDirectory, 'result.json');
+  const cancelPath = path.join(jobsDirectory, 'cancel.requested.json');
+  await rm(cancelPath, { force: true });
   const referencePaths = [];
   for (const source of [job.options.firstFramePath, job.options.lastFramePath].filter(Boolean)) {
     if (!isInside(source, [CREATE_RUNTIME_ROOT])) throw new Error('Create reference frames must be uploaded through the local interface.');
@@ -1273,6 +1297,7 @@ async function startCreateJob(record, job, config, backbone) {
     comfyRoot: path.resolve(config.comfyRoot),
     runtimeRoot: jobsDirectory,
     resultPath,
+    cancelPath,
     prompt: composeCreatePrompt(job.options),
     promptEnhance: job.options.promptEnhance,
     duration: job.options.duration,
@@ -1312,7 +1337,7 @@ async function startCreateJob(record, job, config, backbone) {
       child.once('error', rejectSpawn);
     });
     const startedAt = new Date().toISOString();
-    Object.assign(job, { status: 'generating', stage: 'Starting local runner', progress: 1, pid: child.pid, jobPath, resultPath, startedAt, completedAt: null, error: null });
+    Object.assign(job, { status: 'generating', stage: 'Starting local runner', progress: 1, pid: child.pid, jobPath, resultPath, startedAt, completedAt: null, cancelRequestedAt: null, error: null });
     record.activeJobId = job.id;
     child.unref();
   } finally {
@@ -1392,6 +1417,7 @@ async function buildCreateView({ sync = false } = {}) {
   return {
     enabled: true,
     adapterReady,
+    capabilities: { cancel: true, recycleOutput: process.platform === 'win32' },
     canStart,
     blockedReason,
     queuePaused: record.queuePaused,
@@ -1459,10 +1485,31 @@ async function controlCreate(body) {
       if (record.jobs[id]?.status === 'generating') throw new Error('An active Create job cannot be removed.');
       record.queue = record.queue.filter((item) => item !== id);
       delete record.jobs[id];
+    } else if (action === 'delete-output') {
+      const id = String(body?.jobId || '');
+      const source = record.jobs[id];
+      if (!source || source.status !== 'complete' || typeof source.outputPath !== 'string') throw new Error('Only a completed Create video can be deleted.');
+      const config = await getConfig();
+      if (!isInside(source.outputPath, [config.clipsDirectory]) || !VIDEO_EXTENSIONS.has(path.extname(source.outputPath).toLowerCase())) throw new Error('The Create video is outside the configured video folder.');
+      const outputInfo = await stat(source.outputPath).catch(() => null);
+      if (!outputInfo?.isFile()) throw new Error('The Create video is already missing.');
+      await recycleFile(source.outputPath);
+      record.queue = record.queue.filter((item) => item !== id);
+      delete record.jobs[id];
+    } else if (action === 'cancel') {
+      const id = String(body?.jobId || record.activeJobId || '');
+      const source = record.jobs[id];
+      if (!source || record.activeJobId !== id || source.status !== 'generating') throw new Error('Only the active Create render can be canceled.');
+      if (!source.resultPath || !isInside(source.resultPath, [CREATE_RUNTIME_ROOT])) throw new Error('The active Create job is outside the private runtime folder.');
+      const cancelPath = path.join(path.dirname(source.resultPath), 'cancel.requested.json');
+      if (!isInside(cancelPath, [CREATE_RUNTIME_ROOT])) throw new Error('The Create cancellation marker is outside the private runtime folder.');
+      source.cancelRequestedAt = new Date().toISOString();
+      source.stage = 'Cancel requested · stopping safely';
+      await writeFile(cancelPath, `${JSON.stringify({ jobId: id, requestedAt: source.cancelRequestedAt }, null, 2)}\n`, 'utf8');
     } else if (action === 'retry') {
       const id = String(body?.jobId || '');
       const source = record.jobs[id];
-      if (!source || source.status !== 'failed') throw new Error('Only a failed Create job can be retried.');
+      if (!source || !['failed', 'canceled'].includes(source.status)) throw new Error('Only a failed or canceled Create job can be retried.');
       source.status = 'queued';
       source.stage = 'Waiting safely for the GPU';
       source.progress = 0;
@@ -1471,6 +1518,7 @@ async function controlCreate(body) {
       source.error = null;
       source.pid = null;
       source.promptId = null;
+      source.cancelRequestedAt = null;
     } else if (action === 'upload-start') {
       const fileName = path.basename(String(body?.fileName || '')).replace(/[^a-zA-Z0-9._ -]/g, '_').slice(0, 180);
       const extension = path.extname(fileName).toLowerCase();

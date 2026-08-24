@@ -141,6 +141,8 @@ When LTX or ComfyUI updates the official full-workflow templates:
 6. Keep prompts and references in ignored JSON/runtime files. The command line contains only `ltx-create-runner.py --job <private-job-path>`.
 7. Preserve the shared launch claim: Create, Studio, and Projects regeneration cannot race for the GPU/port. The source runner's port lock remains the second line of defense.
 8. Test `create-core.mjs` and `ltx-create-runner.py --validate-job` only. Never press **Queue creation** or submit `/api/create` `enqueue` during automated validation.
+9. Keep Create cancellation job-scoped: the authenticated bridge writes only the private marker; the owning runner interrupts only its isolated loopback server and releases the normal lock. Never implement cancellation as an unverified PID kill or a request to an arbitrary configured ComfyUI instance.
+10. Keep Create deletion recoverable and server-owned: accept only a completed job ID, derive its stored output path, revalidate the configured clip root and video extension, move it to the Windows Recycle Bin, and remove history only after success. Never accept a browser-supplied delete path.
 
 Context uploads are an explicit local contract. Preserve the extension allowlist, kind-specific size limits, ordered 4 MiB offsets, exact final length, server-selected destination, and private-runtime revalidation. Image files are I2V/FLF2V anchors; video is reduced to first/end anchors through fixed FFmpeg arguments; audio replaces the final soundtrack and must never be described as visual conditioning. Do not add arbitrary transcoder flags from the browser.
 

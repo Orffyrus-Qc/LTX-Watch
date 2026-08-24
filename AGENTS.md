@@ -95,6 +95,10 @@ Context intake accepts only the documented image/video/audio/`.blend` extensions
 
 Blender mode accepts either a designated `.blend` inside a registered Project root or an authenticated dropped `.blend` inside the private Create runtime, plus a detected local Blender executable. Copy the source into the per-job runtime before fixed-argument background PNG rendering, with auto-execution disabled. Never save over the source or accept arbitrary Blender scripts. Automated tests use `--validate-job` and static safety assertions only; never invoke real Blender, ComfyUI, or a model.
 
+Create cancellation must remain authenticated and scoped to the active private job. The bridge writes a server-derived marker beneath that job; the owning runner may interrupt only the isolated loopback ComfyUI server it launched, then must stop it and release the existing lock. Never cancel with an unverified process kill or by interrupting the user's ordinary ComfyUI instance. Automated checks must never request cancellation against a real render.
+
+Create output deletion must accept only a completed job ID, derive the stored output path server-side, revalidate the configured clip root and video extension, and move the file to the Windows Recycle Bin before removing its history record. Never accept a browser-supplied deletion path or permanently delete a real generated video during automated checks.
+
 ### Project and Blender backbone adapter
 
 `project-core.mjs` owns pure asset classification, shot identity/mapping, manifest normalization, upload-path validation, and selective-regeneration queue invariants. `app/project-workspace.tsx` owns project UI only. `local-server.mjs` owns scanning, chunked intake, registered-root media access, and translation from a project queue item to the guarded Studio adapter.

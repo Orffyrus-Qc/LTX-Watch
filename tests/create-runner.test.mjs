@@ -102,3 +102,31 @@ test('Create retry replaces a stale result before the new runner is spawned', as
   assert.ok(resultReset > -1, 'expected an initial generating result');
   assert.ok(runnerSpawn > resultReset, 'the stale result must be replaced before spawning the retry');
 });
+
+test('Create cancellation stays private and is handled by the owning runner', async () => {
+  const runner = await readFile(path.join(appRoot, 'scripts', 'ltx-create-runner.py'), 'utf8');
+  const server = await readFile(path.join(appRoot, 'local-server.mjs'), 'utf8');
+  const workspace = await readFile(path.join(appRoot, 'app', 'create-workspace.tsx'), 'utf8');
+  assert.match(server, /path\.join\(path\.dirname\(source\.resultPath\), 'cancel\.requested\.json'\)/);
+  assert.match(server, /action === 'cancel'/);
+  assert.match(runner, /f"\{base_url\.rstrip\('\/'\)\}\/interrupt"/);
+  assert.match(runner, /target=watch_for_cancellation/);
+  assert.match(runner, /"status": "canceled" if canceled else "failed"/);
+  const cancelBlock = server.slice(server.indexOf("action === 'cancel'"), server.indexOf("action === 'retry'"));
+  assert.doesNotMatch(cancelBlock, /taskkill|Stop-Process|process\.kill/);
+  assert.match(workspace, /view\.capabilities\?\.cancel/);
+  assert.match(workspace, /window\.confirm\(`Cancel/);
+});
+
+test('Create output deletion is constrained and recoverable', async () => {
+  const server = await readFile(path.join(appRoot, 'local-server.mjs'), 'utf8');
+  const workspace = await readFile(path.join(appRoot, 'app', 'create-workspace.tsx'), 'utf8');
+  assert.match(server, /RecycleOption\]::SendToRecycleBin/);
+  const deleteBlock = server.slice(server.indexOf("action === 'delete-output'"), server.indexOf("action === 'cancel'"));
+  assert.match(deleteBlock, /isInside\(source\.outputPath, \[config\.clipsDirectory\]\)/);
+  assert.match(deleteBlock, /await recycleFile\(source\.outputPath\)/);
+  assert.doesNotMatch(deleteBlock, /\brm\(|unlink|Remove-Item/);
+  assert.match(workspace, /view\.capabilities\?\.recycleOutput/);
+  assert.match(workspace, /window\.confirm\(`Delete/);
+  assert.match(workspace, /action\('delete-output', \{ jobId: job\.id \}/);
+});

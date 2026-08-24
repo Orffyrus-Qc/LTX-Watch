@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -29,6 +30,10 @@ CONNECTION_TYPES = {
 
 MODEL_FORMAT_TOKEN = re.compile(r"^(?:(?:int|fp|bf|nf|q)\d+[a-z0-9_]*|convrot|gguf|awq|gptq)$")
 GENERIC_FILENAME_TOKENS = {"safetensors", "ckpt", "pt", "pth", "bin", "model", "models"}
+
+
+class CreateCancelled(RuntimeError):
+    pass
 
 
 def read_json(file_path: Path):
@@ -54,6 +59,38 @@ def progress(job, stage, percent, **extra):
         "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         **extra,
     })
+
+
+def cancellation_requested(job):
+    cancel_path = job.get("cancelPath")
+    return bool(cancel_path and Path(cancel_path).is_file())
+
+
+def require_not_canceled(job):
+    if cancellation_requested(job):
+        raise CreateCancelled("Create render canceled by user.")
+
+
+def request_comfy_interrupt(base_url: str):
+    request = urllib.request.Request(
+        f"{base_url.rstrip('/')}/interrupt",
+        data=b"{}",
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=3) as response:
+        response.read(1)
+
+
+def watch_for_cancellation(job, base_url: str, stop_event: threading.Event, seen_event: threading.Event):
+    while not stop_event.wait(0.5):
+        if not cancellation_requested(job):
+            continue
+        seen_event.set()
+        try:
+            request_comfy_interrupt(base_url)
+        except Exception:
+            continue
 
 
 def inside(candidate: Path, roots):
@@ -430,6 +467,8 @@ def validate_job(job):
     runtime_root = Path(job["runtimeRoot"]).resolve()
     if not inside(Path(job["resultPath"]), [runtime_root]):
         raise RuntimeError("Create result path is outside the private runtime folder.")
+    if job.get("cancelPath") and not inside(Path(job["cancelPath"]), [runtime_root]):
+        raise RuntimeError("Create cancellation path is outside the private runtime folder.")
     for key in ("videoContextPath", "soundtrackPath"):
         if job.get(key) and not inside(Path(job[key]), [runtime_root]):
             raise RuntimeError(f"{key} is outside the private Create job folder.")
@@ -441,6 +480,7 @@ def validate_job(job):
 
 def run_job(job):
     runtime_root = validate_job(job)
+    require_not_canceled(job)
     result_path = Path(job["resultPath"])
     started = time.time()
     progress(job, "Preparing local workflow", 3)
@@ -475,11 +515,22 @@ def run_job(job):
 
     server = None
     server_log = None
+    cancel_stop = threading.Event()
+    cancel_seen = threading.Event()
+    cancel_watcher = threading.Thread(
+        target=watch_for_cancellation,
+        args=(job, base_url, cancel_stop, cancel_seen),
+        name=f"create-cancel-{job['id'][:8]}",
+        daemon=True,
+    )
+    cancel_watcher.start()
     try:
+        require_not_canceled(job)
         progress(job, "Starting isolated ComfyUI", 8)
         server, server_log = source.start_comfy_server("ltx_watch_create", job["id"][:8], safer=bool(job.get("safer", False)))
         if server is None or not source.wait_for_server(base_url):
             raise RuntimeError("The isolated ComfyUI server could not start.")
+        require_not_canceled(job)
         progress(job, "Compiling official LTX 2.5 workflow", 14)
         overrides = {
             "prompt": job["prompt"],
@@ -492,6 +543,7 @@ def run_job(job):
         }
         compiler = WorkflowCompiler(base_url)
         prompt = compiler.compile(template, overrides, list(references), job["outputPrefix"])
+        require_not_canceled(job)
         progress(job, "Loading models and sampling frames", 20)
         response = submit(base_url, prompt, f"ltx-watch-create-{job['id']}")
         prompt_id = response.get("prompt_id")
@@ -499,10 +551,14 @@ def run_job(job):
             raise RuntimeError("ComfyUI did not return a prompt id.")
         progress(job, "Sampling frames", 28, promptId=prompt_id)
         outcome, _history = source.wait_for_history(base_url, prompt_id, timeout=int(job.get("timeoutSeconds", 7_200)))
+        if cancel_seen.is_set() or cancellation_requested(job):
+            raise CreateCancelled("Create render canceled by user.")
         if outcome != "completed":
             raise RuntimeError(f"ComfyUI ended the Create job with status: {outcome}.")
         progress(job, "Finalizing video", 96, promptId=prompt_id)
     finally:
+        cancel_stop.set()
+        cancel_watcher.join(timeout=2)
         if server is not None:
             source.stop_comfy_server(server, server_log, base_url)
         source.release_lock(str(lock_path))
@@ -514,6 +570,7 @@ def run_job(job):
         strip_audio(output, source)
     elif job.get("audio") == "soundtrack":
         replace_audio(output, Path(job.get("soundtrackPath", "")), source, comfy_root, runtime_root)
+    require_not_canceled(job)
     completed_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     write_json(result_path, {
         "status": "complete", "runnerPid": os.getpid(), "progress": 100,
@@ -541,9 +598,10 @@ def main(argv=None):
     except Exception as error:  # the bridge turns this private result into a bounded UI message
         if args.job:
             result_path = Path(job.get("resultPath", runtime_root / "invalid.result.json" if "runtime_root" in locals() else job_path.with_suffix(".result.json")))
+            canceled = "runtime_root" in locals() and (isinstance(error, CreateCancelled) or cancellation_requested(job))
             write_json(result_path, {
-                "status": "failed", "runnerPid": os.getpid(), "progress": 0,
-                "stage": "Failed", "error": str(error)[:1_500],
+                "status": "canceled" if canceled else "failed", "runnerPid": os.getpid(), "progress": 0,
+                "stage": "Canceled" if canceled else "Failed", "error": None if canceled else str(error)[:1_500],
                 "completedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             })
         else:

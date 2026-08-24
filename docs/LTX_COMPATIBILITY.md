@@ -93,6 +93,10 @@ Create configures a unique worker name and private log/cache directory, binds Co
 
 Create queue polling may advance an already-authorized queued job, so automated fixtures must use an empty or paused Create queue. Never call the real enqueue action during UI or API validation.
 
+An active Create cancellation is an authenticated request written only to that job's private runtime folder. The owning Python runner watches the marker, posts `/interrupt` only to its own isolated loopback ComfyUI server, stops that server through the normal lifecycle, and releases the existing port lock. The bridge never kills an unverified PID or interrupts the user's ordinary ComfyUI instance. Canceled is a distinct terminal state and can be retried after the marker is cleared at the next guarded launch. Automated checks must inspect fixtures/static contracts only and never cancel a real render.
+
+Create output deletion is also authenticated. It accepts only a completed job's server-stored output path, revalidates that the video exists beneath the configured clip root with an allowlisted video extension, and sends it to the Windows Recycle Bin. The job record is removed only after that recoverable operation succeeds. The browser cannot supply a deletion path, and automated checks must never delete a real generated video.
+
 ### Create context contract
 
 The authenticated context tray accepts PNG/JPEG/WebP images, MP4/WebM/MOV/MKV video, WAV/MP3/FLAC/M4A/OGG/AAC audio, and `.blend` files. The bridge chooses the private destination and validates extension, bounded size, ordered chunk offsets, final byte count, ignored-runtime containment, and existence again at enqueue and launch. The browser never supplies a destination path.

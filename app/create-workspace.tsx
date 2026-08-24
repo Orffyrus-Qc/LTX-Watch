@@ -17,6 +17,7 @@ import {
   Plus,
   RefreshCw,
   RotateCcw,
+  Square,
   Sparkles,
   Trash2,
   Upload,
@@ -58,7 +59,7 @@ type CreateDraft = {
 type CreateJob = {
   id: string;
   title: string;
-  status: 'queued' | 'generating' | 'complete' | 'failed';
+  status: 'queued' | 'generating' | 'complete' | 'failed' | 'canceled';
   stage: string | null;
   progress: number;
   seed: number;
@@ -76,6 +77,7 @@ type CreateJob = {
 type CreateView = {
   enabled: boolean;
   adapterReady: boolean;
+  capabilities?: { cancel: boolean; recycleOutput: boolean };
   canStart: boolean;
   blockedReason: string | null;
   queuePaused: boolean;
@@ -256,6 +258,16 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
     } : current);
   }
 
+  function cancelRender(job: CreateJob) {
+    if (!window.confirm(`Cancel “${job.title}”?\n\nCurrent render progress will be discarded. The isolated ComfyUI server will stop and this job can be retried.`)) return;
+    void action('cancel', { jobId: job.id }, 'Cancel requested · stopping the Create render safely');
+  }
+
+  function deleteOutput(job: CreateJob) {
+    if (!window.confirm(`Delete “${job.title}”?\n\nThe generated video will be moved to the Windows Recycle Bin and removed from Create history.`)) return;
+    void action('delete-output', { jobId: job.id }, 'Generated video moved to the Recycle Bin');
+  }
+
   const active = useMemo(() => view?.jobs.find((job) => job.id === view.activeJobId) || null, [view]);
   const completed = useMemo(() => view?.jobs.filter((job) => job.status === 'complete') || [], [view]);
   const referenceReady = draft?.useBlender
@@ -291,6 +303,7 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
         <span className="create-active-icon"><LoaderCircle className="spinning" size={19} /></span>
         <div><small>GENERATING NOW</small><b>{active.title}{active.variations > 1 ? ` · variation ${active.variation}/${active.variations}` : ''}</b><span>{active.stage || 'Sampling frames'}</span></div>
         <div className="create-active-progress"><div><span>{active.mode} · seed {active.seed}</span><b>{Math.round(active.progress)}%</b></div><div><span style={{ width: `${active.progress}%` }} /></div></div>
+        {view.capabilities?.cancel && <button className="create-cancel-button" disabled={pending === 'cancel'} onClick={() => cancelRender(active)}><Square size={12} fill="currentColor" /> {pending === 'cancel' ? 'Canceling…' : 'Cancel render'}</button>}
       </div>}
 
       <div className="create-layout">
@@ -372,9 +385,9 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
             <div className="create-card-head"><span><Clock3 size={14} /> CREATE QUEUE</span><button onClick={() => void action('toggle-queue', { paused: !view.queuePaused }, view.queuePaused ? 'Create queue resumed' : 'Create queue paused')}>{view.queuePaused ? <Play size={12} /> : <Pause size={12} />} {view.queuePaused ? 'Resume' : 'Pause'}</button></div>
             <div className="create-job-list">
               {view.jobs.filter((job) => job.status !== 'complete').map((job) => <div className={`create-job ${job.status}`} key={job.id}>
-                <span>{job.status === 'generating' ? <LoaderCircle className="spinning" size={14} /> : job.status === 'failed' ? <CircleAlert size={14} /> : <Clock3 size={14} />}</span>
+                <span>{job.status === 'generating' ? <LoaderCircle className="spinning" size={14} /> : job.status === 'failed' ? <CircleAlert size={14} /> : job.status === 'canceled' ? <Square size={12} /> : <Clock3 size={14} />}</span>
                 <div><b>{job.title}</b><small>{job.summary} · {job.mode}</small>{job.status === 'generating' && <><div className="create-job-progress-label"><span>{job.stage}</span><b>{Math.round(job.progress)}%</b></div><div className="create-job-progress"><span style={{ width: `${job.progress}%` }} /></div></>}{job.error && <p>{job.error}</p>}</div>
-                <div className="create-job-actions">{job.status === 'queued' && <button title="Move first" onClick={() => void action('move-first', { jobId: job.id }, 'Create job moved first')}><ArrowUpToLine size={12} /></button>}{job.status === 'failed' && <button title="Retry" onClick={() => void action('retry', { jobId: job.id }, 'Create job queued again')}><RotateCcw size={12} /></button>}{job.status !== 'generating' && <button title="Remove" onClick={() => void action('remove', { jobId: job.id }, 'Create job removed')}><Trash2 size={12} /></button>}</div>
+                <div className="create-job-actions">{job.status === 'queued' && <button title="Move first" onClick={() => void action('move-first', { jobId: job.id }, 'Create job moved first')}><ArrowUpToLine size={12} /></button>}{job.status === 'generating' && view.capabilities?.cancel && <button title="Cancel render" onClick={() => cancelRender(job)}><Square size={11} fill="currentColor" /></button>}{['failed', 'canceled'].includes(job.status) && <button title="Retry" onClick={() => void action('retry', { jobId: job.id }, 'Create job queued again')}><RotateCcw size={12} /></button>}{job.status !== 'generating' && <button title="Remove" onClick={() => void action('remove', { jobId: job.id }, 'Create job removed')}><Trash2 size={12} /></button>}</div>
               </div>)}
               {!view.jobs.some((job) => job.status !== 'complete') && <div className="project-empty-small"><Check size={20} /><b>Queue is clear</b><span>New text-to-video jobs appear here.</span></div>}
             </div>
@@ -389,7 +402,7 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
           {completed.map((job) => <article className="create-output" key={job.id}>
             <button className="create-output-preview" onClick={() => job.video && onPlay(job.video)}>{job.video ? <video src={job.video.mediaUrl} muted playsInline preload="metadata" /> : <Film size={28} />}<span><Play size={16} fill="currentColor" /></span></button>
             <div><b>{job.title}</b><small>{job.summary} · seed {job.seed}</small><span>{when(job.completedAt)}</span></div>
-            <button title="Show in Explorer" disabled={!job.video} onClick={() => job.video && onOpen(job.video.directory)}><FolderOpen size={15} /></button>
+            <div className="create-output-actions"><button title="Show in Explorer" disabled={!job.video} onClick={() => job.video && onOpen(job.video.directory)}><FolderOpen size={15} /></button>{view.capabilities?.recycleOutput && <button title="Delete video" disabled={!job.video || pending === 'delete-output'} onClick={() => deleteOutput(job)}><Trash2 size={14} /></button>}</div>
           </article>)}
           {!completed.length && <div className="create-history-empty"><WandSparkles size={26} /><b>Your new worlds will appear here</b><span>Queue a first text-to-video creation when the GPU is ready.</span></div>}
         </div>
