@@ -53,6 +53,7 @@ import {
   normalizeCreateOptions,
   normalizeCreateRecord,
   resolutionOptions,
+  safeCreateOutputName,
   safeCreateTitle,
 } from './create-core.mjs';
 
@@ -1527,7 +1528,7 @@ async function buildCreateView({ sync = false } = {}) {
   return {
     enabled: true,
     adapterReady,
-    capabilities: { cancel: true, recycleOutput: process.platform === 'win32' },
+    capabilities: { cancel: true, recycleOutput: process.platform === 'win32', renameOutput: true },
     canStart,
     blockedReason,
     queuePaused: record.queuePaused,
@@ -1598,6 +1599,23 @@ async function controlCreate(body) {
       if (record.jobs[id]?.status === 'generating') throw new Error('An active Create job cannot be removed.');
       record.queue = record.queue.filter((item) => item !== id);
       delete record.jobs[id];
+    } else if (action === 'rename-output') {
+      const id = String(body?.jobId || '');
+      const source = record.jobs[id];
+      if (!source || source.status !== 'complete' || typeof source.outputPath !== 'string') throw new Error('Only a completed Create video can be renamed.');
+      const config = await getConfig();
+      const extension = path.extname(source.outputPath).toLowerCase();
+      if (!isInside(source.outputPath, [config.clipsDirectory]) || !VIDEO_EXTENSIONS.has(extension)) throw new Error('The Create video is outside the configured video folder.');
+      const outputInfo = await stat(source.outputPath).catch(() => null);
+      if (!outputInfo?.isFile()) throw new Error('The Create video is missing.');
+      const title = safeCreateOutputName(body?.title);
+      const nextPath = path.join(path.dirname(source.outputPath), `${title}${extension}`);
+      if (!isInside(nextPath, [config.clipsDirectory])) throw new Error('The renamed Create video would leave the configured video folder.');
+      const samePath = path.resolve(nextPath).toLowerCase() === path.resolve(source.outputPath).toLowerCase();
+      if (!samePath && existsSync(nextPath)) throw new Error('A video with that name already exists in this folder.');
+      if (!samePath) await rename(source.outputPath, nextPath);
+      source.title = title;
+      source.outputPath = nextPath;
     } else if (action === 'delete-output') {
       const id = String(body?.jobId || '');
       const source = record.jobs[id];

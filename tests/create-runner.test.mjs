@@ -233,3 +233,17 @@ test('Create output deletion is constrained and recoverable', async () => {
   assert.match(workspace, /window\.confirm\(`Delete/);
   assert.match(workspace, /action\('delete-output', \{ jobId: job\.id \}/);
 });
+
+test('Create output rename stays inside the video root and never overwrites', async () => {
+  const server = await readFile(path.join(appRoot, 'local-server.mjs'), 'utf8');
+  const workspace = await readFile(path.join(appRoot, 'app', 'create-workspace.tsx'), 'utf8');
+  const renameBlock = server.slice(server.indexOf("action === 'rename-output'"), server.indexOf("action === 'delete-output'"));
+  assert.match(renameBlock, /source\.status !== 'complete'/);
+  assert.match(renameBlock, /isInside\(source\.outputPath, \[config\.clipsDirectory\]\)/);
+  assert.match(renameBlock, /isInside\(nextPath, \[config\.clipsDirectory\]\)/);
+  assert.match(renameBlock, /existsSync\(nextPath\)/);
+  assert.match(renameBlock, /await rename\(source\.outputPath, nextPath\)/);
+  assert.doesNotMatch(renameBlock, /\brm\(|unlink|Remove-Item/);
+  assert.match(workspace, /view\.capabilities\?\.renameOutput/);
+  assert.match(workspace, /action\('rename-output', \{ jobId: job\.id, title \}/);
+});

@@ -7,6 +7,7 @@ import {
   normalizeCreateOptions,
   normalizeCreateRecord,
   resolutionOptions,
+  safeCreateOutputName,
 } from '../create-core.mjs';
 
 test('Create options normalize a bounded local LTX job', () => {
@@ -80,4 +81,11 @@ test('official resolution presets stay aligned to generation-friendly dimensions
     assert.equal(item.width % 32, 0);
     assert.equal(item.height % 32, 0);
   }
+});
+
+test('completed Create video names are safe Windows file bases', () => {
+  assert.equal(safeCreateOutputName('Storm: Night / Final?.mp4'), 'Storm Night Final');
+  assert.equal(safeCreateOutputName('CON'), 'CON video');
+  assert.equal(safeCreateOutputName('  A   quiet   lake.  '), 'A quiet lake');
+  assert.throws(() => safeCreateOutputName('...'), /Enter a video name/i);
 });

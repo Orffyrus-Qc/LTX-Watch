@@ -13,6 +13,7 @@ All notable changes to LTX / Watch are documented here.
 - Shared generation launch claim across Create, Studio, and Projects regeneration, backed by the existing upstream ComfyUI port lock.
 - Separate **Physics authority** mode for Blender-backed Create jobs. It prepares versioned beauty, depth, surface-normal, motion-vector, and per-frame camera passes while declaring Blender as the sole animation authority.
 - The full-frame mode is now exposed directly as **Blender animation** in Visual Backbone, separate from the creative first/end-frame option, so a queued job clearly records whether Blender owns the complete animation.
+- Completed **Generated from scratch** videos can be renamed in place from their history card. The local filename and displayed title change together, with Windows-safe normalization and collision protection.
 - A fixed-purpose background Blender adapter with sequential physics evaluation, job-scoped progress/cancellation, immutable master scenes, and reviewable backbone-package history.
 - Explicit LTX 2.5 refinement gate: strict physics packages remain preparation-only until a verified 2.5 adapter consumes every structural pass without inventing or retiming motion.
 

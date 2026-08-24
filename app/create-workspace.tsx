@@ -14,6 +14,7 @@ import {
   Music2,
   PackageCheck,
   Pause,
+  Pencil,
   Play,
   Plus,
   RefreshCw,
@@ -82,7 +83,7 @@ type CreateJob = {
 type CreateView = {
   enabled: boolean;
   adapterReady: boolean;
-  capabilities?: { cancel: boolean; recycleOutput: boolean };
+  capabilities?: { cancel: boolean; recycleOutput: boolean; renameOutput: boolean };
   canStart: boolean;
   blockedReason: string | null;
   queuePaused: boolean;
@@ -317,6 +318,16 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
     void action('delete-output', { jobId: job.id }, 'Generated video moved to the Recycle Bin');
   }
 
+  function renameOutput(job: CreateJob) {
+    const title = window.prompt('Rename generated video', job.title);
+    if (title === null || title.trim() === job.title) return;
+    if (!title.trim()) {
+      onToast('Enter a video name');
+      return;
+    }
+    void action('rename-output', { jobId: job.id, title }, 'Generated video renamed');
+  }
+
   const active = useMemo(() => view?.jobs.find((job) => job.id === view.activeJobId) || null, [view]);
   const completed = useMemo(() => view?.jobs.filter((job) => job.status === 'complete') || [], [view]);
   const packages = useMemo(() => view?.jobs.filter((job) => job.status === 'backbone-ready') || [], [view]);
@@ -477,7 +488,7 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
           {completed.map((job) => <article className="create-output" key={job.id}>
             <button className="create-output-preview" onClick={() => job.video && onPlay(job.video)}>{job.video ? <video src={job.video.mediaUrl} muted playsInline preload="metadata" /> : <Film size={28} />}<span><Play size={16} fill="currentColor" /></span></button>
             <div><b>{job.title}</b><small>{job.summary} · seed {job.seed}</small><span>{when(job.completedAt)}</span></div>
-            <div className="create-output-actions"><button title="Show in Explorer" disabled={!job.video} onClick={() => job.video && onOpen(job.video.directory)}><FolderOpen size={15} /></button>{view.capabilities?.recycleOutput && <button title="Delete video" disabled={!job.video || pending === 'delete-output'} onClick={() => deleteOutput(job)}><Trash2 size={14} /></button>}</div>
+            <div className="create-output-actions">{view.capabilities?.renameOutput && <button title="Rename video" aria-label={`Rename ${job.title}`} disabled={!job.video || pending === 'rename-output'} onClick={() => renameOutput(job)}><Pencil size={14} /></button>}<button title="Show in Explorer" aria-label={`Show ${job.title} in Explorer`} disabled={!job.video} onClick={() => job.video && onOpen(job.video.directory)}><FolderOpen size={15} /></button>{view.capabilities?.recycleOutput && <button title="Delete video" aria-label={`Delete ${job.title}`} disabled={!job.video || pending === 'delete-output'} onClick={() => deleteOutput(job)}><Trash2 size={14} /></button>}</div>
           </article>)}
           {!completed.length && <div className="create-history-empty"><WandSparkles size={26} /><b>Your new worlds will appear here</b><span>Queue a first text-to-video creation when the GPU is ready.</span></div>}
         </div>

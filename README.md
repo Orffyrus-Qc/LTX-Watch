@@ -156,7 +156,7 @@ Saved dashboard settings in `local.config.json` take precedence over auto-detect
 
 Create state, prompts, uploads, runner logs, and job JSON live in ignored `create.state.json` and `.ltx-watch-create/`. Only the ignored JSON job path appears on the Python process command line. Outputs are written beneath the configured ComfyUI video folder and remain playable from Create history.
 
-Each completed Create card can show its video in Explorer, play it, or delete it after confirmation. Delete revalidates the job's server-stored output path and moves the video to the Windows Recycle Bin before removing the history card.
+Each completed Create card can rename its local video, show it in Explorer, play it, or delete it after confirmation. Rename changes the displayed title and filename together, preserves the media extension, and refuses to overwrite an existing file. Delete revalidates the job's server-stored output path and moves the video to the Windows Recycle Bin before removing the history card.
 
 Context files remain local. Dropped audio is not visual conditioning: it is looped or trimmed to the generated video's length and replaces the generated audio track after rendering. Dropped video is currently reduced to first/end visual anchors rather than used as full motion conditioning.
 

@@ -209,3 +209,14 @@ export function safeCreateTitle(value, id) {
   const title = text(value, 120, 'Title');
   return title || `Untitled creation ${String(id || '').slice(0, 6)}`;
 }
+
+export function safeCreateOutputName(value) {
+  let name = text(value, 120, 'Video name')
+    .replace(/\.(?:mp4|webm|mov|mkv)$/i, '')
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/^[. ]+|[. ]+$/g, '');
+  if (!name) throw new Error('Enter a video name.');
+  if (/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(name)) name = `${name} video`;
+  return name.slice(0, 100).replace(/[. ]+$/g, '');
+}
