@@ -273,7 +273,7 @@ class WorkflowCompiler:
                         compiled_inputs[dotted] = linked[dotted] if dotted in linked else widgets.pop(0) if widgets else None
                     continue
                 if name in linked:
-                    compiled_inputs[name] = linked[name]
+                    compiled_inputs[name] = linked[name] if is_connection else reconcile_combo_value(linked[name], definition)
                     if not is_connection and widgets:
                         widgets.pop(0)
                 elif not is_connection and widgets:

@@ -57,10 +57,24 @@ test('Create runner reconciles an unambiguous renamed model enum', async (contex
     'module = importlib.util.module_from_spec(spec)',
     'spec.loader.exec_module(module)',
     'choices = [["gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors", "gemma4_e2b_it_bf16.safetensors"], {}]',
+    'workflow = {',
+    '  "nodes": [{"id": 10, "type": "ltx-subgraph", "inputs": [{"name": "clip_name", "link": None}], "widgets_values": ["gemma4_e2b_it_int8_convrot.safetensors"]}],',
+    '  "links": [],',
+    '  "definitions": {"subgraphs": [{',
+    '    "id": "ltx-subgraph",',
+    '    "inputs": [{"name": "clip_name", "type": "COMBO"}],',
+    '    "nodes": [{"id": 393, "type": "CLIPLoader", "inputs": [{"name": "clip_name", "link": 1}], "widgets_values": []}],',
+    '    "links": [{"id": 1, "origin_id": -10, "origin_slot": 0, "target_id": 393, "target_slot": 0}]',
+    '  }]}',
+    '}',
+    'compiler = module.WorkflowCompiler("http://127.0.0.1:1")',
+    'compiler.object_info = lambda class_type: {"input": {"required": {"clip_name": choices}}}',
+    'compiled = compiler.compile(workflow, {}, [], "video/ltx-watch-create/test")',
     'print(json.dumps({',
     '  "renamed": module.reconcile_combo_value("gemma4_e2b_it_int8_convrot.safetensors", choices),',
     '  "existing": module.reconcile_combo_value("gemma4_e2b_it_bf16.safetensors", choices),',
     '  "ambiguous": module.reconcile_combo_value("gemma4_e2b_it.safetensors", choices),',
+    '  "subgraph": compiled["393"]["inputs"]["clip_name"],',
     '}))',
   ].join('\n');
   const run = spawnSync(python, ['-c', code], {
@@ -78,6 +92,7 @@ test('Create runner reconciles an unambiguous renamed model enum', async (contex
   assert.equal(result.renamed, 'gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors');
   assert.equal(result.existing, 'gemma4_e2b_it_bf16.safetensors');
   assert.equal(result.ambiguous, 'gemma4_e2b_it.safetensors');
+  assert.equal(result.subgraph, 'gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors');
 });
 
 test('Create retry replaces a stale result before the new runner is spawned', async () => {

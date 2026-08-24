@@ -20,7 +20,7 @@ All notable changes to LTX / Watch are documented here.
 
 ### Fixed
 
-- Create reconciles an outdated official-template model filename with ComfyUI's live enum only when family and model-format markers identify one unambiguous installed checkpoint. This covers the renamed Gemma INT8 ConvRot checkpoint without silently switching precision.
+- Create reconciles an outdated official-template model filename, including values passed through exposed subgraph constants, with ComfyUI's live enum only when family and model-format markers identify one unambiguous installed checkpoint. This covers the renamed Gemma INT8 ConvRot checkpoint without silently switching precision.
 
 ## 1.4.0 — 2026-08-23
 
