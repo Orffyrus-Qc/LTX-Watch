@@ -23,6 +23,7 @@ All notable changes to LTX / Watch are documented here.
 - Create reconciles an outdated official-template model filename, including values passed through exposed subgraph constants, with ComfyUI's live enum only when family and model-format markers identify one unambiguous installed checkpoint. This covers the renamed Gemma INT8 ConvRot checkpoint without silently switching precision.
 - Active Create renders can be canceled through an authenticated private marker. The owning runner interrupts only its isolated ComfyUI server, releases its lock, records a distinct Canceled state, and permits a clean Retry.
 - Completed Create cards can move their generated video to the Windows Recycle Bin after confirmation; the history record is removed only after the recoverable file operation succeeds.
+- Windows Recycle Bin deletion now passes the video path outside the PowerShell command expression, so drive-letter paths cannot be parsed as code.
 
 ## 1.4.0 — 2026-08-23
 

@@ -276,10 +276,13 @@ function execFileAsync(command, args, options = {}) {
 function recycleFile(filePath) {
   const script = [
     'Add-Type -AssemblyName Microsoft.VisualBasic',
-    '[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($args[0], [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs, [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin, [Microsoft.VisualBasic.FileIO.UICancelOption]::ThrowException)',
+    "$target = [Environment]::GetEnvironmentVariable('LTX_WATCH_RECYCLE_TARGET', 'Process')",
+    "if ([string]::IsNullOrWhiteSpace($target)) { throw 'The recycle target was not provided.' }",
+    '[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($target, [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs, [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin, [Microsoft.VisualBasic.FileIO.UICancelOption]::ThrowException)',
   ].join('; ');
   return new Promise((resolve, reject) => {
-    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script, filePath], { windowsHide: true, timeout: 30_000, maxBuffer: 512_000 }, (error, _stdout, stderr) => {
+    const env = { ...process.env, LTX_WATCH_RECYCLE_TARGET: filePath };
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { env, windowsHide: true, timeout: 30_000, maxBuffer: 512_000 }, (error, _stdout, stderr) => {
       if (error) return reject(new Error(stderr?.trim() || error.message || 'Windows could not move the video to the Recycle Bin.'));
       resolve();
     });

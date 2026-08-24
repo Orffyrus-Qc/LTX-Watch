@@ -122,6 +122,9 @@ test('Create output deletion is constrained and recoverable', async () => {
   const server = await readFile(path.join(appRoot, 'local-server.mjs'), 'utf8');
   const workspace = await readFile(path.join(appRoot, 'app', 'create-workspace.tsx'), 'utf8');
   assert.match(server, /RecycleOption\]::SendToRecycleBin/);
+  assert.match(server, /LTX_WATCH_RECYCLE_TARGET: filePath/);
+  assert.match(server, /GetEnvironmentVariable\('LTX_WATCH_RECYCLE_TARGET', 'Process'\)/);
+  assert.doesNotMatch(server, /'-Command', script, filePath/);
   const deleteBlock = server.slice(server.indexOf("action === 'delete-output'"), server.indexOf("action === 'cancel'"));
   assert.match(deleteBlock, /isInside\(source\.outputPath, \[config\.clipsDirectory\]\)/);
   assert.match(deleteBlock, /await recycleFile\(source\.outputPath\)/);
