@@ -24,6 +24,7 @@ All notable changes to LTX / Watch are documented here.
 - Active Create renders can be canceled through an authenticated private marker. The owning runner interrupts only its isolated ComfyUI server, releases its lock, records a distinct Canceled state, and permits a clean Retry.
 - Completed Create cards can move their generated video to the Windows Recycle Bin after confirmation; the history record is removed only after the recoverable file operation succeeds.
 - Windows Recycle Bin deletion now passes the video path outside the PowerShell command expression, so drive-letter paths cannot be parsed as code.
+- Create and Studio now force no-window process creation for descendant ComfyUI, Blender, FFmpeg, and helper processes, preventing background Python console popups.
 
 ## 1.4.0 — 2026-08-23
 

@@ -41,11 +41,58 @@ test('Create adapter validates a private job without launching ComfyUI or Blende
 
 test('Create runner copies Blender backbones before invoking background rendering', async () => {
   const script = await readFile(path.join(appRoot, 'scripts', 'ltx-create-runner.py'), 'utf8');
+  assert.match(script, /def hide_subprocess_windows\(\):/);
+  assert.match(script, /subprocess\.CREATE_NO_WINDOW/);
+  assert.match(script, /subprocess\.STARTF_USESHOWWINDOW/);
+  assert.match(script, /subprocess\.SW_HIDE/);
   assert.match(script, /shutil\.copy2\(backbone, working_copy\)/);
   assert.match(script, /"--background", "--disable-autoexec", str\(working_copy\)/);
   assert.doesNotMatch(script, /--python-expr/);
   assert.match(script, /"-sseof", "-0\.15"/);
   assert.match(script, /"-stream_loop", "-1"/);
+});
+
+test('Create runner applies Windows no-window flags to descendant processes', (context) => {
+  if (process.platform !== 'win32') {
+    context.skip('Windows process flags are only available on Windows.');
+    return;
+  }
+  const python = process.env.LTX_STUDIO_TEST_PYTHON || 'python.exe';
+  const runner = path.join(appRoot, 'scripts', 'ltx-create-runner.py');
+  const code = [
+    'import importlib.util, json, os, subprocess',
+    'spec = importlib.util.spec_from_file_location("ltx_create_hidden_test", os.environ["LTX_CREATE_RUNNER"])',
+    'module = importlib.util.module_from_spec(spec)',
+    'spec.loader.exec_module(module)',
+    'captured = {}',
+    'def fake_popen(*args, **kwargs):',
+    '  captured.update(kwargs)',
+    'module.subprocess.Popen = fake_popen',
+    'module.hide_subprocess_windows()',
+    'module.subprocess.Popen(["cmd.exe", "/d", "/c", "exit", "0"])',
+    'startup = captured["startupinfo"]',
+    'print(json.dumps({',
+    '  "noWindow": bool(captured["creationflags"] & subprocess.CREATE_NO_WINDOW),',
+    '  "hideStartup": bool(startup.dwFlags & subprocess.STARTF_USESHOWWINDOW),',
+    '  "showValue": startup.wShowWindow,',
+    '  "expectedShowValue": subprocess.SW_HIDE,',
+    '}))',
+  ].join('\n');
+  const run = spawnSync(python, ['-c', code], {
+    cwd: appRoot,
+    encoding: 'utf8',
+    windowsHide: true,
+    env: { ...process.env, LTX_CREATE_RUNNER: runner },
+  });
+  if (run.error?.code === 'ENOENT') {
+    context.skip(`Python executable not available: ${python}`);
+    return;
+  }
+  assert.equal(run.status, 0, run.stderr || run.stdout);
+  const flags = JSON.parse(run.stdout);
+  assert.equal(flags.noWindow, true);
+  assert.equal(flags.hideStartup, true);
+  assert.equal(flags.showValue, flags.expectedShowValue);
 });
 
 test('Create runner reconciles an unambiguous renamed model enum', async (context) => {

@@ -36,6 +36,24 @@ class CreateCancelled(RuntimeError):
     pass
 
 
+def hide_subprocess_windows():
+    """Prevent ComfyUI, Blender, FFmpeg, and helper consoles on Windows."""
+    if os.name != "nt" or getattr(subprocess, "_ltx_watch_hidden", False):
+        return
+    original_popen = subprocess.Popen
+
+    def hidden_popen(*args, **kwargs):
+        kwargs["creationflags"] = int(kwargs.get("creationflags", 0)) | subprocess.CREATE_NO_WINDOW
+        startupinfo = kwargs.get("startupinfo") or subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+        kwargs["startupinfo"] = startupinfo
+        return original_popen(*args, **kwargs)
+
+    subprocess.Popen = hidden_popen
+    subprocess._ltx_watch_hidden = True
+
+
 def read_json(file_path: Path):
     with file_path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
@@ -479,6 +497,7 @@ def validate_job(job):
 
 
 def run_job(job):
+    hide_subprocess_windows()
     runtime_root = validate_job(job)
     require_not_canceled(job)
     result_path = Path(job["resultPath"])

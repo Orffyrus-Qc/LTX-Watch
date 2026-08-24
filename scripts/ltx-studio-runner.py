@@ -131,6 +131,10 @@ def hide_source_runner_windows(module):
 
     def hidden_popen(*args, **kwargs):
         kwargs["creationflags"] = int(kwargs.get("creationflags", 0)) | subprocess.CREATE_NO_WINDOW
+        startupinfo = kwargs.get("startupinfo") or subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+        kwargs["startupinfo"] = startupinfo
         return original_popen(*args, **kwargs)
 
     source_subprocess.Popen = hidden_popen
