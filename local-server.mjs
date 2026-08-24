@@ -1266,7 +1266,7 @@ async function syncCreateJob(record, config) {
     const manifestInfo = manifestPath ? await stat(manifestPath).catch(() => null) : null;
     if (packageInfo?.isDirectory() && manifestInfo?.isFile() && isInside(packagePath, [CREATE_RUNTIME_ROOT]) && isInside(manifestPath, [packagePath])) {
       job.status = 'backbone-ready';
-      job.stage = 'Physics backbone ready';
+      job.stage = 'Blender animation backbone ready';
       job.progress = 100;
       job.packagePath = packagePath;
       job.manifestPath = manifestPath;
@@ -1517,7 +1517,7 @@ async function buildCreateView({ sync = false } = {}) {
       summary: physicsJob
         ? `${job.options.width}×${job.options.height} · frames ${job.options.blenderFirstFrame}–${job.options.blenderLastFrame} · ${job.options.frameRate} fps`
         : `${job.options.width}×${job.options.height} · ${job.options.duration}s · ${job.options.frameRate} fps`,
-      mode: physicsJob ? 'Blender physics authority' : job.options.useBlender ? 'Blender anchors' : job.options.referenceMode === 'text' ? 'Text' : job.options.referenceMode === 'first-last' ? 'First + last frame' : 'First frame',
+      mode: physicsJob ? 'Blender animation backbone' : job.options.useBlender ? 'Blender frame anchors' : job.options.referenceMode === 'text' ? 'Text' : job.options.referenceMode === 'first-last' ? 'First + last frame' : 'First frame',
       kind: physicsJob ? 'physics-backbone' : 'video',
       packagePath: job.packagePath && isInside(job.packagePath, [CREATE_RUNTIME_ROOT]) ? job.packagePath : null,
       manifestPath: job.manifestPath && isInside(job.manifestPath, [CREATE_RUNTIME_ROOT]) ? job.manifestPath : null,
@@ -1576,7 +1576,7 @@ async function controlCreate(body) {
           variations: seeds.length,
           kind: options.useBlender && options.blenderMode === 'physics' ? 'physics-backbone' : 'video',
           status: 'queued',
-          stage: options.useBlender && options.blenderMode === 'physics' ? 'Waiting safely to evaluate Blender physics' : 'Waiting safely for the GPU',
+          stage: options.useBlender && options.blenderMode === 'physics' ? 'Waiting safely to evaluate the Blender animation' : 'Waiting safely for the GPU',
           progress: 0,
           createdAt: new Date().toISOString(),
           startedAt: null,
@@ -1624,7 +1624,7 @@ async function controlCreate(body) {
       const source = record.jobs[id];
       if (!source || !['failed', 'canceled'].includes(source.status)) throw new Error('Only a failed or canceled Create job can be retried.');
       source.status = 'queued';
-      source.stage = source.kind === 'physics-backbone' ? 'Waiting safely to evaluate Blender physics' : 'Waiting safely for the GPU';
+      source.stage = source.kind === 'physics-backbone' ? 'Waiting safely to evaluate the Blender animation' : 'Waiting safely for the GPU';
       source.progress = 0;
       source.startedAt = null;
       source.completedAt = null;

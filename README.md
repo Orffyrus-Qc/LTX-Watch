@@ -151,7 +151,7 @@ Saved dashboard settings in `local.config.json` take precedence over auto-detect
 3. Optionally enable local prompt enhancement, camera direction, motion intensity, visual style, and synchronized, ambience-only, soundtrack-replacement, or stripped audio.
 4. Drop images, video, a song, or a `.blend` into **Context Drop**, or start from text alone. The first two images become start/end anchors; a video supplies extracted first/end frames; audio replaces the finished video's soundtrack; and a `.blend` becomes the private Blender backbone.
 5. Blender mode can use either a `.blend` backbone assigned in **Projects** or a dropped `.blend`. **Creative anchors** copies the scene, renders selected timeline frame(s), and passes those PNGs to the official local I2V or FLF2V workflow. It never saves over the source scene.
-6. **Physics authority** is a separate preparation path. Choose a complete frame range and LTX Watch evaluates the copied Blender scene sequentially into a versioned package containing RGBA beauty frames, linear depth, surface normals, motion vectors, and per-frame camera transforms. Camera and motion controls are locked because Blender—not LTX—owns animation.
+6. Choose **Blender animation** directly in **Visual Backbone** when Blender must own the complete shot. Select a frame range and LTX Watch evaluates the copied scene sequentially into a versioned package containing RGBA beauty frames, linear depth, surface normals, motion vectors, and per-frame camera transforms. Camera and motion controls are locked because Blender—not LTX—owns animation. **Blender frames** remains the creative alternative that sends only first/end frames to LTX.
 7. Press **Queue creation** for LTX output or **Prepare backbone** for strict physics passes. Jobs run one at a time only after the album worker, Studio, Projects regeneration, and the configured ComfyUI port are idle.
 
 Create state, prompts, uploads, runner logs, and job JSON live in ignored `create.state.json` and `.ltx-watch-create/`. Only the ignored JSON job path appears on the Python process command line. Outputs are written beneath the configured ComfyUI video folder and remain playable from Create history.
@@ -162,7 +162,7 @@ Context files remain local. Dropped audio is not visual conditioning: it is loop
 
 The queue **Pause** control stops automatic launch of the next waiting creation; it does not suspend an active sampling process. **Cancel render** asks the owning Create runner to interrupt only the isolated ComfyUI server it launched, then releases the normal lock and records a retryable Canceled result. Use **Move first** to reprioritize a waiting variation and **Retry** for a failed or canceled job. Automated checks must never press **Queue creation**, cancel a real render, or call the authenticated enqueue action against a real local bridge.
 
-### Blender physics authority and the LTX 2.5 gate
+### Blender animation backbone and the LTX 2.5 gate
 
 Physics mode deliberately stops after preparing the Blender backbone package on the current supported stack. The installed official LTX 2.5 T2V/I2V/FLF2V templates do not expose a verified contract that consumes depth, normals, and motion vectors together while guaranteeing that model sampling cannot invent or retime motion. Calling a first/last-frame workflow “physics-preserving” would be misleading.
 
@@ -217,7 +217,7 @@ Source-runner inspection returns scene names, slugs, and shot numbers only. It d
 
 `.blend`, USD, FBX, OBJ, and GLTF/GLB files are first-class project assets. Choose one as the **Blender backbone** to record which scene owns the production camera, animation blocking, spatial layout, and continuity. Per-shot 3D files can also be attached as context.
 
-The **Create → Use Blender → Physics authority** adapter can now consume the designated `.blend` through the authenticated local queue and create versioned structural passes from a private working copy. Project and shot context relationships remain available for future per-shot package assignment. The master `.blend` is never saved or overwritten.
+The **Create → Visual Backbone → Blender animation** adapter can consume the designated `.blend` through the authenticated local queue and create versioned structural passes from a private working copy. Project and shot context relationships remain available for future per-shot package assignment. The master `.blend` is never saved or overwritten.
 
 ## Environment & setup
 

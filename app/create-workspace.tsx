@@ -180,6 +180,33 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
     setDraft((current) => current ? { ...current, [key]: value } : current);
   }
 
+  function selectSourceMode(mode: 'text' | 'first-frame' | 'first-last' | 'blender-anchors' | 'blender-animation') {
+    setDraft((current) => {
+      if (!current) return current;
+      if (mode === 'blender-animation') {
+        return {
+          ...current,
+          useBlender: true,
+          blenderMode: 'physics',
+          referenceMode: 'first-last',
+          camera: 'locked',
+          motion: 'subtle',
+          variations: 1,
+          promptEnhance: false,
+        };
+      }
+      if (mode === 'blender-anchors') {
+        return {
+          ...current,
+          useBlender: true,
+          blenderMode: 'anchors',
+          referenceMode: current.referenceMode === 'first-last' ? 'first-last' : 'first-frame',
+        };
+      }
+      return { ...current, useBlender: false, blenderMode: 'anchors', referenceMode: mode };
+    });
+  }
+
   async function uploadContext(files: File[], field?: 'firstFramePath' | 'lastFramePath') {
     if (!token || pending) return;
     const selectedFiles = files.slice(0, field ? 1 : 12);
@@ -325,7 +352,7 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
         <div><p className="kicker">LOCAL TEXT-TO-VIDEO LAB</p><h2>Imagine it. Queue it. Render it.</h2><p>Use LTX creatively, or make Blender the sole authority for physically correct camera and object motion.</p></div>
         <div className={`studio-readiness ${readyNow ? 'ready' : ''}`}>
           {readyNow ? strictPhysics ? <PackageCheck size={17} /> : <WandSparkles size={17} /> : active ? <LoaderCircle className="spinning" size={17} /> : <Clock3 size={17} />}
-          <span><small>{active ? active.kind === 'physics-backbone' ? 'PHYSICS PREPARING' : 'CREATE RENDERING' : readyNow ? strictPhysics ? 'PHYSICS PREP READY' : 'CREATE READY' : view.queued ? `${view.queued} WAITING` : 'SAFE WAIT'}</small><b>{readinessMessage}</b></span>
+          <span><small>{active ? active.kind === 'physics-backbone' ? 'ANIMATION EVALUATING' : 'CREATE RENDERING' : readyNow ? strictPhysics ? 'BACKBONE PREP READY' : 'CREATE READY' : view.queued ? `${view.queued} WAITING` : 'SAFE WAIT'}</small><b>{readinessMessage}</b></span>
         </div>
       </div>
 
@@ -333,7 +360,7 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
 
       {active && <div className="create-active">
         <span className="create-active-icon"><LoaderCircle className="spinning" size={19} /></span>
-        <div><small>{active.kind === 'physics-backbone' ? 'PREPARING PHYSICS BACKBONE' : 'GENERATING NOW'}</small><b>{active.title}{active.variations > 1 ? ` · variation ${active.variation}/${active.variations}` : ''}</b><span>{active.stage || 'Sampling frames'}</span></div>
+        <div><small>{active.kind === 'physics-backbone' ? 'PREPARING BLENDER ANIMATION BACKBONE' : 'GENERATING NOW'}</small><b>{active.title}{active.variations > 1 ? ` · variation ${active.variation}/${active.variations}` : ''}</b><span>{active.stage || 'Sampling frames'}</span></div>
         <div className="create-active-progress"><div><span>{active.mode} · seed {active.seed}</span><b>{Math.round(active.progress)}%</b></div><div><span style={{ width: `${active.progress}%` }} /></div></div>
         {view.capabilities?.cancel && <button className="create-cancel-button" disabled={pending === 'cancel'} onClick={() => cancelRender(active)}><Square size={12} fill="currentColor" /> {pending === 'cancel' ? 'Canceling…' : 'Cancel render'}</button>}
       </div>}
@@ -363,7 +390,7 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
               <div><b>{asset.name}</b><small>{contextRole(asset)} · {(asset.size / 1024 / 1024).toFixed(asset.size < 10 * 1024 * 1024 ? 1 : 0)} MB</small></div>
               <button onClick={() => removeContext(asset)} aria-label={`Remove ${asset.name}`} title="Remove from this draft"><Trash2 size={13} /></button>
             </div>)}</div>}
-            <div className="create-context-note"><CircleAlert size={13} /><span>Images and video provide visual anchors. Audio replaces the generated soundtrack; it does not change the image model. A `.blend` is rendered to reference frames from a private copy.</span></div>
+            <div className="create-context-note"><CircleAlert size={13} /><span>Images and video provide visual anchors. Audio replaces the generated soundtrack; it does not change the image model. A `.blend` can supply selected frame anchors or the complete evaluated Blender animation backbone.</span></div>
           </div>
 
           <div className="create-card">
@@ -379,22 +406,20 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
           </div>
 
           <div className="create-card">
-            <div className="create-card-head"><span><ImagePlus size={14} /> VISUAL BACKBONE</span><small>{draft.useBlender ? 'Rendered from an immutable .blend copy' : 'Optional'}</small></div>
+            <div className="create-card-head"><span><ImagePlus size={14} /> VISUAL BACKBONE</span><small>{strictPhysics ? 'Complete Blender animation' : draft.useBlender ? 'Selected Blender frames' : 'Optional'}</small></div>
             <div className="create-source-tabs">
-              {(['text', 'first-frame', 'first-last'] as const).map((mode) => <button key={mode} className={!draft.useBlender && draft.referenceMode === mode ? 'selected' : ''} onClick={() => { update('useBlender', false); update('blenderMode', 'anchors'); update('referenceMode', mode); }} disabled={mode === 'text' ? !view.templates.text : mode === 'first-last' ? !view.templates.firstLast : !view.templates.firstFrame}>{mode === 'text' ? 'Text only' : mode === 'first-frame' ? 'Start frame' : 'Start + end'}</button>)}
-              <button className={draft.useBlender ? 'selected' : ''} onClick={() => { update('useBlender', true); if (draft.referenceMode === 'text') update('referenceMode', 'first-frame'); }}><Box size={13} /> Use Blender</button>
+              {(['text', 'first-frame', 'first-last'] as const).map((mode) => <button key={mode} className={!draft.useBlender && draft.referenceMode === mode ? 'selected' : ''} onClick={() => selectSourceMode(mode)} disabled={mode === 'text' ? !view.templates.text : mode === 'first-last' ? !view.templates.firstLast : !view.templates.firstFrame}>{mode === 'text' ? 'Text only' : mode === 'first-frame' ? 'Start frame' : 'Start + end'}</button>)}
+              <button className={draft.useBlender && draft.blenderMode === 'anchors' ? 'selected' : ''} onClick={() => selectSourceMode('blender-anchors')}><Box size={13} /> Blender frames</button>
+              <button className={strictPhysics ? 'selected backbone' : 'backbone'} onClick={() => selectSourceMode('blender-animation')}><PackageCheck size={13} /> Blender animation</button>
             </div>
             {draft.useBlender ? <div className="create-blender">
               <div className={`create-capability ${view.blender.installed ? 'ready' : ''}`}><Box size={17} /><span><b>{view.blender.installed ? `Blender ${view.blender.version || ''} detected` : 'Blender is not detected'}</b><small>The master scene is copied before background rendering; LTX Watch never saves over it.</small></span></div>
-              <div className="create-blender-modes">
-                <button className={draft.blenderMode !== 'physics' ? 'selected' : ''} onClick={() => update('blenderMode', 'anchors')}><Sparkles size={13} /><span><b>Creative anchors</b><small>First/end frames guide LTX; LTX invents motion between them.</small></span></button>
-                <button className={draft.blenderMode === 'physics' ? 'selected' : ''} onClick={() => { update('blenderMode', 'physics'); update('referenceMode', 'first-last'); update('camera', 'locked'); update('motion', 'subtle'); update('variations', 1); update('promptEnhance', false); }}><PackageCheck size={13} /><span><b>Physics authority</b><small>Blender owns all motion; prepare full structural passes.</small></span></button>
-              </div>
               {strictPhysics && <div className="physics-authority-card">
-                <div><PackageCheck size={17} /><span><b>Animation authority: Blender</b><small>Camera, rigid bodies, collisions, cloth, deformation, and timing come only from the evaluated Blender scene.</small></span></div>
+                <div><PackageCheck size={17} /><span><b>Blender animation backbone enabled</b><small>Camera, rigid bodies, collisions, cloth, deformation, and timing come only from every evaluated frame of the Blender scene.</small></span></div>
                 <div className="physics-pass-list">{(view.physics?.passes || []).map((item) => <span key={item.id}>{item.label}</span>)}</div>
                 <p>{view.physics?.blockedReason || 'Restart this branch’s local bridge to load the physics-backbone capability.'}</p>
               </div>}
+              {!strictPhysics && <div className="create-anchor-warning"><Sparkles size={14} /><span><b>Blender frame anchors</b><small>Only the selected first/end frames guide LTX. Choose <strong>Blender animation</strong> above when Blender must own the complete camera and object motion.</small></span></div>}
               <label><span>PROJECT BACKBONE</span><select value={draft.blenderProjectId} disabled={Boolean(draft.blenderUploadPath)} onChange={(event) => { update('blenderProjectId', event.target.value); update('blenderUploadPath', ''); }}><option value="">{draft.blenderUploadPath ? 'Using dropped .blend context' : 'Choose a .blend assigned in Projects'}</option>{view.blender.backbones.map((item) => <option key={item.projectId} value={item.projectId}>{item.projectName} · {item.assetName}</option>)}</select></label>
               <div className="create-frame-grid"><label><span>FIRST FRAME</span><input type="number" min={1} value={draft.blenderFirstFrame} onChange={(event) => update('blenderFirstFrame', Number(event.target.value))} /></label>{(strictPhysics || draft.referenceMode === 'first-last') && <label><span>LAST FRAME</span><input type="number" min={1} value={draft.blenderLastFrame} onChange={(event) => update('blenderLastFrame', Number(event.target.value))} /></label>}</div>
               {!strictPhysics && <label className="create-check"><input type="checkbox" checked={draft.referenceMode === 'first-last'} onChange={(event) => update('referenceMode', event.target.checked ? 'first-last' : 'first-frame')} /><span><b>Anchor the final frame too</b><small>Renders both timeline frames and uses the official first/last-frame LTX workflow.</small></span></label>}
@@ -416,8 +441,8 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
           </div>
 
           <div className="create-submit">
-            <div><b>{strictPhysics ? 'One versioned Blender backbone package will join the private queue' : `${draft.variations} ${draft.variations === 1 ? 'video' : 'variations'} will join the private Create queue`}</b><span>{draft.resolution} · {strictPhysics ? `frames ${draft.blenderFirstFrame}–${draft.blenderLastFrame}` : `${draft.duration}s`} · {draft.frameRate} fps · {strictPhysics ? 'Blender owns motion' : draft.useBlender ? 'Blender anchors' : draft.referenceMode}</span></div>
-            <div className="create-submit-actions"><button className="secondary-button" disabled={Boolean(pending)} onClick={() => void action('save-draft', { draft }, 'Create draft saved locally')}>Save draft</button><button className="project-primary" disabled={!enqueueReady} onClick={() => void action('enqueue', { draft }, strictPhysics ? 'Physics backbone queued safely' : `${draft.variations} Create ${draft.variations === 1 ? 'job' : 'jobs'} queued safely`)}>{pending === 'enqueue' ? <LoaderCircle className="spinning" size={15} /> : strictPhysics ? <PackageCheck size={15} /> : <Plus size={15} />} {strictPhysics ? 'Prepare backbone' : 'Queue creation'}</button></div>
+            <div><b>{strictPhysics ? 'One versioned Blender animation backbone will join the private queue' : `${draft.variations} ${draft.variations === 1 ? 'video' : 'variations'} will join the private Create queue`}</b><span>{draft.resolution} · {strictPhysics ? `frames ${draft.blenderFirstFrame}–${draft.blenderLastFrame}` : `${draft.duration}s`} · {draft.frameRate} fps · {strictPhysics ? 'Full Blender animation owns motion' : draft.useBlender ? 'Blender frame anchors' : draft.referenceMode}</span></div>
+            <div className="create-submit-actions"><button className="secondary-button" disabled={Boolean(pending)} onClick={() => void action('save-draft', { draft }, 'Create draft saved locally')}>Save draft</button><button className="project-primary" disabled={!enqueueReady} onClick={() => void action('enqueue', { draft }, strictPhysics ? 'Blender animation backbone queued safely' : `${draft.variations} Create ${draft.variations === 1 ? 'job' : 'jobs'} queued safely`)}>{pending === 'enqueue' ? <LoaderCircle className="spinning" size={15} /> : strictPhysics ? <PackageCheck size={15} /> : <Plus size={15} />} {strictPhysics ? 'Prepare animation backbone' : 'Queue creation'}</button></div>
           </div>
         </div>
 
@@ -433,12 +458,12 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
               {!view.jobs.some((job) => !['complete', 'backbone-ready'].includes(job.status)) && <div className="project-empty-small"><Check size={20} /><b>Queue is clear</b><span>New video and backbone jobs appear here.</span></div>}
             </div>
           </div>
-          <div className="create-card create-safety-card"><div className="create-card-head"><span><Box size={14} /> LOCAL SAFETY</span></div><ul><li>Uses official local ComfyUI workflows.</li><li>Never launches beside Studio, the album worker, or an occupied port.</li><li>Prompts and job files stay in git-ignored local state.</li><li>Blender renders a working copy of the master scene.</li><li>Physics mode will not claim LTX refinement until every structural pass has a verified 2.5 consumer.</li></ul></div>
+          <div className="create-card create-safety-card"><div className="create-card-head"><span><Box size={14} /> LOCAL SAFETY</span></div><ul><li>Uses official local ComfyUI workflows.</li><li>Never launches beside Studio, the album worker, or an occupied port.</li><li>Prompts and job files stay in git-ignored local state.</li><li>Blender renders a working copy of the master scene.</li><li>Animation-backbone mode will not claim LTX refinement until every structural pass has a verified 2.5 consumer.</li></ul></div>
         </aside>
       </div>
 
       {packages.length > 0 && <section className="create-history physics-package-history">
-        <div className="create-history-head"><div><p className="kicker">BLENDER PHYSICS PACKAGES</p><h3>Motion-authoritative backbones</h3></div></div>
+        <div className="create-history-head"><div><p className="kicker">BLENDER ANIMATION BACKBONES</p><h3>Motion-authoritative packages</h3></div></div>
         <div className="physics-package-grid">{packages.map((job) => <article className="physics-package" key={job.id}>
           <PackageCheck size={22} />
           <div><b>{job.title}</b><small>{job.summary}</small><span>Beauty · depth · normals · motion vectors · camera</span></div>
