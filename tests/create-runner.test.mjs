@@ -109,7 +109,7 @@ test('Create runner reconciles an unambiguous renamed model enum', async (contex
     '  "links": [],',
     '  "definitions": {"subgraphs": [{',
     '    "id": "ltx-subgraph",',
-    '    "inputs": [{"name": "clip_name", "type": "COMBO"}],',
+    '    "inputs": [{"name": "clip_name", "label": "prompt_enhance_model", "type": "COMBO"}],',
     '    "nodes": [{"id": 393, "type": "CLIPLoader", "inputs": [{"name": "clip_name", "link": 1}], "widgets_values": []}],',
     '    "links": [{"id": 1, "origin_id": -10, "origin_slot": 0, "target_id": 393, "target_slot": 0}]',
     '  }]}',
@@ -119,6 +119,8 @@ test('Create runner reconciles an unambiguous renamed model enum', async (contex
     'compiled = compiler.compile(workflow, {}, [], "video/ltx-watch-create/test")',
     'print(json.dumps({',
     '  "renamed": module.reconcile_combo_value("gemma4_e2b_it_int8_convrot.safetensors", choices),',
+    '  "enhancerRole": module.reconcile_combo_value("gemma4_e2b_it_int8_convrot.safetensors", choices, "prompt_enhance_model"),',
+    '  "missingEnhancer": module.reconcile_combo_value("gemma4_e2b_it_int8_convrot.safetensors", [["gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors"], {}], "prompt_enhance_model"),',
     '  "existing": module.reconcile_combo_value("gemma4_e2b_it_bf16.safetensors", choices),',
     '  "ambiguous": module.reconcile_combo_value("gemma4_e2b_it.safetensors", choices),',
     '  "imageUpload": module.reconcile_widget_value("ltx_watch_create_fixture_reference_1.png", [["example.png"], {"image_upload": True}]),',
@@ -138,10 +140,12 @@ test('Create runner reconciles an unambiguous renamed model enum', async (contex
   assert.equal(run.status, 0, run.stderr || run.stdout);
   const result = JSON.parse(run.stdout);
   assert.equal(result.renamed, 'gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors');
+  assert.equal(result.enhancerRole, 'gemma4_e2b_it_bf16.safetensors');
+  assert.equal(result.missingEnhancer, 'gemma4_e2b_it_int8_convrot.safetensors');
   assert.equal(result.existing, 'gemma4_e2b_it_bf16.safetensors');
   assert.equal(result.ambiguous, 'gemma4_e2b_it.safetensors');
   assert.equal(result.imageUpload, 'ltx_watch_create_fixture_reference_1.png');
-  assert.equal(result.subgraph, 'gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors');
+  assert.equal(result.subgraph, 'gemma4_e2b_it_bf16.safetensors');
 });
 
 test('Create stages reference images at the ComfyUI input root and cleans them', async (context) => {

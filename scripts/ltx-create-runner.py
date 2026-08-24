@@ -139,12 +139,33 @@ def _filename_tokens(value):
     return re.findall(r"[a-z]+\d+[a-z0-9]*|\d+[a-z]+|[a-z]+", filename)
 
 
-def reconcile_combo_value(value, definition):
+def reconcile_combo_value(value, definition, semantic_role=None):
     """Reconcile a renamed template enum only when the live match is unambiguous."""
     if not isinstance(definition, list) or not definition or not isinstance(definition[0], list):
         return value
     choices = [item for item in definition[0] if isinstance(item, str)]
-    if not isinstance(value, str) or not choices or value in choices:
+    if not isinstance(value, str) or not choices:
+        return value
+
+    if semantic_role == "prompt_enhance_model":
+        # The enhancer and the projected LTX text encoder are both Gemma 4
+        # checkpoints, but they are not interchangeable. Prefer the sole
+        # dedicated e2b-it checkpoint even when the installed precision differs
+        # from the stale template default; never feed the main with-proj encoder
+        # into TextGenerateLTX2Prompt.
+        role_candidates = []
+        for choice in choices:
+            candidate_tokens = set(_filename_tokens(choice))
+            if {"e2b", "it"}.issubset(candidate_tokens) and not {"with", "proj"}.issubset(candidate_tokens):
+                role_candidates.append(choice)
+        if len(role_candidates) == 1:
+            return role_candidates[0]
+        if role_candidates:
+            choices = role_candidates
+        else:
+            return value
+
+    if value in choices:
         return value
     if len(choices) == 1:
         return choices[0]
@@ -164,12 +185,12 @@ def reconcile_combo_value(value, definition):
     return candidates[0] if len(candidates) == 1 else value
 
 
-def reconcile_widget_value(value, definition):
+def reconcile_widget_value(value, definition, semantic_role=None):
     """Never treat an uploaded file selector as a renamed model enum."""
     options = definition[1] if isinstance(definition, list) and len(definition) > 1 and isinstance(definition[1], dict) else {}
     if options.get("image_upload"):
         return value
-    return reconcile_combo_value(value, definition)
+    return reconcile_combo_value(value, definition, semantic_role)
 
 
 def locate_template(comfy_root: Path, mode: str):
@@ -219,9 +240,11 @@ class WorkflowCompiler:
             raise RuntimeError("The official LTX workflow subgraph node is missing.")
 
         sub_inputs = subgraph.get("inputs", [])
+        sub_input_roles = {}
         widget_index_by_input = {}
         widget_index = 0
         for index, sub_input in enumerate(sub_inputs):
+            sub_input_roles[index] = self._input_label(sub_input)
             input_type = sub_input.get("type", "")
             if not (isinstance(input_type, str) and input_type in CONNECTION_TYPES):
                 widget_index_by_input[index] = widget_index
@@ -302,6 +325,12 @@ class WorkflowCompiler:
                 return [str(real_id), real_slot]
             return [str(origin_id), origin_slot]
 
+        def resolve_semantic_role(link_id, internal):
+            if not internal:
+                return None
+            origin_id, origin_slot = internal_links[link_id]
+            return sub_input_roles.get(origin_slot) if origin_id == -10 else None
+
         top_nodes = [
             node for node in graph.get("nodes", [])
             if node.get("type") not in {"MarkdownNote", "ResolutionSelector", subgraph.get("id")}
@@ -316,6 +345,11 @@ class WorkflowCompiler:
             parameters = list(required.items()) + list(optional.items())
             linked = {
                 item["name"]: resolve_link(item["link"], internal)
+                for item in node.get("inputs", [])
+                if item.get("link") is not None
+            }
+            linked_roles = {
+                item["name"]: resolve_semantic_role(item["link"], internal)
                 for item in node.get("inputs", [])
                 if item.get("link") is not None
             }
@@ -336,7 +370,7 @@ class WorkflowCompiler:
                         compiled_inputs[dotted] = linked[dotted] if dotted in linked else widgets.pop(0) if widgets else None
                     continue
                 if name in linked:
-                    compiled_inputs[name] = linked[name] if is_connection else reconcile_widget_value(linked[name], definition)
+                    compiled_inputs[name] = linked[name] if is_connection else reconcile_widget_value(linked[name], definition, linked_roles.get(name))
                     if not is_connection and widgets:
                         widgets.pop(0)
                 elif not is_connection and widgets:
