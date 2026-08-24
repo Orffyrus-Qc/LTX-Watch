@@ -96,7 +96,9 @@ Context intake accepts only the documented image/video/audio/`.blend` extensions
 
 First/last image references must retain their exact server-created identity. Stage unique copies directly in ComfyUI's enumerated input root before its isolated server starts, never pass `image_upload` selectors through model-enum reconciliation, and remove the staged copies after the server stops. Tests must prove the compiled selector is not replaced by a sample such as `example.png` without launching a real workflow.
 
-Blender mode accepts either a designated `.blend` inside a registered Project root or an authenticated dropped `.blend` inside the private Create runtime, plus a detected local Blender executable. Copy the source into the per-job runtime before fixed-argument background PNG rendering, with auto-execution disabled. Never save over the source or accept arbitrary Blender scripts. Automated tests use `--validate-job` and static safety assertions only; never invoke real Blender, ComfyUI, or a model.
+Blender anchor mode accepts either a designated `.blend` inside a registered Project root or an authenticated dropped `.blend` inside the private Create runtime, plus a detected local Blender executable. Copy the source into the per-job runtime before fixed-argument background PNG rendering, with auto-execution disabled. Never save over the source or accept arbitrary Blender scripts. Automated tests use `--validate-job` and static safety assertions only; never invoke real Blender, ComfyUI, or a model.
+
+Physics-authority mode is a separate fixed-purpose adapter. Blender is the sole authority for camera, geometry, trajectories, collisions, cloth/deformation, and timing. Require beauty, depth, normal, motion-vector, and camera passes over one exact frame range; store a versioned manifest declaring `animationAuthority: "blender"` and `refinementAuthority: "appearance-only"`. The browser cannot choose a script, executable, output path, compositor graph, workflow, or arbitrary argument. Keep LTX 2.5 refinement gated until a verified adapter consumes every required pass without inventing or retiming motion; first/last anchors and sparse tracks are insufficient. Never fall back to an older control model or a different backend silently. Tests may call the pure contract and `blender-physics-backbone.py --validate-job` only—never real Blender or a live enqueue.
 
 Create cancellation must remain authenticated and scoped to the active private job. The bridge writes a server-derived marker beneath that job; the owning runner may interrupt only the isolated loopback ComfyUI server it launched, then must stop it and release the existing lock. Never cancel with an unverified process kill or by interrupting the user's ordinary ComfyUI instance. Automated checks must never request cancellation against a real render.
 
@@ -115,7 +117,7 @@ Preserve these invariants:
 - A project regeneration starts only when it was explicitly queued, the normal worker is absent, ComfyUI is offline, and no Studio job is active.
 - Source-runner plan inspection is metadata-only: it may expose completed scene slugs and shot numbers for explicit Project regeneration, but it must never prepare inputs, launch ComfyUI, initialize the GPU, expose prompts/paths, or add completed scenes to the unattended Studio queue.
 - Context and Blender-backbone relationships are metadata. Do not send files or prompts to a paid provider without a separate provider adapter and explicit user action.
-- Treat `.blend` as a master production asset. A future Blender render adapter must create backups/versioned outputs, constrain scripts and paths, and never overwrite the master scene silently.
+- Treat `.blend` as a master production asset. The Physics-authority adapter must use a private working copy, versioned outputs, fixed scripts/paths, and never overwrite the master scene.
 
 ### `lib/environment-audit.mjs`
 

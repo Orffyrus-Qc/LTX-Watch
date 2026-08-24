@@ -124,6 +124,16 @@ When adding Blender as an active camera/animation backbone:
 5. Preserve project and shot context IDs so paid-provider adapters can consume the same relationships without changing the manifest schema.
 6. Add fixture-only tests. Never open or save the user's real `.blend` during automated validation.
 
+The first active implementation is Create's **Physics authority** package builder. Preserve its non-negotiable boundary:
+
+1. Blender is the sole authority for camera transforms, trajectories, collision results, cloth/soft-body deformation, timing, and every other physical change.
+2. `lib/physics-backbone.mjs` owns the versioned five-pass contract; `scripts/blender-physics-backbone.py` is a fixed-purpose adapter and may run only against the bridge-created working copy.
+3. The browser may select the registered/private `.blend`, frame range, resolution, and frame rate. It must never supply a script, executable, compositor graph, output path, workflow, or arbitrary argument.
+4. Keep sequential scene evaluation and the beauty/depth/normal/vector/camera outputs aligned to the exact same frame range and rate. Treat missing/misaligned passes as failure, not a partial success.
+5. Keep `animationAuthority: "blender"`, `refinementAuthority: "appearance-only"`, provenance, dynamics inventory, and compatibility state in every manifest version.
+6. `refinementReady` stays false until an official LTX 2.5 adapter has been verified to consume all required structure without inventing or retiming motion. Sparse tracks or first/last images alone are not sufficient. Never silently substitute older LTX controls or another backend.
+7. Tests use pure job fixtures and `blender-physics-backbone.py --validate-job`. Do not open Blender, render a frame, enqueue through the live bridge, or inspect a private production `.blend` during automated validation.
+
 When adding a paid AI provider, keep credentials in OS-backed local storage, send only files explicitly selected for that request, show the destination/provider and estimated cost before submission, normalize provider jobs behind one adapter contract, and import results as new shot versions. Do not put provider payload shapes or keys in the project manifest or React tree.
 
 ### Create workspace and LTX template evolution
@@ -147,7 +157,7 @@ When LTX or ComfyUI updates the official full-workflow templates:
 
 Context uploads are an explicit local contract. Preserve the extension allowlist, kind-specific size limits, ordered 4 MiB offsets, exact final length, server-selected destination, and private-runtime revalidation. Image files are I2V/FLF2V anchors; video is reduced to first/end anchors through fixed FFmpeg arguments; audio replaces the final soundtrack and must never be described as visual conditioning. Do not add arbitrary transcoder flags from the browser.
 
-For Blender mode, validate either the designated Project `.blend` against registered roots or the dropped `.blend` against the private Create runtime in Node and again in Python. Copy it into the per-job runtime before rendering. Keep auto-execution disabled and the argument list fixed to background open, output prefix, PNG format, and numeric frame; do not add browser-supplied Python expressions or scripts. A real Blender invocation is excluded from automated tests.
+For Blender anchor mode, validate either the designated Project `.blend` against registered roots or the dropped `.blend` against the private Create runtime in Node and again in Python. Copy it into the per-job runtime before rendering. Keep auto-execution disabled and the argument list fixed to background open, output prefix, PNG format, and numeric frame; do not add browser-supplied Python expressions or scripts. Physics mode uses the separate fixed-purpose five-pass adapter and the stricter authority contract above. A real Blender invocation is excluded from automated tests.
 
 ### Queue normalization
 

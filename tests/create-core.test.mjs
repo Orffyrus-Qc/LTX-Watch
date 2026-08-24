@@ -41,6 +41,28 @@ test('dropped video, soundtrack, and Blender context satisfy their explicit mode
   assert.equal(blender.blenderUploadPath, 'private/scene.blend');
 });
 
+test('physics-authority mode removes creative motion instructions and keeps Blender authoritative', () => {
+  const options = normalizeCreateOptions({
+    ...createDefaultDraft(),
+    prompt: 'A cloth banner falls across a moving mechanical arm.',
+    useBlender: true,
+    blenderMode: 'physics',
+    blenderUploadPath: 'private/scene.blend',
+    camera: 'orbit',
+    motion: 'dynamic',
+    variations: 4,
+    promptEnhance: true,
+  });
+  assert.equal(options.camera, 'locked');
+  assert.equal(options.motion, 'subtle');
+  assert.equal(options.variations, 1);
+  assert.equal(options.promptEnhance, false);
+  const prompt = composeCreatePrompt(options);
+  assert.match(prompt, /Blender owns every camera transform/i);
+  assert.match(prompt, /Structural drift is a failed result/i);
+  assert.doesNotMatch(prompt, /cinematic orbit|energetic but coherent/i);
+});
+
 test('fixed variation seeds are deterministic and sequential', () => {
   const options = normalizeCreateOptions({ ...createDefaultDraft(), prompt: 'A quiet lake.', seedMode: 'fixed', seed: 99, variations: 4 });
   assert.deepEqual(createJobSeeds(options), [99, 100, 101, 102]);

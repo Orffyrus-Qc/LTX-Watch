@@ -32,6 +32,7 @@ The app runs entirely on your computer. It does not upload prompts, videos, logs
 - Experimental **Create** workspace for original local LTX 2.5 text-to-video, image-to-video, and first/last-frame generation
 - Unified private drag-and-drop context tray for images, videos, songs, and `.blend` scenes
 - Optional Blender-backed reference frames rendered from an immutable copy of a project backbone
+- Optional Blender-authoritative physics packages with beauty, depth, normal, motion-vector, and camera passes
 - Private persistent Create drafts, variation queue, live progress, active-render cancellation, playback, recoverable output deletion, retry, pause-between-jobs, and **Move first** ordering
 - Per-attempt correction notes and preserved regeneration history
 - Selectable Studio scene queue with one-click **Move first** ordering
@@ -143,14 +144,15 @@ Saved dashboard settings in `local.config.json` take precedence over auto-detect
 
 ## Create original videos from text
 
-The experimental `feature/text-to-video` branch adds **Create** as a separate workspace. It does not require an existing album plan or shot number:
+**Create** is a separate workspace and does not require an existing album plan or shot number:
 
 1. Describe the scene and optionally add a title and an **Avoid** list. Avoid notes are written as production constraints so the model is not asked to speak them.
 2. Choose 3–20 seconds, a generation-friendly resolution, 12–30 fps, one to four variations, and a random or repeatable seed.
 3. Optionally enable local prompt enhancement, camera direction, motion intensity, visual style, and synchronized, ambience-only, soundtrack-replacement, or stripped audio.
 4. Drop images, video, a song, or a `.blend` into **Context Drop**, or start from text alone. The first two images become start/end anchors; a video supplies extracted first/end frames; audio replaces the finished video's soundtrack; and a `.blend` becomes the private Blender backbone.
-5. Blender mode can use either a `.blend` backbone assigned in **Projects** or a dropped `.blend`. The adapter copies the scene into the private job folder, disables Blender auto-execution, renders the selected timeline frame(s) in background mode, and passes those PNGs to the official local I2V or FLF2V workflow. It never saves over the source scene.
-6. Press **Queue creation**. Variations run one at a time only after the album worker, Studio, Projects regeneration, and the configured ComfyUI port are idle.
+5. Blender mode can use either a `.blend` backbone assigned in **Projects** or a dropped `.blend`. **Creative anchors** copies the scene, renders selected timeline frame(s), and passes those PNGs to the official local I2V or FLF2V workflow. It never saves over the source scene.
+6. **Physics authority** is a separate preparation path. Choose a complete frame range and LTX Watch evaluates the copied Blender scene sequentially into a versioned package containing RGBA beauty frames, linear depth, surface normals, motion vectors, and per-frame camera transforms. Camera and motion controls are locked because Blender—not LTX—owns animation.
+7. Press **Queue creation** for LTX output or **Prepare backbone** for strict physics passes. Jobs run one at a time only after the album worker, Studio, Projects regeneration, and the configured ComfyUI port are idle.
 
 Create state, prompts, uploads, runner logs, and job JSON live in ignored `create.state.json` and `.ltx-watch-create/`. Only the ignored JSON job path appears on the Python process command line. Outputs are written beneath the configured ComfyUI video folder and remain playable from Create history.
 
@@ -159,6 +161,12 @@ Each completed Create card can show its video in Explorer, play it, or delete it
 Context files remain local. Dropped audio is not visual conditioning: it is looped or trimmed to the generated video's length and replaces the generated audio track after rendering. Dropped video is currently reduced to first/end visual anchors rather than used as full motion conditioning.
 
 The queue **Pause** control stops automatic launch of the next waiting creation; it does not suspend an active sampling process. **Cancel render** asks the owning Create runner to interrupt only the isolated ComfyUI server it launched, then releases the normal lock and records a retryable Canceled result. Use **Move first** to reprioritize a waiting variation and **Retry** for a failed or canceled job. Automated checks must never press **Queue creation**, cancel a real render, or call the authenticated enqueue action against a real local bridge.
+
+### Blender physics authority and the LTX 2.5 gate
+
+Physics mode deliberately stops after preparing the Blender backbone package on the current supported stack. The installed official LTX 2.5 T2V/I2V/FLF2V templates do not expose a verified contract that consumes depth, normals, and motion vectors together while guaranteeing that model sampling cannot invent or retime motion. Calling a first/last-frame workflow “physics-preserving” would be misleading.
+
+The package manifest therefore records `animationAuthority: "blender"`, `refinementAuthority: "appearance-only"`, source provenance, timeline, resolution, dynamics inventory, pass patterns, and `refinementReady: false`. Once an official compatible 2.5 control workflow is verified, a versioned refinement adapter can consume this package. It must treat any geometry, trajectory, collision, cloth, deformation, camera, or timing drift as a failed result. LTX Watch does not silently fall back to an older LTX control model or another video backend.
 
 ## LTX Watch Studio workflow
 
@@ -209,7 +217,7 @@ Source-runner inspection returns scene names, slugs, and shot numbers only. It d
 
 `.blend`, USD, FBX, OBJ, and GLTF/GLB files are first-class project assets. Choose one as the **Blender backbone** to record which scene owns the production camera, animation blocking, spatial layout, and continuity. Per-shot 3D files can also be attached as context.
 
-This release establishes the durable asset and shot relationships required for heavy Blender use. It does not yet render camera, depth, normal, or reference passes automatically. A future Blender adapter should consume the stored backbone and per-shot context through a narrow authenticated local endpoint, create versioned renders in a project-owned folder, and never modify the user's master `.blend` without a backup and explicit action.
+The **Create → Use Blender → Physics authority** adapter can now consume the designated `.blend` through the authenticated local queue and create versioned structural passes from a private working copy. Project and shot context relationships remain available for future per-shot package assignment. The master `.blend` is never saved or overwritten.
 
 ## Environment & setup
 
@@ -352,10 +360,12 @@ lib/
   sam3-setup.mjs             Pinned, verified SAM 3.1 model-install adapter
   studio-progress.mjs        Monotonic Studio/Projects render progress estimator
   browser-playback.mjs       Continuous assembled-final cache identity and FFmpeg contract
+  physics-backbone.mjs       Versioned Blender-authority job and pass contract
 local-server.mjs             Local aggregation, streaming, and control API
 scripts/
   ltx-studio-runner.py       One-shot adapter for a compatible local runner
   ltx-create-runner.py       Official local LTX 2.5 workflow and Blender reference adapter
+  blender-physics-backbone.py Fixed-purpose full-frame Blender pass adapter
   run-hidden-python.py       Recursive no-console launcher for trusted recovery runners
   install-comfyui-blender.ps1 Official release install, Blender setup, backup, and rollback
   install-sam3.ps1           Official checkpoint download, digest validation, backup, and rollback

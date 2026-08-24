@@ -1,6 +1,6 @@
 {
   "name": "ltx-video-monitor",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "A private local dashboard and human-in-the-loop studio for LTX Video monitoring, shot review, queues, playback, and process control.",
   "private": true,
   "homepage": "https://github.com/Orffyrus-Qc/ltx-watch#readme",

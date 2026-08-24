@@ -1,4 +1,4 @@
-export const CREATE_SCHEMA_VERSION = 1;
+export const CREATE_SCHEMA_VERSION = 2;
 export const CREATE_PROMPT_LIMIT = 8_000;
 export const CREATE_BATCH_LIMIT = 4;
 
@@ -74,6 +74,7 @@ export function createDefaultDraft() {
     contextVideoPath: '',
     soundtrackPath: '',
     useBlender: false,
+    blenderMode: 'anchors',
     blenderProjectId: '',
     blenderUploadPath: '',
     blenderFirstFrame: 1,
@@ -111,6 +112,7 @@ export function normalizeCreateOptions(input = {}) {
   const motion = Object.hasOwn(MOTION_GUIDANCE, input.motion) ? input.motion : fallback.motion;
   const style = Object.hasOwn(STYLE_GUIDANCE, input.style) ? input.style : fallback.style;
   const audio = ['generate', 'ambient', 'silent', 'soundtrack'].includes(input.audio) ? input.audio : fallback.audio;
+  const blenderMode = input.blenderMode === 'physics' ? 'physics' : 'anchors';
   const result = {
     title: text(input.title, 120, 'Title'),
     prompt: text(input.prompt, CREATE_PROMPT_LIMIT, 'Prompt'),
@@ -121,10 +123,10 @@ export function normalizeCreateOptions(input = {}) {
     frameRate: boundedInteger(input.frameRate, 12, 30, fallback.frameRate, 'Frame rate'),
     seedMode,
     seed: boundedInteger(input.seed, 0, 2_147_483_647, fallback.seed, 'Seed'),
-    variations: boundedInteger(input.variations, 1, CREATE_BATCH_LIMIT, fallback.variations, 'Variations'),
-    promptEnhance: input.promptEnhance === true,
-    camera,
-    motion,
+    variations: blenderMode === 'physics' ? 1 : boundedInteger(input.variations, 1, CREATE_BATCH_LIMIT, fallback.variations, 'Variations'),
+    promptEnhance: blenderMode === 'physics' ? false : input.promptEnhance === true,
+    camera: blenderMode === 'physics' ? 'locked' : camera,
+    motion: blenderMode === 'physics' ? 'subtle' : motion,
     style,
     customStyle: text(input.customStyle, 600, 'Custom style'),
     audio,
@@ -134,6 +136,7 @@ export function normalizeCreateOptions(input = {}) {
     contextVideoPath: text(input.contextVideoPath, 1_000, 'Context-video path'),
     soundtrackPath: text(input.soundtrackPath, 1_000, 'Soundtrack path'),
     useBlender: input.useBlender === true,
+    blenderMode,
     blenderProjectId: text(input.blenderProjectId, 160, 'Blender project id'),
     blenderUploadPath: text(input.blenderUploadPath, 1_000, 'Uploaded Blender path'),
     blenderFirstFrame: boundedInteger(input.blenderFirstFrame, 1, 1_000_000, fallback.blenderFirstFrame, 'Blender first frame'),
@@ -147,13 +150,18 @@ export function normalizeCreateOptions(input = {}) {
   if (result.useBlender && !result.blenderProjectId && !result.blenderUploadPath) throw new Error('Choose a project backbone or drop a .blend file.');
   if (result.audio === 'soundtrack' && !result.soundtrackPath) throw new Error('Drop an audio file before selecting the context soundtrack.');
   if (result.useBlender && result.blenderLastFrame < result.blenderFirstFrame) throw new Error('The Blender last frame must be after the first frame.');
+  if (result.blenderMode === 'physics' && !result.useBlender) throw new Error('Physics-authority mode requires a Blender backbone.');
   return result;
 }
 
 export function composeCreatePrompt(options) {
   const parts = [options.prompt];
-  if (CAMERA_GUIDANCE[options.camera]) parts.push(CAMERA_GUIDANCE[options.camera]);
-  if (MOTION_GUIDANCE[options.motion]) parts.push(MOTION_GUIDANCE[options.motion]);
+  if (options.useBlender && options.blenderMode === 'physics') {
+    parts.push('Authority: Blender owns every camera transform, object trajectory, collision, deformation, timing, and frame-to-frame motion. Visual refinement may change only appearance, lighting, materials, and surface detail. Do not invent, remove, retime, smooth, or reinterpret motion or geometry. Structural drift is a failed result.');
+  } else {
+    if (CAMERA_GUIDANCE[options.camera]) parts.push(CAMERA_GUIDANCE[options.camera]);
+    if (MOTION_GUIDANCE[options.motion]) parts.push(MOTION_GUIDANCE[options.motion]);
+  }
   const style = options.style === 'custom' ? options.customStyle : STYLE_GUIDANCE[options.style];
   if (style) parts.push(style);
   if (options.audio === 'generate') parts.push('Audio: generate synchronized, scene-appropriate sound with no narration unless explicitly requested.');

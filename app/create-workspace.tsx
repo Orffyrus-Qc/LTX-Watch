@@ -12,6 +12,7 @@ import {
   ImagePlus,
   LoaderCircle,
   Music2,
+  PackageCheck,
   Pause,
   Play,
   Plus,
@@ -49,6 +50,7 @@ type CreateDraft = {
   contextVideoPath: string;
   soundtrackPath: string;
   useBlender: boolean;
+  blenderMode: 'anchors' | 'physics';
   blenderProjectId: string;
   blenderUploadPath: string;
   blenderFirstFrame: number;
@@ -59,7 +61,8 @@ type CreateDraft = {
 type CreateJob = {
   id: string;
   title: string;
-  status: 'queued' | 'generating' | 'complete' | 'failed' | 'canceled';
+  status: 'queued' | 'generating' | 'complete' | 'backbone-ready' | 'failed' | 'canceled';
+  kind: 'video' | 'physics-backbone';
   stage: string | null;
   progress: number;
   seed: number;
@@ -71,6 +74,8 @@ type CreateJob = {
   error: string | null;
   summary: string;
   mode: string;
+  packagePath: string | null;
+  manifestPath: string | null;
   video: StudioVideo | null;
 };
 
@@ -86,6 +91,15 @@ type CreateView = {
   draft: CreateDraft;
   resolutions: { id: string; width: number; height: number; label: string }[];
   templates: { text: boolean; firstFrame: boolean; firstLast: boolean };
+  physics: {
+    schemaVersion: number;
+    preparationReady: boolean;
+    canPrepare: boolean;
+    refinementReady: boolean;
+    animationAuthority: 'blender';
+    blockedReason: string;
+    passes: { id: string; label: string; format: string; pattern: string }[];
+  };
   blender: { installed: boolean; version: string | null; backbones: { projectId: string; projectName: string; assetName: string }[] };
   jobs: CreateJob[];
 };
@@ -205,9 +219,11 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
             next[field] = uploaded.path;
             next.contextVideoPath = '';
             next.useBlender = false;
+            next.blenderMode = 'anchors';
             next.referenceMode = field === 'lastFramePath' ? 'first-last' : current.referenceMode === 'text' ? 'first-frame' : current.referenceMode;
           } else if (uploaded.kind === 'image') {
             next.useBlender = false;
+            next.blenderMode = 'anchors';
             next.contextVideoPath = '';
             if (!current.firstFramePath) {
               next.firstFramePath = uploaded.path;
@@ -218,6 +234,7 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
             }
           } else if (uploaded.kind === 'video') {
             next.useBlender = false;
+            next.blenderMode = 'anchors';
             next.firstFramePath = '';
             next.lastFramePath = '';
             next.contextVideoPath = uploaded.path;
@@ -227,6 +244,7 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
             next.audio = 'soundtrack';
           } else if (uploaded.kind === 'blend') {
             next.useBlender = true;
+            next.blenderMode = next.blenderMode || 'anchors';
             next.blenderProjectId = '';
             next.blenderUploadPath = uploaded.path;
             if (next.referenceMode === 'text') next.referenceMode = 'first-frame';
@@ -255,12 +273,16 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
       blenderUploadPath: current.blenderUploadPath === asset.path ? '' : current.blenderUploadPath,
       audio: current.soundtrackPath === asset.path ? 'generate' : current.audio,
       useBlender: current.blenderUploadPath === asset.path ? false : current.useBlender,
+      blenderMode: current.blenderUploadPath === asset.path ? 'anchors' : current.blenderMode,
     } : current);
   }
 
   function cancelRender(job: CreateJob) {
-    if (!window.confirm(`Cancel “${job.title}”?\n\nCurrent render progress will be discarded. The isolated ComfyUI server will stop and this job can be retried.`)) return;
-    void action('cancel', { jobId: job.id }, 'Cancel requested · stopping the Create render safely');
+    const detail = job.kind === 'physics-backbone'
+      ? 'Current pass progress will be discarded after Blender finishes its current frame. The master .blend remains untouched.'
+      : 'Current render progress will be discarded. The isolated ComfyUI server will stop and this job can be retried.';
+    if (!window.confirm(`Cancel “${job.title}”?\n\n${detail}`)) return;
+    void action('cancel', { jobId: job.id }, 'Cancel requested · stopping safely');
   }
 
   function deleteOutput(job: CreateJob) {
@@ -270,11 +292,21 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
 
   const active = useMemo(() => view?.jobs.find((job) => job.id === view.activeJobId) || null, [view]);
   const completed = useMemo(() => view?.jobs.filter((job) => job.status === 'complete') || [], [view]);
+  const packages = useMemo(() => view?.jobs.filter((job) => job.status === 'backbone-ready') || [], [view]);
+  const strictPhysics = Boolean(draft?.useBlender && draft.blenderMode === 'physics');
   const referenceReady = draft?.useBlender
     ? Boolean(view?.blender.installed && (draft.blenderProjectId || draft.blenderUploadPath))
     : draft?.referenceMode === 'text' || Boolean((draft?.firstFramePath || draft?.contextVideoPath) && (draft.referenceMode !== 'first-last' || draft.lastFramePath || draft.contextVideoPath));
-  const templateReady = draft?.referenceMode === 'text' ? view?.templates.text : draft?.referenceMode === 'first-last' ? view?.templates.firstLast : view?.templates.firstFrame;
+  const templateReady = strictPhysics ? view?.physics?.preparationReady : draft?.referenceMode === 'text' ? view?.templates.text : draft?.referenceMode === 'first-last' ? view?.templates.firstLast : view?.templates.firstFrame;
   const enqueueReady = Boolean(draft?.prompt.trim() && referenceReady && templateReady && !pending);
+  const readyNow = strictPhysics ? Boolean(view?.physics?.canPrepare) : Boolean(view?.canStart);
+  const readinessMessage = strictPhysics
+    ? active || (!view?.physics?.canPrepare && view?.blockedReason && !view.blockedReason.includes('official ComfyUI'))
+      ? view?.blockedReason || 'Waiting for the shared local generation lock.'
+      : view?.physics?.preparationReady
+        ? 'Blender backbone preparation is ready · LTX refinement remains gated'
+        : view?.physics?.blockedReason || 'Checking Blender physics adapter'
+    : view?.canStart ? 'Official local LTX 2.5 workflow is available' : view?.blockedReason || 'Checking local adapter';
 
   function contextRole(asset: CreateDraft['contextAssets'][number]) {
     if (draft.firstFramePath === asset.path) return 'First frame';
@@ -290,10 +322,10 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
   return (
     <section className="create-workspace" id="create">
       <div className="create-heading">
-        <div><p className="kicker">LOCAL TEXT-TO-VIDEO LAB</p><h2>Imagine it. Queue it. Render it.</h2><p>Start from text, references, or a project’s Blender camera backbone. Every variation waits safely for the local GPU.</p></div>
-        <div className={`studio-readiness ${view.canStart ? 'ready' : ''}`}>
-          {view.canStart ? <WandSparkles size={17} /> : active ? <LoaderCircle className="spinning" size={17} /> : <Clock3 size={17} />}
-          <span><small>{active ? 'CREATE RENDERING' : view.canStart ? 'CREATE READY' : view.queued ? `${view.queued} WAITING` : 'SAFE WAIT'}</small><b>{view.canStart ? 'Official local LTX 2.5 workflow is available' : view.blockedReason || 'Checking local adapter'}</b></span>
+        <div><p className="kicker">LOCAL TEXT-TO-VIDEO LAB</p><h2>Imagine it. Queue it. Render it.</h2><p>Use LTX creatively, or make Blender the sole authority for physically correct camera and object motion.</p></div>
+        <div className={`studio-readiness ${readyNow ? 'ready' : ''}`}>
+          {readyNow ? strictPhysics ? <PackageCheck size={17} /> : <WandSparkles size={17} /> : active ? <LoaderCircle className="spinning" size={17} /> : <Clock3 size={17} />}
+          <span><small>{active ? active.kind === 'physics-backbone' ? 'PHYSICS PREPARING' : 'CREATE RENDERING' : readyNow ? strictPhysics ? 'PHYSICS PREP READY' : 'CREATE READY' : view.queued ? `${view.queued} WAITING` : 'SAFE WAIT'}</small><b>{readinessMessage}</b></span>
         </div>
       </div>
 
@@ -301,7 +333,7 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
 
       {active && <div className="create-active">
         <span className="create-active-icon"><LoaderCircle className="spinning" size={19} /></span>
-        <div><small>GENERATING NOW</small><b>{active.title}{active.variations > 1 ? ` · variation ${active.variation}/${active.variations}` : ''}</b><span>{active.stage || 'Sampling frames'}</span></div>
+        <div><small>{active.kind === 'physics-backbone' ? 'PREPARING PHYSICS BACKBONE' : 'GENERATING NOW'}</small><b>{active.title}{active.variations > 1 ? ` · variation ${active.variation}/${active.variations}` : ''}</b><span>{active.stage || 'Sampling frames'}</span></div>
         <div className="create-active-progress"><div><span>{active.mode} · seed {active.seed}</span><b>{Math.round(active.progress)}%</b></div><div><span style={{ width: `${active.progress}%` }} /></div></div>
         {view.capabilities?.cancel && <button className="create-cancel-button" disabled={pending === 'cancel'} onClick={() => cancelRender(active)}><Square size={12} fill="currentColor" /> {pending === 'cancel' ? 'Canceling…' : 'Cancel render'}</button>}
       </div>}
@@ -314,7 +346,7 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
               <label><span>PROJECT TITLE <small>optional</small></span><input value={draft.title} maxLength={120} placeholder="Neon harbor arrival" onChange={(event) => update('title', event.target.value)} /></label>
               <label><span>WHAT SHOULD HAPPEN?</span><textarea value={draft.prompt} maxLength={8000} placeholder="A lone astronaut walks through a flooded greenhouse at sunrise…" onChange={(event) => update('prompt', event.target.value)} /></label>
               <label><span>AVOID <small>production constraints, not spoken dialogue</small></span><textarea className="compact" value={draft.avoid} maxLength={1000} placeholder="logos, captions, deformed hands, camera shake…" onChange={(event) => update('avoid', event.target.value)} /></label>
-              <label className="create-check"><input type="checkbox" checked={draft.promptEnhance} onChange={(event) => update('promptEnhance', event.target.checked)} /><span><b>Enhance prompt locally</b><small>Uses the optional Gemma prompt-enhancer model and adds startup time.</small></span></label>
+              <label className="create-check"><input type="checkbox" checked={draft.promptEnhance} disabled={strictPhysics} onChange={(event) => update('promptEnhance', event.target.checked)} /><span><b>Enhance prompt locally</b><small>{strictPhysics ? 'Disabled while preparing structural passes; the prompt is retained as future appearance intent.' : 'Uses the optional Gemma prompt-enhancer model and adds startup time.'}</small></span></label>
             </div>
           </div>
 
@@ -338,9 +370,9 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
             <div className="create-card-head"><span><Film size={14} /> FORMAT</span><small>One local video per variation</small></div>
             <div className="create-option-grid">
               <label><span>RESOLUTION</span><select value={draft.resolution} onChange={(event) => update('resolution', event.target.value)}>{view.resolutions.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
-              <label><span>DURATION</span><select value={draft.duration} onChange={(event) => update('duration', Number(event.target.value))}>{[3, 5, 8, 10, 12, 15, 20].map((value) => <option key={value} value={value}>{value} seconds</option>)}</select></label>
+              <label><span>DURATION</span><select value={draft.duration} disabled={strictPhysics} onChange={(event) => update('duration', Number(event.target.value))}>{[3, 5, 8, 10, 12, 15, 20].map((value) => <option key={value} value={value}>{value} seconds</option>)}</select></label>
               <label><span>FRAME RATE</span><select value={draft.frameRate} onChange={(event) => update('frameRate', Number(event.target.value))}>{[16, 24, 25, 30].map((value) => <option key={value} value={value}>{value} fps</option>)}</select></label>
-              <label><span>VARIATIONS</span><select value={draft.variations} onChange={(event) => update('variations', Number(event.target.value))}>{[1, 2, 3, 4].map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
+              <label><span>VARIATIONS</span><select value={strictPhysics ? 1 : draft.variations} disabled={strictPhysics} onChange={(event) => update('variations', Number(event.target.value))}>{[1, 2, 3, 4].map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
               <label><span>SEED</span><select value={draft.seedMode} onChange={(event) => update('seedMode', event.target.value as CreateDraft['seedMode'])}><option value="random">Random each batch</option><option value="fixed">Fixed / repeatable</option></select></label>
               <label><span>SEED VALUE</span><input type="number" min={0} max={2147483647} disabled={draft.seedMode !== 'fixed'} value={draft.seed} onChange={(event) => update('seed', Number(event.target.value))} /></label>
             </div>
@@ -349,14 +381,23 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
           <div className="create-card">
             <div className="create-card-head"><span><ImagePlus size={14} /> VISUAL BACKBONE</span><small>{draft.useBlender ? 'Rendered from an immutable .blend copy' : 'Optional'}</small></div>
             <div className="create-source-tabs">
-              {(['text', 'first-frame', 'first-last'] as const).map((mode) => <button key={mode} className={!draft.useBlender && draft.referenceMode === mode ? 'selected' : ''} onClick={() => { update('useBlender', false); update('referenceMode', mode); }} disabled={mode === 'text' ? !view.templates.text : mode === 'first-last' ? !view.templates.firstLast : !view.templates.firstFrame}>{mode === 'text' ? 'Text only' : mode === 'first-frame' ? 'Start frame' : 'Start + end'}</button>)}
+              {(['text', 'first-frame', 'first-last'] as const).map((mode) => <button key={mode} className={!draft.useBlender && draft.referenceMode === mode ? 'selected' : ''} onClick={() => { update('useBlender', false); update('blenderMode', 'anchors'); update('referenceMode', mode); }} disabled={mode === 'text' ? !view.templates.text : mode === 'first-last' ? !view.templates.firstLast : !view.templates.firstFrame}>{mode === 'text' ? 'Text only' : mode === 'first-frame' ? 'Start frame' : 'Start + end'}</button>)}
               <button className={draft.useBlender ? 'selected' : ''} onClick={() => { update('useBlender', true); if (draft.referenceMode === 'text') update('referenceMode', 'first-frame'); }}><Box size={13} /> Use Blender</button>
             </div>
             {draft.useBlender ? <div className="create-blender">
               <div className={`create-capability ${view.blender.installed ? 'ready' : ''}`}><Box size={17} /><span><b>{view.blender.installed ? `Blender ${view.blender.version || ''} detected` : 'Blender is not detected'}</b><small>The master scene is copied before background rendering; LTX Watch never saves over it.</small></span></div>
+              <div className="create-blender-modes">
+                <button className={draft.blenderMode !== 'physics' ? 'selected' : ''} onClick={() => update('blenderMode', 'anchors')}><Sparkles size={13} /><span><b>Creative anchors</b><small>First/end frames guide LTX; LTX invents motion between them.</small></span></button>
+                <button className={draft.blenderMode === 'physics' ? 'selected' : ''} onClick={() => { update('blenderMode', 'physics'); update('referenceMode', 'first-last'); update('camera', 'locked'); update('motion', 'subtle'); update('variations', 1); update('promptEnhance', false); }}><PackageCheck size={13} /><span><b>Physics authority</b><small>Blender owns all motion; prepare full structural passes.</small></span></button>
+              </div>
+              {strictPhysics && <div className="physics-authority-card">
+                <div><PackageCheck size={17} /><span><b>Animation authority: Blender</b><small>Camera, rigid bodies, collisions, cloth, deformation, and timing come only from the evaluated Blender scene.</small></span></div>
+                <div className="physics-pass-list">{(view.physics?.passes || []).map((item) => <span key={item.id}>{item.label}</span>)}</div>
+                <p>{view.physics?.blockedReason || 'Restart this branch’s local bridge to load the physics-backbone capability.'}</p>
+              </div>}
               <label><span>PROJECT BACKBONE</span><select value={draft.blenderProjectId} disabled={Boolean(draft.blenderUploadPath)} onChange={(event) => { update('blenderProjectId', event.target.value); update('blenderUploadPath', ''); }}><option value="">{draft.blenderUploadPath ? 'Using dropped .blend context' : 'Choose a .blend assigned in Projects'}</option>{view.blender.backbones.map((item) => <option key={item.projectId} value={item.projectId}>{item.projectName} · {item.assetName}</option>)}</select></label>
-              <div className="create-frame-grid"><label><span>FIRST FRAME</span><input type="number" min={1} value={draft.blenderFirstFrame} onChange={(event) => update('blenderFirstFrame', Number(event.target.value))} /></label>{draft.referenceMode === 'first-last' && <label><span>LAST FRAME</span><input type="number" min={1} value={draft.blenderLastFrame} onChange={(event) => update('blenderLastFrame', Number(event.target.value))} /></label>}</div>
-              <label className="create-check"><input type="checkbox" checked={draft.referenceMode === 'first-last'} onChange={(event) => update('referenceMode', event.target.checked ? 'first-last' : 'first-frame')} /><span><b>Anchor the final frame too</b><small>Renders both timeline frames and uses the official first/last-frame LTX workflow.</small></span></label>
+              <div className="create-frame-grid"><label><span>FIRST FRAME</span><input type="number" min={1} value={draft.blenderFirstFrame} onChange={(event) => update('blenderFirstFrame', Number(event.target.value))} /></label>{(strictPhysics || draft.referenceMode === 'first-last') && <label><span>LAST FRAME</span><input type="number" min={1} value={draft.blenderLastFrame} onChange={(event) => update('blenderLastFrame', Number(event.target.value))} /></label>}</div>
+              {!strictPhysics && <label className="create-check"><input type="checkbox" checked={draft.referenceMode === 'first-last'} onChange={(event) => update('referenceMode', event.target.checked ? 'first-last' : 'first-frame')} /><span><b>Anchor the final frame too</b><small>Renders both timeline frames and uses the official first/last-frame LTX workflow.</small></span></label>}
             </div> : draft.referenceMode !== 'text' ? <div className="create-reference-grid">
               <label className={draft.firstFramePath ? 'uploaded' : ''}><input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void uploadContext([file], 'firstFramePath'); }} /><Upload size={18} /><b>{pending === 'firstFramePath' ? 'Uploading…' : draft.firstFramePath ? 'First frame ready' : 'Upload first frame'}</b><small>PNG, JPEG, or WebP · private local copy</small></label>
               {draft.referenceMode === 'first-last' && <label className={draft.lastFramePath ? 'uploaded' : ''}><input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void uploadContext([file], 'lastFramePath'); }} /><Upload size={18} /><b>{pending === 'lastFramePath' ? 'Uploading…' : draft.lastFramePath ? 'Last frame ready' : 'Upload last frame'}</b><small>Controls where the motion should finish</small></label>}
@@ -366,8 +407,8 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
           <div className="create-card">
             <button className="create-card-head create-advanced-toggle" onClick={() => setAdvanced((value) => !value)}><span><WandSparkles size={14} /> CREATIVE CONTROLS</span><small>{advanced ? 'Hide' : 'Show'} options</small></button>
             {advanced && <div className="create-option-grid create-creative-grid">
-              <label><span>CAMERA</span><select value={draft.camera} onChange={(event) => update('camera', event.target.value)}><option value="none">Let LTX decide</option><option value="locked">Locked tripod</option><option value="dolly_in">Dolly in</option><option value="dolly_out">Dolly out</option><option value="orbit">Orbit subject</option><option value="tracking">Tracking shot</option><option value="handheld">Subtle handheld</option><option value="aerial">Aerial glide</option></select></label>
-              <label><span>MOTION</span><select value={draft.motion} onChange={(event) => update('motion', event.target.value)}><option value="subtle">Subtle</option><option value="balanced">Balanced</option><option value="dynamic">Dynamic</option></select></label>
+              <label><span>CAMERA</span><select value={draft.camera} disabled={strictPhysics} onChange={(event) => update('camera', event.target.value)}><option value="none">Let LTX decide</option><option value="locked">{strictPhysics ? 'From Blender scene' : 'Locked tripod'}</option><option value="dolly_in">Dolly in</option><option value="dolly_out">Dolly out</option><option value="orbit">Orbit subject</option><option value="tracking">Tracking shot</option><option value="handheld">Subtle handheld</option><option value="aerial">Aerial glide</option></select></label>
+              <label><span>MOTION</span><select value={draft.motion} disabled={strictPhysics} onChange={(event) => update('motion', event.target.value)}><option value="subtle">{strictPhysics ? 'From Blender simulation' : 'Subtle'}</option><option value="balanced">Balanced</option><option value="dynamic">Dynamic</option></select></label>
               <label><span>VISUAL STYLE</span><select value={draft.style} onChange={(event) => update('style', event.target.value)}><option value="cinematic">Cinematic</option><option value="documentary">Documentary realism</option><option value="animation">Animated film</option><option value="product">Product film</option><option value="custom">Custom</option></select></label>
               <label><span>AUDIO</span><select value={draft.audio} onChange={(event) => update('audio', event.target.value)}><option value="generate">Synchronized scene audio</option><option value="ambient">Ambience / effects only</option>{draft.soundtrackPath && <option value="soundtrack">Use dropped soundtrack</option>}<option value="silent">Strip audio from result</option></select></label>
               {draft.style === 'custom' && <label className="span-two"><span>CUSTOM STYLE</span><input value={draft.customStyle} maxLength={600} placeholder="Describe lighting, lenses, color palette, materials…" onChange={(event) => update('customStyle', event.target.value)} /></label>}
@@ -375,8 +416,8 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
           </div>
 
           <div className="create-submit">
-            <div><b>{draft.variations} {draft.variations === 1 ? 'video' : 'variations'} will join the private Create queue</b><span>{draft.resolution} · {draft.duration}s · {draft.frameRate} fps · {draft.useBlender ? 'Blender-backed' : draft.referenceMode}</span></div>
-            <div className="create-submit-actions"><button className="secondary-button" disabled={Boolean(pending)} onClick={() => void action('save-draft', { draft }, 'Create draft saved locally')}>Save draft</button><button className="project-primary" disabled={!enqueueReady} onClick={() => void action('enqueue', { draft }, `${draft.variations} Create ${draft.variations === 1 ? 'job' : 'jobs'} queued safely`)}>{pending === 'enqueue' ? <LoaderCircle className="spinning" size={15} /> : <Plus size={15} />} Queue creation</button></div>
+            <div><b>{strictPhysics ? 'One versioned Blender backbone package will join the private queue' : `${draft.variations} ${draft.variations === 1 ? 'video' : 'variations'} will join the private Create queue`}</b><span>{draft.resolution} · {strictPhysics ? `frames ${draft.blenderFirstFrame}–${draft.blenderLastFrame}` : `${draft.duration}s`} · {draft.frameRate} fps · {strictPhysics ? 'Blender owns motion' : draft.useBlender ? 'Blender anchors' : draft.referenceMode}</span></div>
+            <div className="create-submit-actions"><button className="secondary-button" disabled={Boolean(pending)} onClick={() => void action('save-draft', { draft }, 'Create draft saved locally')}>Save draft</button><button className="project-primary" disabled={!enqueueReady} onClick={() => void action('enqueue', { draft }, strictPhysics ? 'Physics backbone queued safely' : `${draft.variations} Create ${draft.variations === 1 ? 'job' : 'jobs'} queued safely`)}>{pending === 'enqueue' ? <LoaderCircle className="spinning" size={15} /> : strictPhysics ? <PackageCheck size={15} /> : <Plus size={15} />} {strictPhysics ? 'Prepare backbone' : 'Queue creation'}</button></div>
           </div>
         </div>
 
@@ -384,17 +425,26 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
           <div className="create-card create-queue-card">
             <div className="create-card-head"><span><Clock3 size={14} /> CREATE QUEUE</span><button onClick={() => void action('toggle-queue', { paused: !view.queuePaused }, view.queuePaused ? 'Create queue resumed' : 'Create queue paused')}>{view.queuePaused ? <Play size={12} /> : <Pause size={12} />} {view.queuePaused ? 'Resume' : 'Pause'}</button></div>
             <div className="create-job-list">
-              {view.jobs.filter((job) => job.status !== 'complete').map((job) => <div className={`create-job ${job.status}`} key={job.id}>
+              {view.jobs.filter((job) => !['complete', 'backbone-ready'].includes(job.status)).map((job) => <div className={`create-job ${job.status}`} key={job.id}>
                 <span>{job.status === 'generating' ? <LoaderCircle className="spinning" size={14} /> : job.status === 'failed' ? <CircleAlert size={14} /> : job.status === 'canceled' ? <Square size={12} /> : <Clock3 size={14} />}</span>
                 <div><b>{job.title}</b><small>{job.summary} · {job.mode}</small>{job.status === 'generating' && <><div className="create-job-progress-label"><span>{job.stage}</span><b>{Math.round(job.progress)}%</b></div><div className="create-job-progress"><span style={{ width: `${job.progress}%` }} /></div></>}{job.error && <p>{job.error}</p>}</div>
                 <div className="create-job-actions">{job.status === 'queued' && <button title="Move first" onClick={() => void action('move-first', { jobId: job.id }, 'Create job moved first')}><ArrowUpToLine size={12} /></button>}{job.status === 'generating' && view.capabilities?.cancel && <button title="Cancel render" onClick={() => cancelRender(job)}><Square size={11} fill="currentColor" /></button>}{['failed', 'canceled'].includes(job.status) && <button title="Retry" onClick={() => void action('retry', { jobId: job.id }, 'Create job queued again')}><RotateCcw size={12} /></button>}{job.status !== 'generating' && <button title="Remove" onClick={() => void action('remove', { jobId: job.id }, 'Create job removed')}><Trash2 size={12} /></button>}</div>
               </div>)}
-              {!view.jobs.some((job) => job.status !== 'complete') && <div className="project-empty-small"><Check size={20} /><b>Queue is clear</b><span>New text-to-video jobs appear here.</span></div>}
+              {!view.jobs.some((job) => !['complete', 'backbone-ready'].includes(job.status)) && <div className="project-empty-small"><Check size={20} /><b>Queue is clear</b><span>New video and backbone jobs appear here.</span></div>}
             </div>
           </div>
-          <div className="create-card create-safety-card"><div className="create-card-head"><span><Box size={14} /> LOCAL SAFETY</span></div><ul><li>Uses official local ComfyUI workflows.</li><li>Never launches beside Studio, the album worker, or an occupied port.</li><li>Prompts and job files stay in git-ignored local state.</li><li>Blender renders a working copy of the master scene.</li></ul></div>
+          <div className="create-card create-safety-card"><div className="create-card-head"><span><Box size={14} /> LOCAL SAFETY</span></div><ul><li>Uses official local ComfyUI workflows.</li><li>Never launches beside Studio, the album worker, or an occupied port.</li><li>Prompts and job files stay in git-ignored local state.</li><li>Blender renders a working copy of the master scene.</li><li>Physics mode will not claim LTX refinement until every structural pass has a verified 2.5 consumer.</li></ul></div>
         </aside>
       </div>
+
+      {packages.length > 0 && <section className="create-history physics-package-history">
+        <div className="create-history-head"><div><p className="kicker">BLENDER PHYSICS PACKAGES</p><h3>Motion-authoritative backbones</h3></div></div>
+        <div className="physics-package-grid">{packages.map((job) => <article className="physics-package" key={job.id}>
+          <PackageCheck size={22} />
+          <div><b>{job.title}</b><small>{job.summary}</small><span>Beauty · depth · normals · motion vectors · camera</span></div>
+          <div><button className="secondary-button" disabled={!job.packagePath} onClick={() => job.packagePath && onOpen(job.packagePath)}><FolderOpen size={13} /> Open package</button><button title="Remove package from history" onClick={() => void action('remove', { jobId: job.id }, 'Backbone package removed from history')}><Trash2 size={13} /></button></div>
+        </article>)}</div>
+      </section>}
 
       <section className="create-history">
         <div className="create-history-head"><div><p className="kicker">CREATE LIBRARY</p><h3>Generated from scratch</h3></div><button className="secondary-button" onClick={() => void load()}><RefreshCw size={13} /> Refresh</button></div>

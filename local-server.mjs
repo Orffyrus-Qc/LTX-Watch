@@ -24,6 +24,10 @@ import { installSam3Model } from './lib/sam3-setup.mjs';
 import { studioJobProgress } from './lib/studio-progress.mjs';
 import { parseLegacyGpuSnapshot, parseLiveGpuCsv } from './lib/gpu-telemetry.mjs';
 import {
+  buildPhysicsBackboneJob,
+  physicsBackboneCapability,
+} from './lib/physics-backbone.mjs';
+import {
   BROWSER_PLAYBACK_CACHE_LIMIT,
   browserPlaybackArguments,
   browserPlaybackKey,
@@ -64,6 +68,7 @@ const PROJECTS_RUNTIME_ROOT = path.join(APP_ROOT, '.ltx-watch-projects');
 const CREATE_STATE_PATH = path.join(APP_ROOT, 'create.state.json');
 const CREATE_RUNTIME_ROOT = path.join(APP_ROOT, '.ltx-watch-create');
 const CREATE_RUNNER_PATH = path.join(APP_ROOT, 'scripts', 'ltx-create-runner.py');
+const PHYSICS_BACKBONE_SCRIPT_PATH = path.join(APP_ROOT, 'scripts', 'blender-physics-backbone.py');
 const HIDDEN_PYTHON_TREE_PATH = path.join(APP_ROOT, 'scripts', 'run-hidden-python.py');
 const CREATE_UPLOAD_CHUNK_LIMIT = 4 * 1024 * 1024;
 const CREATE_CONTEXT_EXTENSIONS = new Map([
@@ -1254,6 +1259,23 @@ async function syncCreateJob(record, config) {
     record.activeJobId = null;
     return true;
   }
+  if (result?.status === 'complete' && result?.kind === 'physics-backbone') {
+    const manifestPath = typeof result.manifestPath === 'string' ? path.resolve(result.manifestPath) : '';
+    const packagePath = typeof result.outputRoot === 'string' ? path.resolve(result.outputRoot) : '';
+    const packageInfo = packagePath ? await stat(packagePath).catch(() => null) : null;
+    const manifestInfo = manifestPath ? await stat(manifestPath).catch(() => null) : null;
+    if (packageInfo?.isDirectory() && manifestInfo?.isFile() && isInside(packagePath, [CREATE_RUNTIME_ROOT]) && isInside(manifestPath, [packagePath])) {
+      job.status = 'backbone-ready';
+      job.stage = 'Physics backbone ready';
+      job.progress = 100;
+      job.packagePath = packagePath;
+      job.manifestPath = manifestPath;
+      job.completedAt = result.completedAt || new Date().toISOString();
+      job.cancelRequestedAt = null;
+      record.activeJobId = null;
+      return true;
+    }
+  }
   if (result?.status === 'complete' && typeof result.outputPath === 'string' && isInside(result.outputPath, [config.clipsDirectory])) {
     const output = await createVideo(result.outputPath, config, job.title);
     if (output) {
@@ -1273,6 +1295,65 @@ async function syncCreateJob(record, config) {
   job.completedAt = result?.completedAt || new Date().toISOString();
   record.activeJobId = null;
   return true;
+}
+
+async function startPhysicsBackboneJob(record, job, config, backbone) {
+  const blender = await getCachedBlender();
+  if (!blender?.executable || !existsSync(PHYSICS_BACKBONE_SCRIPT_PATH)) throw new Error('Physics backbone preparation needs Blender and the bundled fixed-purpose pass adapter.');
+  if (!backbone?.fullPath || path.extname(backbone.fullPath).toLowerCase() !== '.blend' || !isInside(backbone.fullPath, [backbone.rootPath])) throw new Error('Choose a validated .blend backbone inside its registered root.');
+  const sourceInfo = await stat(backbone.fullPath).catch(() => null);
+  if (!sourceInfo?.isFile()) throw new Error('The selected Blender backbone is no longer available.');
+
+  const jobsDirectory = path.join(CREATE_RUNTIME_ROOT, 'jobs', job.id);
+  const workingCopyPath = path.join(jobsDirectory, 'source-copy.blend');
+  const outputRoot = path.join(jobsDirectory, 'backbone-v1');
+  const jobPath = path.join(jobsDirectory, 'job.json');
+  const resultPath = path.join(jobsDirectory, 'result.json');
+  const cancelPath = path.join(jobsDirectory, 'cancel.requested.json');
+  if (!isInside(outputRoot, [jobsDirectory]) || path.resolve(outputRoot) === path.resolve(jobsDirectory)) throw new Error('Physics backbone output folder is unsafe.');
+  await mkdir(jobsDirectory, { recursive: true });
+  await rm(cancelPath, { force: true });
+  await rm(outputRoot, { recursive: true, force: true });
+  await copyFile(backbone.fullPath, workingCopyPath);
+  const payload = buildPhysicsBackboneJob({
+    id: job.id,
+    sourcePath: backbone.fullPath,
+    allowedSourceRoots: [backbone.rootPath],
+    runtimeRoot: jobsDirectory,
+    workingCopyPath,
+    outputRoot,
+    resultPath,
+    cancelPath,
+    frameStart: job.options.blenderFirstFrame,
+    frameEnd: job.options.blenderLastFrame,
+    frameRate: job.options.frameRate,
+    width: job.options.width,
+    height: job.options.height,
+  });
+  await writeFile(jobPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  await writeFile(resultPath, `${JSON.stringify({ status: 'generating', kind: 'physics-backbone', stage: 'Starting Blender physics evaluation', progress: 0 }, null, 2)}\n`, 'utf8');
+  const logHandle = await open(path.join(jobsDirectory, 'blender.log'), 'a');
+  try {
+    const child = spawn(blender.executable, ['--background', '--disable-autoexec', workingCopyPath, '--python', PHYSICS_BACKBONE_SCRIPT_PATH, '--', '--job', jobPath], {
+      cwd: jobsDirectory,
+      detached: true,
+      stdio: ['ignore', logHandle.fd, logHandle.fd],
+      windowsHide: true,
+    });
+    await new Promise((resolveSpawn, rejectSpawn) => {
+      child.once('spawn', resolveSpawn);
+      child.once('error', rejectSpawn);
+    });
+    const startedAt = new Date().toISOString();
+    Object.assign(job, {
+      kind: 'physics-backbone', status: 'generating', stage: 'Starting Blender physics evaluation', progress: 1,
+      pid: child.pid, jobPath, resultPath, startedAt, completedAt: null, cancelRequestedAt: null, error: null,
+    });
+    record.activeJobId = job.id;
+    child.unref();
+  } finally {
+    await logHandle.close();
+  }
 }
 
 async function startCreateJob(record, job, config, backbone) {
@@ -1379,7 +1460,8 @@ async function maybeStartCreateJob(record, config) {
       : null;
     const backbone = uploadedBackbone || backbones.find((item) => item.projectId === job.options.blenderProjectId) || null;
     try {
-      await startCreateJob(record, job, config, backbone);
+      if (job.options.useBlender && job.options.blenderMode === 'physics') await startPhysicsBackboneJob(record, job, config, backbone);
+      else await startCreateJob(record, job, config, backbone);
     } catch (error) {
       job.status = 'failed';
       job.stage = 'Failed before launch';
@@ -1405,7 +1487,10 @@ async function buildCreateView({ sync = false } = {}) {
   const activeJob = record.activeJobId ? record.jobs[record.activeJobId] : null;
   const queued = record.queue.filter((id) => record.jobs[id]?.status === 'queued').length;
   const adapterReady = Boolean(launch?.templates.text);
-  const canStart = Boolean(adapterReady && !activeJob && !studio.activeJob && !workerBusy && !comfy.online && !record.queuePaused);
+  const physicsCapability = physicsBackboneCapability({ blenderInstalled: Boolean(blender?.executable), adapterInstalled: existsSync(PHYSICS_BACKBONE_SCRIPT_PATH) });
+  const launchIdle = Boolean(!activeJob && !studio.activeJob && !workerBusy && !comfy.online && !record.queuePaused);
+  const canStart = Boolean(adapterReady && launchIdle);
+  const physics = { ...physicsCapability, canPrepare: Boolean(physicsCapability.preparationReady && launchIdle) };
   const blockedReason = activeJob
     ? `Creating ${activeJob.title}.`
     : studio.activeJob
@@ -1424,12 +1509,18 @@ async function buildCreateView({ sync = false } = {}) {
     const job = record.jobs[id];
     if (!job) continue;
     const video = job.outputPath ? await createVideo(job.outputPath, config, job.title) : null;
+    const physicsJob = job.options.useBlender && job.options.blenderMode === 'physics';
     jobs.push({
       id: job.id, title: job.title, status: job.status, stage: job.stage || null, progress: Number(job.progress || 0),
       seed: job.seed, variation: job.variation, variations: job.variations, createdAt: job.createdAt,
       startedAt: job.startedAt || null, completedAt: job.completedAt || null, error: job.error || null,
-      summary: `${job.options.width}×${job.options.height} · ${job.options.duration}s · ${job.options.frameRate} fps`,
-      mode: job.options.useBlender ? 'Blender' : job.options.referenceMode === 'text' ? 'Text' : job.options.referenceMode === 'first-last' ? 'First + last frame' : 'First frame',
+      summary: physicsJob
+        ? `${job.options.width}×${job.options.height} · frames ${job.options.blenderFirstFrame}–${job.options.blenderLastFrame} · ${job.options.frameRate} fps`
+        : `${job.options.width}×${job.options.height} · ${job.options.duration}s · ${job.options.frameRate} fps`,
+      mode: physicsJob ? 'Blender physics authority' : job.options.useBlender ? 'Blender anchors' : job.options.referenceMode === 'text' ? 'Text' : job.options.referenceMode === 'first-last' ? 'First + last frame' : 'First frame',
+      kind: physicsJob ? 'physics-backbone' : 'video',
+      packagePath: job.packagePath && isInside(job.packagePath, [CREATE_RUNTIME_ROOT]) ? job.packagePath : null,
+      manifestPath: job.manifestPath && isInside(job.manifestPath, [CREATE_RUNTIME_ROOT]) ? job.manifestPath : null,
       video,
     });
   }
@@ -1447,6 +1538,7 @@ async function buildCreateView({ sync = false } = {}) {
     templates: {
       text: Boolean(launch?.templates.text), firstFrame: Boolean(launch?.templates.firstFrame), firstLast: Boolean(launch?.templates.firstLast),
     },
+    physics,
     blender: { installed: Boolean(blender?.executable), version: blender?.version?.text || null, backbones: backbones.map((item) => ({ projectId: item.projectId, projectName: item.projectName, assetName: item.assetName })) },
     jobs,
   };
@@ -1469,6 +1561,7 @@ async function controlCreate(body) {
       const backbones = options.useBlender ? await getCreateBackbones(config) : [];
       if (options.useBlender && !options.blenderUploadPath && !backbones.some((item) => item.projectId === options.blenderProjectId)) throw new Error('Choose a project with an assigned .blend backbone or drop a .blend file.');
       if (options.useBlender && !(await getCachedBlender())?.executable) throw new Error('Blender is not detected. Install Blender or switch to a non-Blender creation mode.');
+      if (options.blenderMode === 'physics' && !existsSync(PHYSICS_BACKBONE_SCRIPT_PATH)) throw new Error('The bundled physics-backbone adapter is missing. Repair or reinstall LTX Watch.');
       const seeds = createJobSeeds(options);
       const groupId = randomBytes(8).toString('hex');
       for (const [index, seed] of seeds.entries()) {
@@ -1481,8 +1574,9 @@ async function controlCreate(body) {
           seed,
           variation: index + 1,
           variations: seeds.length,
+          kind: options.useBlender && options.blenderMode === 'physics' ? 'physics-backbone' : 'video',
           status: 'queued',
-          stage: 'Waiting safely for the GPU',
+          stage: options.useBlender && options.blenderMode === 'physics' ? 'Waiting safely to evaluate Blender physics' : 'Waiting safely for the GPU',
           progress: 0,
           createdAt: new Date().toISOString(),
           startedAt: null,
@@ -1530,7 +1624,7 @@ async function controlCreate(body) {
       const source = record.jobs[id];
       if (!source || !['failed', 'canceled'].includes(source.status)) throw new Error('Only a failed or canceled Create job can be retried.');
       source.status = 'queued';
-      source.stage = 'Waiting safely for the GPU';
+      source.stage = source.kind === 'physics-backbone' ? 'Waiting safely to evaluate Blender physics' : 'Waiting safely for the GPU';
       source.progress = 0;
       source.startedAt = null;
       source.completedAt = null;

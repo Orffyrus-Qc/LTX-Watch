@@ -114,7 +114,25 @@ The authenticated context tray accepts PNG/JPEG/WebP images, MP4/WebM/MOV/MKV vi
 
 Blender mode is available for either a selected Project whose designated backbone resolves to a `.blend` inside that project's registered roots or a `.blend` uploaded into the private Create runtime, and only when a supported local `blender.exe` is detected. The bridge supplies those validated paths in an ignored private job. The Python adapter copies the backbone to the per-job runtime folder, disables auto-execution, invokes only fixed background-render arguments, and renders PNG frame anchors from that copy. It never uses `--python-expr`, accepts a browser-provided script, opens the original for saving, or overwrites the original.
 
-Text, I2V, FLF2V, Studio, and Projects regeneration share one in-process launch claim plus the upstream port lock. A Create job must wait while a worker PID is alive, the configured ComfyUI port responds, Studio/Projects has an active job, or another launch is being claimed.
+### Blender physics-authority contract
+
+`blenderMode: "physics"` is deliberately separate from creative first/last anchors. `lib/physics-backbone.mjs` owns the versioned job/pass contract; `local-server.mjs` derives all paths and fixed Blender arguments; and `scripts/blender-physics-backbone.py` is the only script allowed to evaluate the copied scene. The browser selects only a registered/private `.blend`, frame range, resolution, and frame rate. It cannot choose an executable, script, output root, pass graph, or argument.
+
+The adapter evaluates frames sequentially and writes a job-scoped `backbone-v1` package:
+
+| Pass | Format | Purpose |
+| --- | --- | --- |
+| Beauty | RGBA PNG sequence | Blender-composed visual reference |
+| Depth | 32-bit OpenEXR sequence | Per-frame structural depth |
+| Normal | 32-bit OpenEXR sequence | Per-frame surface orientation |
+| Flow | 32-bit OpenEXR sequence | Blender render motion vectors |
+| Camera | JSON Lines | Per-frame camera matrix and lens data |
+
+The manifest must declare `animationAuthority: "blender"` and `refinementAuthority: "appearance-only"`, record source/working-copy provenance, timeline, resolution, dynamics inventory, Blender version/engine, pass patterns, and compatibility state. The source `.blend` is never opened for saving; compositor changes occur only in the private working copy. Cancellation is an authenticated server-derived marker and takes effect between frames without killing an unverified process.
+
+Strict LTX refinement is currently gated with `refinementReady: false`. The installed official LTX 2.5 T2V/I2V/FLF2V templates do not provide a verified full structural input contract for depth, normals, and motion vectors together. Do not pass only beauty anchors and call the result physics-preserving, silently substitute an older LTX control workflow, or change video backends. A future adapter must be versioned, consume the complete package, preserve frame count/timing/camera/geometry/trajectories, and fail on structural drift.
+
+Text, I2V, FLF2V, Physics preparation, Studio, and Projects regeneration share one in-process launch claim plus the upstream port lock. A Create job must wait while a worker PID is alive, the configured ComfyUI port responds, Studio/Projects has an active job, or another launch is being claimed.
 
 ## Project manifest and Blender backbone contract
 
@@ -130,7 +148,7 @@ Supported indexed asset classes are:
 
 A shot identity comes from a leading number or `shot_####` pattern. Its parent folder is normalized as the scene slug. Regeneration is available only when that slug matches the active plan or the compatible source runner's inspected scene index and the shot belongs to that item's parsed shot range. Keep this mapping narrow; do not guess a source scene from media similarity or prompt text.
 
-The Blender-backbone ID records the master scene used for shared camera animation, blocking, scale, and spatial continuity. It does not grant permission to run Blender scripts or overwrite that file. Future Blender automation should use a separate authenticated adapter with versioned outputs, explicit actions, path constraints, backup/rollback, and tests that never touch a real production scene.
+The Blender-backbone ID records the master scene used for shared camera animation, blocking, scale, and spatial continuity. It does not itself grant permission to run Blender. Physics preparation requires a separate explicit authenticated Create action, the shared idle/launch lock, the dedicated fixed-purpose adapter, versioned outputs, and tests that never touch a real production scene.
 
 Project queue items reuse the Studio single-shot launch boundary and inherit all worker, port, path, and adapter readiness locks. Reading project state can advance an already-authorized queue after a prior shot finishes, so automated fixtures must contain an empty or paused regeneration queue.
 
@@ -471,6 +489,8 @@ For each new LTX/ComfyUI release:
 - [ ] Confirm prompts remain only in ignored JSON, Create and Studio share the launch claim, and queued Create work cannot start beside a worker or occupied ComfyUI port.
 - [ ] Confirm dropped context extensions, size/offset/final-length checks, and private-runtime containment; never upload a real private asset in automated tests.
 - [ ] Confirm Blender mode renders only a copied `.blend` with auto-execution disabled and fixed background arguments, and keeps the source byte-for-byte unchanged.
+- [ ] Run the physics-backbone pure contract and `--validate-job` fixture tests without opening Blender; confirm all five passes and `animationAuthority: "blender"` remain mandatory.
+- [ ] Audit official LTX 2.5 control workflows before changing `refinementReady`; reject partial conditioning or any path that allows LTX to invent/retime Blender motion.
 - [ ] Confirm paused processes retain correct parent/child relationships.
 - [ ] Run non-destructive API and media range checks.
 - [ ] Test native control only on a temporary process.

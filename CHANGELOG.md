@@ -2,7 +2,7 @@
 
 All notable changes to LTX / Watch are documented here.
 
-## Unreleased — `feature/text-to-video`
+## Unreleased — `feature/blender-physics-backbone`
 
 ### Added
 
@@ -11,12 +11,16 @@ All notable changes to LTX / Watch are documented here.
 - Unified drag-and-drop context intake for images, video, songs, and `.blend` scenes, with private chunked uploads, video frame extraction, final-soundtrack replacement, and optional Blender-backed anchors.
 - Guarded workflow compiler that resolves semantic subgraph inputs and current ComfyUI node schemas without hardcoding template node IDs.
 - Shared generation launch claim across Create, Studio, and Projects regeneration, backed by the existing upstream ComfyUI port lock.
+- Separate **Physics authority** mode for Blender-backed Create jobs. It prepares versioned beauty, depth, surface-normal, motion-vector, and per-frame camera passes while declaring Blender as the sole animation authority.
+- A fixed-purpose background Blender adapter with sequential physics evaluation, job-scoped progress/cancellation, immutable master scenes, and reviewable backbone-package history.
+- Explicit LTX 2.5 refinement gate: strict physics packages remain preparation-only until a verified 2.5 adapter consumes every structural pass without inventing or retiming motion.
 
 ### Security
 
 - Create prompts and local paths live only in ignored state/runtime JSON; process arguments contain only the private job path.
 - The browser cannot supply workflow graphs, workflow paths, output prefixes, model files, Python/Blender scripts, executables, or arbitrary command arguments.
 - Blender automation validates a registered or privately uploaded `.blend`, copies it before rendering, disables auto-execution, and uses fixed background-render arguments without touching the source.
+- Physics jobs accept no browser-supplied script, executable, workflow, output path, or command arguments; the authenticated bridge builds and launches the bundled adapter only after all normal worker and port locks are clear.
 
 ### Fixed
 
