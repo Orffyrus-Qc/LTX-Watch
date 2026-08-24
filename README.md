@@ -19,7 +19,7 @@ The app runs entirely on your computer. It does not upload prompts, videos, logs
 - Planned-job queue plus ComfyUI running/pending queue status
 - Live NVIDIA GPU utilization and used-memory telemetry, with a clearly labeled supervisor-snapshot fallback
 - Searchable final-video and raw-clip history
-- MP4/WebM/MOV/MKV playback directly in the browser
+- MP4/WebM/MOV/MKV playback directly in the browser, with continuous cached H.264 playback for assembled finals
 - One-click **Show in Explorer** actions
 - Windows process-tree pause/resume that preserves the current shot and VRAM
 - Auto-refreshing activity timeline parsed from generator events
@@ -49,7 +49,7 @@ The app runs entirely on your computer. It does not upload prompts, videos, logs
 - An LTX workflow that writes video files to a local output directory
 - ComfyUI's official local `video_ltx2_5_t2v`, `video_ltx2_5_i2v`, and `video_ltx2_5_flf2v` workflow templates for the matching Create modes
 - Optional: `ffprobe.exe` in the ComfyUI root for duration and resolution metadata
-- FFmpeg available through the compatible runner or system path when using dropped video/audio context
+- FFmpeg in the ComfyUI root or system path for dropped video/audio context and assembled-final browser compatibility copies
 - Optional: Blender 4.5 or Blender 5 for the ComfyUI-Blender integration
 
 The history and standard queue features work with ordinary ComfyUI output folders. The richest track/shot progression view uses the optional supervisor files described in [LTX compatibility](docs/LTX_COMPATIBILITY.md).
@@ -287,6 +287,7 @@ Important behavior:
 - Restarting only LTX / Watch preserves the suspended worker; press **Resume render** to continue in place.
 - A Windows restart destroys the suspended process. LTX / Watch detects this and changes the button to **Retry interrupted shot**.
 - Recovery archives any video file already written for the interrupted shot under `<ComfyUI>\.ltx-watch-recovery`, launches `recoveryScript` in the background, and regenerates that same shot from the beginning. Earlier completed shots are left untouched.
+- The recovery launcher recursively applies Windows no-console flags to trusted Python descendants, so workers that start ComfyUI or FFmpeg do not flash command windows.
 - The controller verifies `workerCommandFragment` before touching a process, reducing the risk of PID reuse targeting an unrelated program.
 - Automated tests must never pause a real generator; see [AGENTS.md](AGENTS.md).
 
@@ -328,7 +329,9 @@ The bridge is an implementation detail, but these endpoints define the dashboard
 | `POST` | `/api/projects` | Authenticated project import, state, context, upload-session, and selective-regeneration controls |
 | `POST` | `/api/project-upload/:id` | Authenticated chunked local file intake for a project upload session |
 | `POST` | `/api/open` | Open a configured file/folder in Explorer |
+| `GET`, `POST` | `/api/browser-playback/:id` | Read or prepare an authenticated, idle-only continuous browser copy of an assembled final |
 | `GET` | `/media/:id` | Range-enabled local video stream |
+| `GET` | `/browser-media/:id` | Range-enabled stream constrained to the disposable browser playback cache |
 | `GET` | `/project-media/:id` | Range-enabled media stream constrained to registered project roots |
 
 `/api/control` requires the per-session `X-LTX-Control-Token` returned inside `/api/state`. Do not expose the bridge to a network interface.
@@ -348,10 +351,12 @@ lib/
   comfyui-blender-setup.mjs  Guarded ComfyUI-Blender maintenance adapter
   sam3-setup.mjs             Pinned, verified SAM 3.1 model-install adapter
   studio-progress.mjs        Monotonic Studio/Projects render progress estimator
+  browser-playback.mjs       Continuous assembled-final cache identity and FFmpeg contract
 local-server.mjs             Local aggregation, streaming, and control API
 scripts/
   ltx-studio-runner.py       One-shot adapter for a compatible local runner
   ltx-create-runner.py       Official local LTX 2.5 workflow and Blender reference adapter
+  run-hidden-python.py       Recursive no-console launcher for trusted recovery runners
   install-comfyui-blender.ps1 Official release install, Blender setup, backup, and rollback
   install-sam3.ps1           Official checkpoint download, digest validation, backup, and rollback
   process-orchestrator.ps1   Windows process-tree suspend/resume

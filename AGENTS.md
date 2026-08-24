@@ -53,6 +53,7 @@ Do not rely on blog posts or copied endpoint lists when the upstream source or O
 - Never commit absolute paths, usernames, tokens, prompts, generated media, or real job IDs from a user's machine.
 - Do not expose the control token in logs, persistent files, URLs, or error messages.
 - Preserve HTTP range support in `/media/:id`; browser playback depends on it.
+- Preserve the idle-only, server-derived assembled-final cache in `/api/browser-playback/:id` and range support in `/browser-media/:id`. Its FFmpeg adapter must never overwrite a final or accept a browser-supplied command/path.
 
 ## Architecture boundaries
 
@@ -150,6 +151,8 @@ Owns Windows-native process-tree suspension and resumption. It must verify the r
 `local.config.json` stores user-local settings. `orchestrator.state.json` stores pause state and timing adjustments. `projects.state.json` stores project manifests and `.ltx-watch-projects` stores managed/uploaded assets. All are ignored and must remain local.
 
 Post-reboot recovery is a distinct state, not a native resume. A recovery action must validate the saved shot scope, keep earlier completed shots, archive rather than delete interrupted-shot files, constrain `recoveryScript` to `comfyRoot`, and wait for a fresh live worker PID. Automated checks must use a fixture supervisor and must never start the user's real generation script.
+
+The app-owned `scripts/run-hidden-python.py` wrapper is part of recovery safety on Windows. It recursively applies no-console flags to Python descendants so a supervisor cannot reintroduce visible ComfyUI/FFmpeg console windows. Do not use it to run a browser-provided or unvalidated script.
 
 ### Windows installer
 

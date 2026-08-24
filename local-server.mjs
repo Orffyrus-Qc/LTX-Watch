@@ -24,6 +24,12 @@ import { installSam3Model } from './lib/sam3-setup.mjs';
 import { studioJobProgress } from './lib/studio-progress.mjs';
 import { parseLegacyGpuSnapshot, parseLiveGpuCsv } from './lib/gpu-telemetry.mjs';
 import {
+  BROWSER_PLAYBACK_CACHE_LIMIT,
+  browserPlaybackArguments,
+  browserPlaybackKey,
+  browserPlaybackPaths,
+} from './lib/browser-playback.mjs';
+import {
   PROJECT_FILE_LIMIT,
   buildProjectShots,
   classifyProjectAsset,
@@ -58,6 +64,7 @@ const PROJECTS_RUNTIME_ROOT = path.join(APP_ROOT, '.ltx-watch-projects');
 const CREATE_STATE_PATH = path.join(APP_ROOT, 'create.state.json');
 const CREATE_RUNTIME_ROOT = path.join(APP_ROOT, '.ltx-watch-create');
 const CREATE_RUNNER_PATH = path.join(APP_ROOT, 'scripts', 'ltx-create-runner.py');
+const HIDDEN_PYTHON_TREE_PATH = path.join(APP_ROOT, 'scripts', 'run-hidden-python.py');
 const CREATE_UPLOAD_CHUNK_LIMIT = 4 * 1024 * 1024;
 const CREATE_CONTEXT_EXTENSIONS = new Map([
   ['.png', 'image'], ['.jpg', 'image'], ['.jpeg', 'image'], ['.webp', 'image'],
@@ -71,6 +78,7 @@ const SAM3_SCRIPT_PATH = path.join(APP_ROOT, 'scripts', 'install-sam3.ps1');
 const MAINTENANCE_ROOT = path.join(process.env.LOCALAPPDATA || APP_ROOT, 'LTX Watch', 'maintenance');
 const COMFY_BLENDER_RECEIPT_PATH = path.join(MAINTENANCE_ROOT, 'comfyui-blender.json');
 const MAINTENANCE_BACKUP_ROOT = path.join(MAINTENANCE_ROOT, 'backups');
+const PLAYBACK_CACHE_ROOT = path.join(process.env.LOCALAPPDATA || APP_ROOT, 'LTX Watch', 'playback-cache');
 const PORT = Number(process.env.LTX_WATCH_API_PORT || 4311);
 const CONTROL_TOKEN = randomBytes(24).toString('hex');
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.webm', '.mov', '.mkv']);
@@ -88,6 +96,7 @@ const projectUploads = new Map();
 const createUploads = new Map();
 let blenderCache = { expiresAt: 0, value: null };
 let gpuTelemetryCache = { expiresAt: 0, value: null, promise: null };
+const browserPlaybackJobs = new Map();
 
 function defaultConfig(comfyRoot) {
   return {
@@ -481,7 +490,7 @@ async function getOrchestratorRecord() {
 }
 
 function resolveRecoveryPlan(config, record) {
-  if (!config?.recoveryScript || !record?.shotScope) return null;
+  if (!config?.recoveryScript || !record?.shotScope || !existsSync(HIDDEN_PYTHON_TREE_PATH)) return null;
   const scriptPath = path.resolve(config.comfyRoot, config.recoveryScript);
   if (!isInside(scriptPath, [config.comfyRoot]) || path.extname(scriptPath).toLowerCase() !== '.py' || !existsSync(scriptPath)) return null;
   const pythonCandidates = [
@@ -554,7 +563,7 @@ async function restartInterruptedShot(config, record) {
     const launchedAtMs = Date.now();
     const logHandle = await open(path.join(config.comfyRoot, 'ltx-watch-recovery.log'), 'a');
     try {
-      const child = spawn(recoveryPlan.executable, [recoveryPlan.scriptPath], {
+      const child = spawn(recoveryPlan.executable, [HIDDEN_PYTHON_TREE_PATH, '--script', recoveryPlan.scriptPath], {
         cwd: config.comfyRoot,
         detached: true,
         stdio: ['ignore', logHandle.fd, logHandle.fd],
@@ -2150,6 +2159,126 @@ async function runEnvironmentMaintenance(body) {
   }
 }
 
+function browserPlaybackMediaUrl(filePath) {
+  return `http://127.0.0.1:${PORT}/browser-media/${encodePath(filePath)}`;
+}
+
+function findPlaybackFfmpeg(config) {
+  const candidates = [
+    path.join(config.comfyRoot, 'ffmpeg.exe'),
+    path.join(config.comfyRoot, 'tools', 'ffmpeg.exe'),
+    path.join(config.comfyRoot, 'bin', 'ffmpeg.exe'),
+  ];
+  return candidates.find(existsSync) || 'ffmpeg.exe';
+}
+
+async function resolveBrowserPlaybackSource(id, config) {
+  let sourcePath;
+  try { sourcePath = decodePath(id); } catch { throw new Error('Invalid final-video id.'); }
+  sourcePath = path.resolve(sourcePath);
+  if (!isInside(sourcePath, [config.finalsDirectory]) || !VIDEO_EXTENSIONS.has(path.extname(sourcePath).toLowerCase())) {
+    throw new Error('Browser-compatible playback is available only for final videos.');
+  }
+  let info;
+  try { info = await stat(sourcePath); } catch { throw new Error('The final video no longer exists.'); }
+  if (!info.isFile() || info.size < 100_000) throw new Error('The final video is not ready for playback.');
+  return { sourcePath, info };
+}
+
+async function cachedPlaybackReady(targetPath) {
+  try {
+    const info = await stat(targetPath);
+    return info.isFile() && info.size >= 100_000;
+  } catch { return false; }
+}
+
+async function trimBrowserPlaybackCache(protectedPath) {
+  let names = [];
+  try { names = await readdir(PLAYBACK_CACHE_ROOT); } catch { return; }
+  const entries = [];
+  for (const name of names) {
+    if (!/^[a-f0-9]{32}\.browser\.mp4$/.test(name)) continue;
+    const candidate = path.join(PLAYBACK_CACHE_ROOT, name);
+    if (!isInside(candidate, [PLAYBACK_CACHE_ROOT]) || path.resolve(candidate) === path.resolve(protectedPath)) continue;
+    try {
+      const info = await stat(candidate);
+      if (info.isFile()) entries.push({ path: candidate, modifiedMs: info.mtimeMs });
+    } catch { /* a concurrent cache cleanup may have removed it */ }
+  }
+  entries.sort((left, right) => right.modifiedMs - left.modifiedMs);
+  for (const entry of entries.slice(Math.max(0, BROWSER_PLAYBACK_CACHE_LIMIT - 1))) {
+    await rm(entry.path, { force: true });
+  }
+}
+
+async function launchBrowserPlayback(config, sourcePath, key, targetPath, temporaryPath) {
+  await mkdir(PLAYBACK_CACHE_ROOT, { recursive: true });
+  await rm(targetPath, { force: true });
+  await rm(temporaryPath, { force: true });
+  const ffmpeg = findPlaybackFfmpeg(config);
+  const job = { status: 'preparing', startedAt: new Date().toISOString(), mediaUrl: null, message: 'Preparing continuous browser playback…' };
+  browserPlaybackJobs.set(key, job);
+  let stderr = '';
+  let settled = false;
+  const finish = async (error = null) => {
+    if (settled) return;
+    settled = true;
+    if (!error && await cachedPlaybackReady(temporaryPath)) {
+      try {
+        await rename(temporaryPath, targetPath);
+        browserPlaybackJobs.set(key, { status: 'ready', mediaUrl: browserPlaybackMediaUrl(targetPath), message: null, completedAt: new Date().toISOString() });
+        await trimBrowserPlaybackCache(targetPath);
+        return;
+      } catch (renameError) {
+        error = renameError;
+      }
+    }
+    await rm(temporaryPath, { force: true }).catch(() => {});
+    const detail = stderr.trim().split(/\r?\n/).slice(-2).join(' ').slice(0, 320);
+    browserPlaybackJobs.set(key, {
+      status: 'failed', mediaUrl: null, completedAt: new Date().toISOString(),
+      message: detail || error?.message || 'FFmpeg could not prepare continuous browser playback.',
+    });
+  };
+  let child;
+  try {
+    child = spawn(ffmpeg, browserPlaybackArguments(sourcePath, temporaryPath), {
+      cwd: config.comfyRoot,
+      stdio: ['ignore', 'ignore', 'pipe'],
+      windowsHide: true,
+    });
+  } catch (error) {
+    await finish(error);
+    return;
+  }
+  child.stderr?.on('data', (chunk) => { stderr = `${stderr}${chunk}`.slice(-8_000); });
+  child.once('error', (error) => { void finish(error); });
+  child.once('close', (code) => { void finish(code === 0 ? null : new Error(`FFmpeg exited with code ${code}.`)); });
+}
+
+async function getBrowserPlaybackView(id, config, { prepare = false, retry = false } = {}) {
+  const { sourcePath, info } = await resolveBrowserPlaybackSource(id, config);
+  const key = browserPlaybackKey(sourcePath, info);
+  const { targetPath, temporaryPath } = browserPlaybackPaths(PLAYBACK_CACHE_ROOT, key);
+  const sourceUrl = `http://127.0.0.1:${PORT}/media/${encodePath(sourcePath)}`;
+  if (await cachedPlaybackReady(targetPath)) {
+    return { status: 'ready', mediaUrl: browserPlaybackMediaUrl(targetPath), message: null };
+  }
+  const existing = browserPlaybackJobs.get(key);
+  if (existing && !(retry && existing.status === 'failed')) return existing;
+  if (!prepare) return { status: 'source', mediaUrl: sourceUrl, message: null };
+  if (retry) browserPlaybackJobs.delete(key);
+  const render = await getMaintenanceRender(config);
+  if (render.active) {
+    return {
+      status: 'waiting', mediaUrl: sourceUrl,
+      message: 'The continuous browser copy will prepare automatically when the current render is idle. The original file is available meanwhile.',
+    };
+  }
+  await launchBrowserPlayback(config, sourcePath, key, targetPath, temporaryPath);
+  return browserPlaybackJobs.get(key);
+}
+
 async function serveMedia(req, res, id, config, extraRoots = []) {
   let filePath;
   try { filePath = decodePath(id); } catch { return sendJson(res, 400, { error: 'Invalid media id' }); }
@@ -2242,7 +2371,18 @@ const server = http.createServer(async (req, res) => {
       child.unref();
       return sendJson(res, 200, { ok: true });
     }
+    if (req.method === 'GET' && requestUrl.pathname.startsWith('/api/browser-playback/')) {
+      const config = await getConfig();
+      return sendJson(res, 200, await getBrowserPlaybackView(requestUrl.pathname.slice('/api/browser-playback/'.length), config));
+    }
+    if (req.method === 'POST' && requestUrl.pathname.startsWith('/api/browser-playback/')) {
+      if (req.headers['x-ltx-control-token'] !== CONTROL_TOKEN) return sendJson(res, 403, { error: 'Invalid local control token' });
+      const config = await getConfig();
+      const body = await readBody(req);
+      return sendJson(res, 200, await getBrowserPlaybackView(requestUrl.pathname.slice('/api/browser-playback/'.length), config, { prepare: true, retry: body?.retry === true }));
+    }
     if (req.method === 'GET' && requestUrl.pathname.startsWith('/media/')) return serveMedia(req, res, requestUrl.pathname.slice('/media/'.length), await getConfig());
+    if (req.method === 'GET' && requestUrl.pathname.startsWith('/browser-media/')) return serveMedia(req, res, requestUrl.pathname.slice('/browser-media/'.length), await getConfig(), [PLAYBACK_CACHE_ROOT]);
     if (req.method === 'GET' && requestUrl.pathname.startsWith('/project-media/')) {
       const [config, projectsRecord] = await Promise.all([getConfig(), getProjectsRecord()]);
       return serveMedia(req, res, requestUrl.pathname.slice('/project-media/'.length), config, projectRoots(projectsRecord));

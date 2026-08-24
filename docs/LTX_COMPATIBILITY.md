@@ -389,6 +389,14 @@ The bridge concatenates `gpu0.tracks` and `gpu1.tracks`, removes the active trac
 
 If a future scheduler supports arbitrary workers, normalize all worker track arrays instead of hard-coding two more GPU keys in the dashboard.
 
+## Browser playback normalization
+
+Some compatible album runners assemble independently encoded H.264 shots with FFmpeg stream copy. Desktop players can tolerate the resulting decoder boundary, while Chromium may briefly flash when it reaches each new shot even though the original file itself is valid.
+
+For a final selected in Watch, the authenticated bridge derives a cache identity from the server-validated absolute path, file size, and modification time. When every LTX worker and ComfyUI queue is idle, it creates a continuous H.264 MP4 under `%LOCALAPPDATA%\LTX Watch\playback-cache` with fixed FFmpeg arguments and `windowsHide`. The source file is read-only, the output is written to an exact temporary cache path before an atomic rename, and `/browser-media/:id` retains HTTP range support. At most eight completed copies are retained; older files in this app-owned cache may be removed.
+
+Never generate this copy during an active render, accept a browser-provided output path or FFmpeg argument, overwrite the assembled final, or treat the cache as a production master. A changed source size or modification time must produce a new cache key.
+
 ## Worker process control
 
 The status file provides root worker PIDs. The configured `workerCommandFragment` must match each root command line before native control occurs.
@@ -415,7 +423,7 @@ If Windows restarts or every recorded paused root PID disappears, the bridge mov
 
 1. Reads the exact track/shot scope captured when Pause was pressed.
 2. Moves matching current-shot video files into `<ComfyUI>\.ltx-watch-recovery` without deleting them.
-3. Launches the configured `recoveryScript` with the ComfyUI virtual-environment `pythonw.exe` when available (falling back to `python.exe`) so recovery stays in the background.
+3. Launches the configured `recoveryScript` with the ComfyUI virtual-environment `pythonw.exe` when available (falling back to `python.exe`) through `scripts/run-hidden-python.py`. That app-owned adapter applies no-console flags recursively when the trusted supervisor starts another Python worker, ComfyUI, FFmpeg, or helpers.
 4. Waits for a fresh status-file worker PID.
 5. Returns to `running` only after the new worker is alive.
 

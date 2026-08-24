@@ -55,6 +55,12 @@ type VideoItem = {
   codec?: string;
 };
 
+type BrowserPlaybackView = {
+  status: 'checking' | 'source' | 'waiting' | 'preparing' | 'ready' | 'failed';
+  mediaUrl: string | null;
+  message: string | null;
+};
+
 type QueueItem = {
   position: number;
   section: string;
@@ -281,6 +287,7 @@ export default function Dashboard() {
   const [refreshing, setRefreshing] = useState(false);
   const [controlPending, setControlPending] = useState(false);
   const [selectedVideo, setSelectedVideo] = useState<VideoItem | null>(null);
+  const [browserPlayback, setBrowserPlayback] = useState<BrowserPlaybackView | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [environmentOpen, setEnvironmentOpen] = useState(false);
   const [environment, setEnvironment] = useState<EnvironmentState | null>(null);
@@ -332,11 +339,51 @@ export default function Dashboard() {
     const timer = window.setTimeout(() => setToast(''), 2600);
     return () => window.clearTimeout(timer);
   }, [toast]);
+  useEffect(() => {
+    const video = selectedVideo;
+    const token = state?.control.token;
+    if (!video || video.kind !== 'final' || !token) return;
+    let canceled = false;
+    let timer = 0;
+    const prepare = async (retry: boolean) => {
+      try {
+        const response = await fetch(`${API_BASE}/api/browser-playback/${video.id}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-LTX-Control-Token': token },
+          body: JSON.stringify({ retry }),
+          cache: 'no-store',
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || 'Continuous browser playback could not be prepared.');
+        if (canceled) return;
+        const next = payload as BrowserPlaybackView;
+        setBrowserPlayback(next);
+        if (next.status === 'waiting' || next.status === 'preparing') {
+          timer = window.setTimeout(() => { void prepare(false); }, 2000);
+        }
+      } catch (requestError) {
+        if (!canceled) setBrowserPlayback({
+          status: 'failed', mediaUrl: video.mediaUrl,
+          message: requestError instanceof Error ? requestError.message : 'Continuous browser playback could not be prepared.',
+        });
+      }
+    };
+    void prepare(true);
+    return () => {
+      canceled = true;
+      window.clearTimeout(timer);
+    };
+  }, [selectedVideo, state?.control.token]);
 
   const videos = useMemo(() => {
     const term = search.trim().toLowerCase();
     return (state?.videos || []).filter((video) => (filter === 'all' || video.kind === filter) && (!term || `${video.title} ${video.filename}`.toLowerCase().includes(term)));
   }, [state?.videos, filter, search]);
+
+  function playVideo(video: VideoItem) {
+    setBrowserPlayback(video.kind === 'final' ? { status: 'checking', mediaUrl: null, message: null } : null);
+    setSelectedVideo(video);
+  }
 
   async function openInExplorer(target: string) {
     try {
@@ -537,7 +584,7 @@ export default function Dashboard() {
 
         {error && <div className="error-banner" role="alert"><CircleAlert size={16} /><span><strong>Local bridge unavailable.</strong> Start the monitor with <code>npm run dev</code> and this page will reconnect automatically.</span></div>}
 
-        {workspace === 'create' ? <CreateWorkspace token={state?.control.token} apiBase={API_BASE} refreshSeconds={state?.config.refreshSeconds} onToast={setToast} onOpen={openInExplorer} onPlay={(video: StudioVideo) => setSelectedVideo(video)} /> : workspace === 'studio' ? <StudioWorkspace studio={state?.studio} token={state?.control.token} apiBase={API_BASE} onRefresh={() => loadState(true)} onToast={setToast} onPlay={(video: StudioVideo) => setSelectedVideo(video)} /> : workspace === 'projects' ? <ProjectWorkspace token={state?.control.token} apiBase={API_BASE} refreshSeconds={state?.config.refreshSeconds} onToast={setToast} onOpen={openInExplorer} onPlay={(video: StudioVideo) => setSelectedVideo(video)} /> : <>
+        {workspace === 'create' ? <CreateWorkspace token={state?.control.token} apiBase={API_BASE} refreshSeconds={state?.config.refreshSeconds} onToast={setToast} onOpen={openInExplorer} onPlay={(video: StudioVideo) => playVideo(video)} /> : workspace === 'studio' ? <StudioWorkspace studio={state?.studio} token={state?.control.token} apiBase={API_BASE} onRefresh={() => loadState(true)} onToast={setToast} onPlay={(video: StudioVideo) => playVideo(video)} /> : workspace === 'projects' ? <ProjectWorkspace token={state?.control.token} apiBase={API_BASE} refreshSeconds={state?.config.refreshSeconds} onToast={setToast} onOpen={openInExplorer} onPlay={(video: StudioVideo) => playVideo(video)} /> : <>
         <section className={`hero ${active ? '' : 'hero-idle'} ${isPaused ? 'hero-paused' : ''}`} id="overview">
           <div className="hero-copy">
             <div className="job-label"><span className="pulse" /> {recoveryRequired ? 'SHOT RESTART REQUIRED' : isPaused ? 'GENERATION PAUSED' : active ? 'GENERATING NOW' : state?.connection.worker ? 'WORKER TRANSITIONING' : 'NO ACTIVE JOB'} <span>{current ? `SHOT ${Math.min(current.completedShots + 1, current.totalShots)} OF ${current.totalShots}` : 'STANDING BY'}</span></div>
@@ -584,7 +631,7 @@ export default function Dashboard() {
             <div className="video-grid">
               {videos.slice(0, visibleCount).map((video) => (
                 <article className="video-card" key={video.id}>
-                  <button className="poster" onClick={() => setSelectedVideo(video)} aria-label={`Play ${video.title}`}>
+                  <button className="poster" onClick={() => playVideo(video)} aria-label={`Play ${video.title}`}>
                     <video src={`${video.mediaUrl}#t=0.1`} muted playsInline preload="metadata" aria-hidden="true" />
                     <span className="format-badge">{video.kind === 'final' ? 'FINAL CUT' : 'LTX CLIP'}</span>
                     <span className="play-button"><Play size={18} fill="currentColor" /></span>
@@ -619,7 +666,10 @@ export default function Dashboard() {
       {selectedVideo && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedVideo(null); }}>
         <section className="player-modal" role="dialog" aria-modal="true" aria-label={`Playing ${selectedVideo.title}`}>
           <div className="modal-head"><div><p className="kicker">{selectedVideo.kind === 'final' ? 'FINAL OUTPUT' : 'GENERATED CLIP'}</p><h2>{selectedVideo.title}</h2></div><button className="icon-button" onClick={() => setSelectedVideo(null)} aria-label="Close player"><X size={18} /></button></div>
-          <video className="main-player" src={selectedVideo.mediaUrl} controls autoPlay playsInline />
+          {selectedVideo.kind === 'final' && (browserPlayback?.status === 'checking' || browserPlayback?.status === 'preparing')
+            ? <div className="playback-preparing" role="status"><LoaderCircle size={24} className="spinning" /><b>Preparing continuous browser playback</b><span>The original assembled scene stays untouched. This compatibility copy is cached after the first playback.</span></div>
+            : <video className="main-player" src={browserPlayback?.mediaUrl || selectedVideo.mediaUrl} controls autoPlay playsInline preload="auto" />}
+          {selectedVideo.kind === 'final' && browserPlayback?.message && browserPlayback.status !== 'preparing' && <div className={`playback-notice ${browserPlayback.status}`}><CircleAlert size={13} /><span>{browserPlayback.message}</span></div>}
           <div className="player-meta"><span>{selectedVideo.filename}</span><span>{formatBytes(selectedVideo.size)}{selectedVideo.duration ? ` · ${formatDuration(selectedVideo.duration)}` : ''}</span><button className="secondary-button" onClick={() => openInExplorer(selectedVideo.directory)}><FolderOpen size={15} /> Show in Explorer</button></div>
         </section>
       </div>}

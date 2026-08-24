@@ -207,6 +207,10 @@ Every dashboard video needs:
 
 FFprobe fields are optional. Do not make playback depend on them.
 
+Assembled finals may contain stream-copy H.264 shot boundaries that desktop players handle but Chromium flashes on. Preserve the dedicated browser playback contract in `lib/browser-playback.mjs` and `local-server.mjs`: only finals inside `finalsDirectory`, cache keys bound to path/size/mtime, fixed continuous-H.264 FFmpeg arguments, exact temporary paths, original files never modified, conversion locked while any render is active, a bounded app-owned cache, and HTTP ranges through `/browser-media/:id`.
+
+Recovery is launched through `scripts/run-hidden-python.py` because hiding only the first Python process does not hide consoles created by a supervisor's Python worker. Keep the recursive Python wrapping and `CREATE_NO_WINDOW`/`SW_HIDE` flags; never generalize the target beyond the server-validated `recoveryScript` inside `comfyRoot`.
+
 ## Process-control safety
 
 Pause/resume is the highest-risk feature.

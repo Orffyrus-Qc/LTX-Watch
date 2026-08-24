@@ -20,6 +20,8 @@ All notable changes to LTX / Watch are documented here.
 
 ### Fixed
 
+- Recovery-launched album workers now run through an app-owned recursive hidden-process adapter, preventing short-lived ComfyUI, Python, and FFmpeg console flashes from descendant processes on Windows.
+- Assembled finals now use a lazily prepared, idle-only continuous H.264 browser cache. This removes Chromium flashes at stream-copy shot boundaries without changing the original scene file.
 - Dashboard GPU utilization and VRAM now come from live `nvidia-smi` sampling instead of a frozen supervisor-file snapshot; legacy snapshot data is labeled and used only as a fallback.
 - Create reconciles an outdated official-template model filename, including values passed through exposed subgraph constants, with ComfyUI's live enum only when family and model-format markers identify one unambiguous installed checkpoint. This covers the renamed Gemma INT8 ConvRot checkpoint without silently switching precision.
 - Active Create renders can be canceled through an authenticated private marker. The owning runner interrupts only its isolated ComfyUI server, releases its lock, records a distinct Canceled state, and permits a clean Retry.
