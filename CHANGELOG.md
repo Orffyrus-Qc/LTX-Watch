@@ -31,6 +31,7 @@ All notable changes to LTX / Watch are documented here.
 
 ### Fixed
 
+- The development server no longer watches private Create, Projects, or Studio runtime files, preventing Windows `EBUSY` crashes when an uploaded Ingredients image is still locked during generation setup.
 - Director now compiles the current official Ingredients workflow's UI reroutes, notes, and obsolete unconsumed subgraph inputs; reconciles transformer, projected text-encoder, and prompt-enhancer model roles independently; preserves native LTX audio/video conditioning metadata while Prompt Relay patches the sampler model; and reports incompatible Kornia installations before queueing. A private idle-GPU smoke render completed successfully against the verified public dependency set.
 - Long-scene plans now split 13–20 second Director actions into valid bounded segments, and stale browser saves preserve newer queued, generating, review, accepted, failed, output, and anchor state.
 

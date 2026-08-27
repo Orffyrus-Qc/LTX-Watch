@@ -12,6 +12,20 @@ const { d1, r2 } = hostingConfig;
 // macOS Seatbelt blocks FSEvents, so Codex previews need polling for HMR.
 const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === 'seatbelt';
 
+const LOCAL_RUNTIME_WATCH_IGNORES = [
+  '**/.ltx-watch-create/**',
+  '**/.ltx-watch-projects/**',
+  '**/.ltx-watch-studio/**',
+  '**/create.state.json',
+  '**/projects.state.json',
+  '**/studio.state.json',
+  '**/create.log',
+  '**/studio.log',
+  '**/installer/.build/**',
+  '**/installer/.tools/**',
+  '**/release/**',
+];
+
 const localBindingConfig = {
   main: 'vinext/server/app-router-entry',
   compatibility_flags: ['nodejs_compat'],
@@ -48,7 +62,7 @@ export default defineConfig(async () => {
     css: { postcss: { plugins: [tailwindcss()] } },
     server: {
       watch: {
-        ignored: ['**/installer/.build/**', '**/installer/.tools/**', '**/release/**'],
+        ignored: LOCAL_RUNTIME_WATCH_IGNORES,
         ...(isCodexSeatbeltSandbox ? { useFsEvents: false, usePolling: true } : {}),
       },
     },
