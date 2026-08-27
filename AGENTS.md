@@ -122,6 +122,11 @@ Preserve these invariants:
 - Source-runner plan inspection is metadata-only: it may expose completed scene slugs and shot numbers for explicit Project regeneration, but it must never prepare inputs, launch ComfyUI, initialize the GPU, expose prompts/paths, or add completed scenes to the unattended Studio queue.
 - Context and Blender-backbone relationships are metadata. Do not send files or prompts to a paid provider without a separate provider adapter and explicit user action.
 - Treat `.blend` as a master production asset. The Physics-authority adapter must use a private working copy, versioned outputs, fixed scripts/paths, and never overwrite the master scene.
+- Project schema-v2 Continuity state is local production memory. Build canonical prompts only from normalized persisted Bible/scene/clip state in the bridge; the browser cannot override the authoritative prompt or visual input at enqueue.
+- First clips/new cuts use the capability-gated Director Ingredients contract. Continuous clips require an accepted predecessor and must use its extracted final frame as the official I2V first-frame input. Keep acceptance explicit and review-gated.
+- Preserve server-owned continuity job state when saving browser edits. Stale UI state must never demote or erase a queued/generating/review/accepted/failed clip, output path, prepared input, or accepted anchor.
+- Canonical element reference IDs are manifest relationships unless a separately verified adapter explicitly consumes them. Never claim they condition a model merely because they are stored.
+- Do not extract a real final frame, prepare/enqueue a real continuity clip, or run its workflow in automated tests. Use pure normalization/prompt fixtures and static adapter assertions.
 
 ### `lib/environment-audit.mjs`
 

@@ -108,13 +108,16 @@ export function createDefaultDraft() {
     directorTransition: 0.001,
     ingredientsReferencePath: '',
     ingredientsStrength: 1.3,
+    continuityProjectId: '',
+    continuitySceneId: '',
+    continuityClipId: '',
     contextAssets: [],
   };
 }
 
 export function cleanCreateDraft(input = {}) {
   const fallback = createDefaultDraft();
-  const limits = { title: 120, prompt: CREATE_PROMPT_LIMIT, avoid: 1_000, customStyle: 600, firstFramePath: 1_000, lastFramePath: 1_000, contextVideoPath: 1_000, soundtrackPath: 1_000, blenderProjectId: 160, blenderUploadPath: 1_000, ingredientsReferencePath: 1_000 };
+  const limits = { title: 120, prompt: CREATE_PROMPT_LIMIT, avoid: 1_000, customStyle: 600, firstFramePath: 1_000, lastFramePath: 1_000, contextVideoPath: 1_000, soundtrackPath: 1_000, blenderProjectId: 160, blenderUploadPath: 1_000, ingredientsReferencePath: 1_000, continuityProjectId: 100, continuitySceneId: 100, continuityClipId: 100 };
   const draft = {};
   for (const [key, defaultValue] of Object.entries(fallback)) {
     const value = input && typeof input === 'object' ? input[key] : undefined;
@@ -180,6 +183,9 @@ export function normalizeCreateOptions(input = {}) {
     directorTransition: boundedNumber(input.directorTransition, 0.000001, 0.99, fallback.directorTransition, 'Director transition softness'),
     ingredientsReferencePath: text(input.ingredientsReferencePath, 1_000, 'Ingredients reference path'),
     ingredientsStrength: boundedNumber(input.ingredientsStrength, 0.1, 2, fallback.ingredientsStrength, 'Ingredients strength'),
+    continuityProjectId: text(input.continuityProjectId, 100, 'Continuity project id').replace(/[^a-zA-Z0-9_-]/g, ''),
+    continuitySceneId: text(input.continuitySceneId, 100, 'Continuity scene id').replace(/[^a-zA-Z0-9_-]/g, ''),
+    continuityClipId: text(input.continuityClipId, 100, 'Continuity clip id').replace(/[^a-zA-Z0-9_-]/g, ''),
     contextAssets: cleaned.contextAssets,
   };
   if (!result.prompt) throw new Error('Describe the video you want to create.');

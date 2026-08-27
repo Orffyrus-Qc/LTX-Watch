@@ -2,7 +2,7 @@
 
 All notable changes to LTX / Watch are documented here.
 
-## Unreleased — `feature/director-timeline`
+## Unreleased — `feature/continuity-memory`
 
 ### Added
 
@@ -18,6 +18,9 @@ All notable changes to LTX / Watch are documented here.
 - Explicit LTX 2.5 refinement gate: strict physics packages remain preparation-only until a verified 2.5 adapter consumes every structural pass without inventing or retiming motion.
 - Capability-gated **Director timeline** with a persistent global continuity prompt, two-to-eight timed action segments, private Ingredients reference sheet, IC-LoRA strength, transition epsilon, setup diagnostics, and truthful upstream limitations.
 - Recursive ComfyUI subgraph compilation plus a verified Prompt Relay patch that routes timed conditioning through Lightricks' official LTX 2.5 Ingredients guide and the patched model to sampling without hardcoded node IDs.
+- Persistent project **Continuity Bible** with canonical world, look, invariants, negative rules, reusable elements, local asset relationships, revisions, and defensive schema-v2 migration.
+- Open-ended long-scene planning with 5–20 second clips, review gates, Create preparation, linked render status/history, and reusable server-built prompts.
+- Accepted-ending visual handoffs: approval extracts the final decoded frame, and the next continuous clip uses it as the official I2V first-frame input; first clips and new cuts use the canonical Director Ingredients sheet.
 
 ### Security
 
@@ -27,6 +30,8 @@ All notable changes to LTX / Watch are documented here.
 - Physics jobs accept no browser-supplied script, executable, workflow, output path, or command arguments; the authenticated bridge builds and launches the bundled adapter only after all normal worker and port locks are clear.
 
 ### Fixed
+
+- Long-scene plans now split 13–20 second Director actions into valid bounded segments, and stale browser saves preserve newer queued, generating, review, accepted, failed, output, and anchor state.
 
 - Recovery-launched album workers now run through an app-owned recursive hidden-process adapter, preventing short-lived ComfyUI, Python, and FFmpeg console flashes from descendant processes on Windows.
 - Assembled finals now use a lazily prepared, idle-only continuous H.264 browser cache. This removes Chromium flashes at stream-copy shot boundaries without changing the original scene file.

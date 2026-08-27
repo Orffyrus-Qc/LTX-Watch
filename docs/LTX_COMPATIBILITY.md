@@ -169,6 +169,18 @@ The Blender-backbone ID records the master scene used for shared camera animatio
 
 Project queue items reuse the Studio single-shot launch boundary and inherit all worker, port, path, and adapter readiness locks. Reading project state can advance an already-authorized queue after a prior shot finishes, so automated fixtures must contain an empty or paused regeneration queue.
 
+### Project Continuity schema-v2 contract
+
+Project schema version 2 adds a normalized `continuityBible` and `longScenes`. The Bible stores bounded canonical text plus up to 120 named element records and persistent project-asset IDs. A project may store up to 200 long scenes and each scene up to 500 ordered 5–20 second clips. These are persistence safety bounds, not a fixed storytelling endpoint.
+
+The browser may edit canonical text, element/scene/clip IDs, durations, transitions, and selected asset IDs. The bridge must resolve all linked assets against the indexed registered roots, normalize state again, and rebuild the continuity prompt from persisted Bible + scene + clip at enqueue. Never trust an editable Create prompt or visual path as the canonical Project Continuity source.
+
+Each clip links to at most one private Create job. First clips and `cut` transitions use the capability-gated Director Ingredients contract. A `continuous` clip requires the immediately preceding clip to be `accepted`; approval extracts a final PNG under that project's ignored upload root, and preparation copies it into the private Create runtime. The next job uses that copy with the official `video_ltx2_5_i2v.json` first-frame contract. Do not claim the ending is a visual handoff unless it is actually passed as `firstFramePath`.
+
+Plan saves must merge server-owned clip state (`status`, Create job ID, output, prepared paths, accepted anchor, error, and acceptance time) from the current record. A stale browser edit must not demote a queued, generating, review, accepted, or failed clip. Create completion moves a linked clip to `review`; only the explicit authenticated Project acceptance action extracts the anchor and marks it `accepted`.
+
+Canonical element reference IDs remain manifest relationships in this version. Only the scene Ingredients sheet is visual conditioning for Director cuts; continuous clips use the accepted ending plus the canonical text prompt. Blender remains a separate authority contract and cannot be combined with Director in one job. See `docs/CONTINUITY_MEMORY.md` before changing this boundary.
+
 ## Environment Doctor contract
 
 `GET /api/environment` is a separate, read-only compatibility surface implemented by `lib/environment-audit.mjs`. It must remain safe to call during an active render.

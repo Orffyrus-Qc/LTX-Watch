@@ -136,6 +136,14 @@ The first active implementation is Create's **Physics authority** package builde
 
 When adding a paid AI provider, keep credentials in OS-backed local storage, send only files explicitly selected for that request, show the destination/provider and estimated cost before submission, normalize provider jobs behind one adapter contract, and import results as new shot versions. Do not put provider payload shapes or keys in the project manifest or React tree.
 
+### Project Continuity and long-scene evolution
+
+Read `docs/CONTINUITY_MEMORY.md` before modifying project schema version 2. `project-core.mjs` owns Bible/scene normalization, canonical prompt composition, and bounded Director-segment construction. `local-server.mjs` owns registered-asset resolution, accepted-frame extraction, private Create preparation, linked job-state synchronization, and final enqueue revalidation. React must not construct the authoritative prompt or choose visual workflow paths.
+
+Preserve the two explicit visual contracts: first clips/new cuts use the canonical Director Ingredients sheet; continuous clips require an accepted predecessor and use its extracted ending as the official I2V first frame. Do not describe a stored-but-unused image as conditioning. If a future verified template accepts Ingredients and a start frame together, introduce a versioned adapter and fixture tests rather than silently changing existing semantics.
+
+Keep stale-save protection: browser scene edits may change creative fields but may not overwrite server-owned job status, output, prepared input paths, errors, or accepted anchors. A real long-scene render, acceptance, or FFmpeg extraction is excluded from automated testing.
+
 ### Create workspace and LTX template evolution
 
 Create is the original-video path. Keep its responsibilities split between `create-core.mjs`, `app/create-workspace.tsx`, `local-server.mjs`, and `scripts/ltx-create-runner.py`. The browser chooses normalized creative options; it must never construct a ComfyUI graph or pass an arbitrary workflow/script/path/command to Python.

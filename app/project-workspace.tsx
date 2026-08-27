@@ -3,6 +3,7 @@
 
 import {
   Box,
+  BookOpen,
   Check,
   ChevronRight,
   CircleAlert,
@@ -13,12 +14,14 @@ import {
   FolderOpen,
   Image as ImageIcon,
   Layers3,
+  Lock,
   LoaderCircle,
   Pause,
   Play,
   Plus,
   RefreshCw,
   Search,
+  Trash2,
   Upload,
   Video,
   X,
@@ -81,6 +84,52 @@ type ProjectSummary = {
   review: number;
 };
 
+type ContinuityElement = {
+  id: string;
+  kind: 'character' | 'location' | 'prop' | 'wardrobe' | 'vehicle' | 'style';
+  name: string;
+  description: string;
+  referenceAssetIds: string[];
+  locked: boolean;
+};
+
+type ContinuityBible = {
+  premise: string;
+  visualLanguage: string;
+  invariants: string;
+  negativeRules: string;
+  elements: ContinuityElement[];
+  revision: number;
+  updatedAt: string | null;
+};
+
+type LongSceneClip = {
+  id: string;
+  order: number;
+  title: string;
+  prompt: string;
+  duration: number;
+  transition: 'continuous' | 'cut';
+  status: 'planned' | 'prepared' | 'queued' | 'generating' | 'review' | 'accepted' | 'failed';
+  outputPath: string | null;
+  lastFramePath: string | null;
+  ingredientsReferencePath?: string | null;
+  continuityAnchorPath?: string | null;
+  error: string | null;
+  video: StudioVideo | null;
+};
+
+type LongScene = {
+  id: string;
+  title: string;
+  direction: string;
+  ingredientsAssetId: string | null;
+  status: 'planning' | 'active' | 'complete';
+  clips: LongSceneClip[];
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type ProjectsView = {
   selectedProjectId: string | null;
   projects: ProjectSummary[];
@@ -95,12 +144,14 @@ export type ProjectsView = {
     contextAssetIds: string[];
     blenderBackboneAssetId: string | null;
     blenderBackbone: ProjectAsset | null;
+    continuityBible: ContinuityBible;
+    longScenes: LongScene[];
     assets: ProjectAsset[];
     contextAssets: ProjectAsset[];
     blenderAssets: ProjectAsset[];
     shots: ProjectShot[];
     queue: ProjectQueueItem[];
-    counts: { assets: number; shots: number; mapped: number; selectedContext: number; queued: number; generating: number; review: number };
+    counts: { assets: number; shots: number; mapped: number; selectedContext: number; queued: number; generating: number; review: number; continuityElements: number; longSceneClips: number };
   };
 };
 
@@ -111,6 +162,7 @@ type Props = {
   onToast: (message: string) => void;
   onOpen: (path: string) => Promise<void>;
   onPlay: (video: StudioVideo) => void;
+  onOpenCreate: () => void;
 };
 
 function displayName(value: string) {
@@ -134,7 +186,26 @@ function formatQueueTime(seconds = 0) {
   return `${remainder}s`;
 }
 
+const EMPTY_CONTINUITY_BIBLE: ContinuityBible = { premise: '', visualLanguage: '', invariants: '', negativeRules: '', elements: [], revision: 1, updatedAt: null };
+
 const SHOT_BATCH_SIZE = 36;
+
+function withContinuityDefaults(input: ProjectsView): ProjectsView {
+  if (!input.project) return input;
+  return {
+    ...input,
+    project: {
+      ...input.project,
+      continuityBible: input.project.continuityBible || { ...EMPTY_CONTINUITY_BIBLE },
+      longScenes: input.project.longScenes || [],
+      counts: {
+        ...input.project.counts,
+        continuityElements: input.project.counts?.continuityElements || 0,
+        longSceneClips: input.project.counts?.longSceneClips || 0,
+      },
+    },
+  };
+}
 
 function projectViewSignature(view: ProjectsView) {
   const project = view.project;
@@ -146,6 +217,7 @@ function projectViewSignature(view: ProjectsView) {
       queuePaused: project.queuePaused,
       contextAssetIds: project.contextAssetIds,
       blenderBackboneAssetId: project.blenderBackboneAssetId,
+      continuity: [project.continuityBible.revision, project.longScenes.map((scene) => [scene.id, scene.status, scene.updatedAt, scene.clips.map((clip) => [clip.id, clip.status, clip.outputPath, clip.lastFramePath])])],
       counts: project.counts,
       shots: project.shots.map((shot) => [shot.shotKey, shot.status, shot.currentAssetId, shot.versions.length, shot.contextAssetIds.length]),
       queue: project.queue.map((item) => [item.id, item.status, item.completedAt, item.error, item.stage, item.progress]),
@@ -188,7 +260,7 @@ function LazyProjectPreview({ asset }: { asset?: ProjectAsset }) {
   </span>;
 }
 
-export default function ProjectWorkspace({ token, apiBase, refreshSeconds = 5, onToast, onOpen, onPlay }: Props) {
+export default function ProjectWorkspace({ token, apiBase, refreshSeconds = 5, onToast, onOpen, onPlay, onOpenCreate }: Props) {
   const [view, setView] = useState<ProjectsView | null>(null);
   const [error, setError] = useState('');
   const [pending, setPending] = useState('');
@@ -202,6 +274,12 @@ export default function ProjectWorkspace({ token, apiBase, refreshSeconds = 5, o
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<'all' | 'mapped' | 'review' | 'accepted'>('all');
   const [visibleCount, setVisibleCount] = useState(SHOT_BATCH_SIZE);
+  const [projectMode, setProjectMode] = useState<'shots' | 'continuity'>('shots');
+  const [bibleDraft, setBibleDraft] = useState<ContinuityBible | null>(null);
+  const [scenesDraft, setScenesDraft] = useState<LongScene[]>([]);
+  const [selectedLongSceneId, setSelectedLongSceneId] = useState('');
+  const [continuityDirty, setContinuityDirty] = useState(false);
+  const loadedContinuityProject = useRef('');
   const fileInput = useRef<HTMLInputElement>(null);
   const viewSignature = useRef('');
 
@@ -211,7 +289,7 @@ export default function ProjectWorkspace({ token, apiBase, refreshSeconds = 5, o
       const response = await fetch(`${apiBase}/api/projects`, { cache: 'no-store' });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || 'Could not load projects');
-      const nextView = payload as ProjectsView;
+      const nextView = withContinuityDefaults(payload as ProjectsView);
       const nextSignature = projectViewSignature(nextView);
       if (!quiet || nextSignature !== viewSignature.current) {
         viewSignature.current = nextSignature;
@@ -246,13 +324,19 @@ export default function ProjectWorkspace({ token, apiBase, refreshSeconds = 5, o
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || 'Project action failed');
       if (payload.projects) {
-        const nextView = payload.projects as ProjectsView;
+        const nextView = withContinuityDefaults(payload.projects as ProjectsView);
         viewSignature.current = projectViewSignature(nextView);
         setView(nextView);
         if (name === 'select-project' || name === 'import-folder') {
           setSelectedShots([]);
           setSelectedContext([]);
           setVisibleCount(SHOT_BATCH_SIZE);
+        }
+        if (['save-continuity-bible', 'save-long-scenes', 'prepare-continuity-clip', 'accept-continuity-clip'].includes(name) && nextView.project) {
+          setBibleDraft(nextView.project.continuityBible || EMPTY_CONTINUITY_BIBLE);
+          setScenesDraft(nextView.project.longScenes || []);
+          setSelectedLongSceneId((current) => current && nextView.project?.longScenes.some((scene) => scene.id === current) ? current : nextView.project?.longScenes[0]?.id || '');
+          setContinuityDirty(false);
         }
       }
       setError('');
@@ -307,7 +391,7 @@ export default function ProjectWorkspace({ token, apiBase, refreshSeconds = 5, o
         const finished = await finishResponse.json();
         if (!finishResponse.ok) throw new Error(finished.error || `Could not finish ${file.name}`);
         if (finished.projects) {
-          const nextView = finished.projects as ProjectsView;
+          const nextView = withContinuityDefaults(finished.projects as ProjectsView);
           viewSignature.current = projectViewSignature(nextView);
           setView(nextView);
         }
@@ -323,6 +407,15 @@ export default function ProjectWorkspace({ token, apiBase, refreshSeconds = 5, o
   }
 
   const project = view?.project;
+  useEffect(() => {
+    if (!project) return;
+    if (loadedContinuityProject.current !== project.id || !continuityDirty) {
+      loadedContinuityProject.current = project.id;
+      setBibleDraft(project.continuityBible || EMPTY_CONTINUITY_BIBLE);
+      setScenesDraft(project.longScenes || []);
+      setSelectedLongSceneId((current) => current && project.longScenes?.some((scene) => scene.id === current) ? current : project.longScenes?.[0]?.id || '');
+    }
+  }, [project, continuityDirty]);
   const filteredShots = useMemo(() => {
     const term = search.trim().toLowerCase();
     return (project?.shots || []).filter((shot) => {
@@ -354,6 +447,66 @@ export default function ProjectWorkspace({ token, apiBase, refreshSeconds = 5, o
     }
     await action('mark-status', { shotKeys: selectedShots, status }, status === 'accepted' ? 'Current shot results approved' : 'Selected shots returned to review');
   }
+
+  function updateBible<K extends keyof ContinuityBible>(key: K, value: ContinuityBible[K]) {
+    setBibleDraft((current) => ({ ...(current || EMPTY_CONTINUITY_BIBLE), [key]: value }));
+    setContinuityDirty(true);
+  }
+
+  function addContinuityElement() {
+    const id = `element-${Date.now().toString(36)}`;
+    updateBible('elements', [...(bibleDraft?.elements || []), { id, kind: 'character', name: '', description: '', referenceAssetIds: [], locked: true }]);
+  }
+
+  function updateContinuityElement(id: string, changes: Partial<ContinuityElement>) {
+    updateBible('elements', (bibleDraft?.elements || []).map((element) => element.id === id ? { ...element, ...changes } : element));
+  }
+
+  function createLongSceneDraft() {
+    const now = new Date().toISOString();
+    const id = `scene-${Date.now().toString(36)}`;
+    const scene: LongScene = { id, title: 'New long scene', direction: '', ingredientsAssetId: null, status: 'planning', clips: [], createdAt: now, updatedAt: now };
+    setScenesDraft((current) => [...current, scene]);
+    setSelectedLongSceneId(id);
+    setContinuityDirty(true);
+  }
+
+  function updateLongScene(id: string, changes: Partial<LongScene>) {
+    setScenesDraft((current) => current.map((scene) => scene.id === id ? { ...scene, ...changes, updatedAt: new Date().toISOString() } : scene));
+    setContinuityDirty(true);
+  }
+
+  function addLongSceneClip(sceneId: string) {
+    setScenesDraft((current) => current.map((scene) => {
+      if (scene.id !== sceneId || scene.clips.length >= 500) return scene;
+      const order = scene.clips.length + 1;
+      const clip: LongSceneClip = { id: `clip-${Date.now().toString(36)}-${order}`, order, title: `Clip ${order}`, prompt: '', duration: 8, transition: order === 1 ? 'cut' : 'continuous', status: 'planned', outputPath: null, lastFramePath: null, error: null, video: null };
+      return { ...scene, clips: [...scene.clips, clip], updatedAt: new Date().toISOString() };
+    }));
+    setContinuityDirty(true);
+  }
+
+  function updateLongSceneClip(sceneId: string, clipId: string, changes: Partial<LongSceneClip>) {
+    setScenesDraft((current) => current.map((scene) => scene.id === sceneId ? { ...scene, clips: scene.clips.map((clip) => clip.id === clipId ? { ...clip, ...changes } : clip), updatedAt: new Date().toISOString() } : scene));
+    setContinuityDirty(true);
+  }
+
+  async function saveContinuity() {
+    if (!bibleDraft) return;
+    await action('save-continuity-bible', { bible: bibleDraft }, 'Project continuity bible saved');
+    await action('save-long-scenes', { scenes: scenesDraft }, 'Long-scene plan saved');
+  }
+
+  async function prepareContinuityClip(sceneId: string, clipId: string) {
+    try {
+      if (continuityDirty) await saveContinuity();
+      await action('prepare-continuity-clip', { sceneId, clipId }, 'Long-scene clip prepared in Create');
+      onOpenCreate();
+    } catch { /* action already surfaces its error */ }
+  }
+
+  const selectedLongScene = scenesDraft.find((scene) => scene.id === selectedLongSceneId) || scenesDraft[0] || null;
+  const projectImages = project?.assets.filter((asset) => asset.kind === 'image') || [];
 
   if (!view && !error) return <div className="projects-loading"><LoaderCircle className="spinning" /><b>Indexing project workspace…</b></div>;
 
@@ -387,6 +540,52 @@ export default function ProjectWorkspace({ token, apiBase, refreshSeconds = 5, o
         </div>
         <button className="project-path" onClick={() => void onOpen(project.rootPath)} title={project.rootPath}><FolderOpen size={14} /><span>{project.rootPath}</span></button>
       </section>
+
+      <div className="project-mode-tabs"><button className={projectMode === 'shots' ? 'selected' : ''} onClick={() => setProjectMode('shots')}><Film size={14} /> Shot library</button><button className={projectMode === 'continuity' ? 'selected' : ''} onClick={() => setProjectMode('continuity')}><BookOpen size={14} /> Continuity & long scenes <span>{project.counts.continuityElements + project.counts.longSceneClips}</span></button></div>
+
+      {projectMode === 'continuity' ? <section className="continuity-workspace">
+        <div className="continuity-heading"><div><p className="kicker">PERSISTENT PROJECT MEMORY</p><h2>Continuity Bible</h2><p>Define canonical elements once, attach the best local references, and reuse the same locked description across every future clip. Memory remains local in this project.</p></div><button className="project-primary" disabled={!continuityDirty || Boolean(pending)} onClick={() => void saveContinuity().catch(() => undefined)}>{pending.startsWith('save-') ? <LoaderCircle size={14} className="spinning" /> : <Check size={14} />} Save continuity</button></div>
+        <div className="continuity-grid">
+          <section className="continuity-card bible-card">
+            <div className="continuity-card-head"><span><BookOpen size={15} /> CANONICAL PROJECT BIBLE</span><b>REV {bibleDraft?.revision || 1}</b></div>
+            <div className="bible-fields">
+              <label><span>WORLD / PREMISE</span><textarea value={bibleDraft?.premise || ''} maxLength={4000} placeholder="The permanent story-world facts, era, scale, atmosphere, and physical reality…" onChange={(event) => updateBible('premise', event.target.value)} /></label>
+              <label><span>LOCKED VISUAL LANGUAGE</span><textarea value={bibleDraft?.visualLanguage || ''} maxLength={4000} placeholder="Lens family, aspect, lighting logic, palette, material treatment, rendering style…" onChange={(event) => updateBible('visualLanguage', event.target.value)} /></label>
+              <label><span>NON-NEGOTIABLE CONTINUITY</span><textarea value={bibleDraft?.invariants || ''} maxLength={4000} placeholder="Screen direction, proportions, scars, costume details, geography, damage state, time of day…" onChange={(event) => updateBible('invariants', event.target.value)} /></label>
+              <label><span>NEVER CHANGE OR INTRODUCE</span><textarea value={bibleDraft?.negativeRules || ''} maxLength={2000} placeholder="No logos, no costume changes, no unexplained props, no new characters…" onChange={(event) => updateBible('negativeRules', event.target.value)} /></label>
+            </div>
+            <div className="continuity-elements-head"><span>CANONICAL ELEMENTS</span><button className="secondary-button" onClick={addContinuityElement}><Plus size={12} /> Add element</button></div>
+            <div className="continuity-elements">{(bibleDraft?.elements || []).map((element) => <article className="continuity-element" key={element.id}>
+              <div className="continuity-element-top"><select value={element.kind} onChange={(event) => updateContinuityElement(element.id, { kind: event.target.value as ContinuityElement['kind'] })}><option value="character">Character</option><option value="location">Location</option><option value="prop">Prop</option><option value="wardrobe">Wardrobe</option><option value="vehicle">Vehicle</option><option value="style">Style</option></select><input value={element.name} maxLength={120} placeholder="Canonical name" onChange={(event) => updateContinuityElement(element.id, { name: event.target.value })} /><label className="continuity-lock"><input type="checkbox" checked={element.locked} onChange={(event) => updateContinuityElement(element.id, { locked: event.target.checked })} /><Lock size={12} /></label><button title="Remove element" onClick={() => updateBible('elements', (bibleDraft?.elements || []).filter((item) => item.id !== element.id))}><Trash2 size={13} /></button></div>
+              <textarea value={element.description} maxLength={2000} placeholder="Exact appearance, proportions, materials, colors, behavior, and details that must remain identical…" onChange={(event) => updateContinuityElement(element.id, { description: event.target.value })} />
+              <label className="continuity-reference"><span>PRIMARY REFERENCE</span><select value={element.referenceAssetIds[0] || ''} onChange={(event) => updateContinuityElement(element.id, { referenceAssetIds: event.target.value ? [event.target.value] : [] })}><option value="">Description only</option>{project.contextAssets.filter((asset) => ['image', 'scene3d'].includes(asset.kind)).map((asset) => <option key={asset.id} value={asset.id}>{asset.relativePath}</option>)}</select></label>
+            </article>)}</div>
+            {!bibleDraft?.elements.length && <div className="continuity-empty"><BookOpen size={23} /><b>No canonical elements yet</b><span>Add the recurring characters, places, props, wardrobe, vehicles, and style rules that future generations must remember.</span></div>}
+          </section>
+
+          <section className="continuity-card long-scene-card">
+            <div className="continuity-card-head"><span><Layers3 size={15} /> LONG-SCENE SEQUENCES</span><button onClick={createLongSceneDraft}><Plus size={12} /> New scene</button></div>
+            <div className="long-scene-tabs">{scenesDraft.map((scene) => <button key={scene.id} className={scene.id === selectedLongScene?.id ? 'selected' : ''} onClick={() => setSelectedLongSceneId(scene.id)}><span><b>{scene.title}</b><small>{scene.clips.length} clips · {scene.clips.reduce((total, clip) => total + clip.duration, 0)}s · {scene.status}</small></span><ChevronRight size={12} /></button>)}</div>
+            {selectedLongScene ? <div className="long-scene-editor">
+              <label><span>SCENE TITLE</span><input value={selectedLongScene.title} maxLength={160} onChange={(event) => updateLongScene(selectedLongScene.id, { title: event.target.value })} /></label>
+              <label><span>GLOBAL SCENE DIRECTION</span><textarea value={selectedLongScene.direction} maxLength={4000} placeholder="The dramatic objective, geography, camera strategy, time progression, and facts shared by every clip…" onChange={(event) => updateLongScene(selectedLongScene.id, { direction: event.target.value })} /></label>
+              <label><span>CANONICAL INGREDIENTS SHEET</span><select value={selectedLongScene.ingredientsAssetId || ''} onChange={(event) => updateLongScene(selectedLongScene.id, { ingredientsAssetId: event.target.value || null })}><option value="">Choose an image asset</option>{projectImages.map((asset) => <option value={asset.id} key={asset.id}>{asset.relativePath}</option>)}</select><small>The first clip and every new cut use this curated identity sheet. Continuous clips use the previous accepted ending as their exact start-frame handoff.</small></label>
+              <div className="long-scene-rule"><Lock size={14} /><span><b>Review-gated visual continuation</b><small>A continuous clip cannot be prepared until the previous clip is accepted. Acceptance extracts its final frame; the next clip receives that image as its real first-frame input.</small></span></div>
+              <div className="long-clip-list">{selectedLongScene.clips.map((clip, index) => {
+                const previous = index > 0 ? selectedLongScene.clips[index - 1] : null;
+                const blocked = clip.transition === 'continuous' && Boolean(previous && previous.status !== 'accepted');
+                return <article className={`long-clip ${clip.status}`} key={clip.id}>
+                  <div className="long-clip-number"><b>{String(index + 1).padStart(2, '0')}</b><span>{clip.status}</span></div>
+                  <div className="long-clip-fields"><div><input value={clip.title} maxLength={160} onChange={(event) => updateLongSceneClip(selectedLongScene.id, clip.id, { title: event.target.value })} /><select value={clip.transition} disabled={index === 0} onChange={(event) => updateLongSceneClip(selectedLongScene.id, clip.id, { transition: event.target.value as LongSceneClip['transition'] })}><option value="continuous">Continue previous</option><option value="cut">New cut</option></select><label><input type="number" min={5} max={20} value={clip.duration} onChange={(event) => updateLongSceneClip(selectedLongScene.id, clip.id, { duration: Number(event.target.value) })} /><span>sec</span></label></div><textarea value={clip.prompt} maxLength={4000} placeholder="What changes and happens during this clip? Keep permanent identity details in the Bible above." onChange={(event) => updateLongSceneClip(selectedLongScene.id, clip.id, { prompt: event.target.value })} />{clip.error && <p>{clip.error}</p>}{blocked && <small className="long-clip-blocked"><Lock size={11} /> Accept clip {index} before continuing.</small>}</div>
+                  <div className="long-clip-actions">{clip.video && <button title="Play clip" onClick={() => clip.video && onPlay(clip.video)}><Play size={13} /></button>}{clip.status === 'review' && <button title="Accept and memorize ending" onClick={() => void action('accept-continuity-clip', { sceneId: selectedLongScene.id, clipId: clip.id }, 'Clip accepted · ending anchor memorized').catch(() => undefined)}><Check size={13} /></button>}{['planned', 'prepared', 'review', 'failed'].includes(clip.status) && <button title={clip.status === 'review' ? 'Revise and regenerate in Create' : 'Prepare in Create'} disabled={blocked || !clip.prompt.trim() || !selectedLongScene.ingredientsAssetId || Boolean(pending)} onClick={() => void prepareContinuityClip(selectedLongScene.id, clip.id)}>{clip.status === 'review' ? <RefreshCw size={13} /> : <Zap size={13} />}</button>}{clip.status === 'planned' && <button title="Remove planned clip" onClick={() => updateLongScene(selectedLongScene.id, { clips: selectedLongScene.clips.filter((item) => item.id !== clip.id).map((item, itemIndex) => ({ ...item, order: itemIndex + 1 })) })}><Trash2 size={13} /></button>}</div>
+                </article>;
+              })}</div>
+              <button className="long-scene-add" onClick={() => addLongSceneClip(selectedLongScene.id)}><Plus size={14} /> Add another clip — sequence length is open-ended</button>
+            </div> : <div className="continuity-empty"><Layers3 size={25} /><b>No long scene planned</b><span>Create a scene, split it into manageable 5–20 second clips, then prepare and review them sequentially.</span><button className="secondary-button" onClick={createLongSceneDraft}><Plus size={13} /> Create first scene</button></div>}
+          </section>
+        </div>
+        <div className="continuity-limit-note"><CircleAlert size={14} /><span><b>Consistency can be extended indefinitely as a managed process, not guaranteed infinitely by the model.</b> The Bible, Ingredients sheet, accepted endings, and optional Blender backbone reduce drift. Review gates remain necessary, and exact camera/geometry continuity still requires Blender authority.</span></div>
+      </section> : <>
 
       <section className="project-stats">
         <div><small>INDEXED ASSETS</small><b>{project.counts.assets}</b></div><div><small>DISCOVERED SHOTS</small><b>{project.counts.shots}</b></div><div><small>LTX MAPPED</small><b>{project.counts.mapped}</b></div><div><small>REGEN QUEUE</small><b>{project.counts.queued + project.counts.generating}</b></div>
@@ -475,6 +674,7 @@ export default function ProjectWorkspace({ token, apiBase, refreshSeconds = 5, o
           </section>
         </aside>
       </section>
+      </>}
     </>}
   </div>;
 }

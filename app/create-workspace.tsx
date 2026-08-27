@@ -10,6 +10,7 @@ import {
   FileBox,
   FolderOpen,
   ImagePlus,
+  Layers3,
   LoaderCircle,
   Music2,
   PackageCheck,
@@ -61,6 +62,9 @@ type CreateDraft = {
   directorTransition: number;
   ingredientsReferencePath: string;
   ingredientsStrength: number;
+  continuityProjectId: string;
+  continuitySceneId: string;
+  continuityClipId: string;
   contextAssets: { id: string; name: string; kind: 'image' | 'video' | 'audio' | 'blend'; path: string; size: number }[];
 };
 
@@ -141,6 +145,9 @@ function withDirectorDefaults(draft: CreateDraft) {
     directorTransition: Number(draft.directorTransition) || 0.001,
     ingredientsReferencePath: draft.ingredientsReferencePath || '',
     ingredientsStrength: Number(draft.ingredientsStrength) || 1.3,
+    continuityProjectId: draft.continuityProjectId || '',
+    continuitySceneId: draft.continuitySceneId || '',
+    continuityClipId: draft.continuityClipId || '',
   };
 }
 
@@ -458,6 +465,8 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
       </div>
 
       {error && <div className="project-error"><CircleAlert size={15} /><span>{error}</span><button onClick={() => setError('')}>Dismiss</button></div>}
+
+      {draft.continuityProjectId && <div className="continuity-create-banner"><Layers3 size={15} /><span><b>Prepared from Project Continuity</b><small>This draft is linked to a long-scene clip. Its canonical project prompt and visual handoff—Ingredients sheet or accepted ending—will be revalidated server-side when queued.</small></span></div>}
 
       {active && <div className="create-active">
         <span className="create-active-icon"><LoaderCircle className="spinning" size={19} /></span>

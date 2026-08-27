@@ -41,6 +41,8 @@ The app runs entirely on your computer. It does not upload prompts, videos, logs
 - Visual multi-shot selection, acceptance state, context attachments, and persistent selective-regeneration queue
 - Live regeneration stage, progress percentage, elapsed time, and estimated remaining time in the Projects queue
 - First-class Blender/3D assets with one designated project backbone scene for shared cameras, blocking, and spatial continuity
+- Persistent **Continuity Bible** for reusable world, visual-language, invariant, negative, character, location, wardrobe, prop, vehicle, and style memory
+- Open-ended long-scene planner with review-gated 5–20 second clips, canonical Ingredients cuts, and accepted-ending first-frame handoffs for continuous clips
 
 ## Requirements
 
@@ -227,6 +229,14 @@ Open **Projects** to turn an output folder or edit folder into a persistent loca
 Project state lives in ignored `projects.state.json`; managed copies and uploads live under ignored `.ltx-watch-projects`. Reference imports store paths only and never move source files. The bridge serves previews and Explorer actions only after validating paths against registered project roots.
 
 Source-runner inspection returns scene names, slugs, and shot numbers only. It does not queue work, start ComfyUI, read prompt text, or make an assembled scene part of the unattended Studio queue. A regeneration starts only after the user explicitly submits a mapped shot from Projects and the normal worker/ComfyUI safety locks are clear.
+
+### Continuity Bible and long scenes
+
+Open **Projects → Continuity & long scenes** to create persistent local production memory. The Bible records the world, visual language, non-negotiable facts, negative rules, and reusable named elements with optional project-asset references. A long scene is an extensible list of reviewable 5–20 second clips rather than one fragile oversized generation.
+
+The first clip and every **New cut** use the scene’s canonical Ingredients sheet and Director timeline. Accepting a reviewed clip extracts and memorizes its final decoded frame. The next **Continue previous** clip uses that accepted ending as the official I2V workflow’s real first-frame input, while the bridge rebuilds the prompt from the latest Bible, scene direction, and clip action. A continuous clip stays locked until the previous clip is accepted.
+
+This process can be extended indefinitely, but model identity is not guaranteed mathematically. Review gates remain necessary, and Blender remains the authority when exact camera, geometry, scale, trajectory, collision, or deformation consistency matters. See [Project Continuity memory and long-scene workflow](docs/CONTINUITY_MEMORY.md) for the state contract, safety boundaries, limitations, and AI-maintainer update procedure.
 
 ### Blender production backbone
 

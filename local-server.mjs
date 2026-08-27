@@ -35,12 +35,16 @@ import {
 } from './lib/browser-playback.mjs';
 import {
   PROJECT_FILE_LIMIT,
+  buildContinuityPrompt,
+  buildContinuityDirectorSegments,
   buildProjectShots,
   classifyProjectAsset,
   createProjectsRecord,
   enqueueProjectShots,
   inferShotIdentity,
   mergeProjectPlanItems,
+  normalizeContinuityBible,
+  mergeLongSceneRuntimeState,
   normalizeProjectsRecord,
   projectAssetId,
   safeUploadRelativePath,
@@ -1290,6 +1294,28 @@ async function createVideo(filePath, config, title) {
   return studioVideo(filePath, config, title);
 }
 
+async function updateContinuityClipForCreateJob(job, status, extra = {}) {
+  const projectId = job?.options?.continuityProjectId;
+  const sceneId = job?.options?.continuitySceneId;
+  const clipId = job?.options?.continuityClipId;
+  if (!projectId || !sceneId || !clipId) return false;
+  const record = await getProjectsRecord();
+  const project = record.projects[projectId];
+  const scene = project?.longScenes?.find((item) => item.id === sceneId);
+  const clip = scene?.clips?.find((item) => item.id === clipId);
+  if (!project || !scene || !clip || (clip.createJobId && clip.createJobId !== job.id)) return false;
+  clip.createJobId = job.id;
+  clip.status = status;
+  clip.error = typeof extra.error === 'string' ? extra.error.slice(0, 1_000) : status === 'failed' ? 'The linked Create job failed.' : null;
+  if (typeof extra.outputPath === 'string') clip.outputPath = extra.outputPath;
+  clip.updatedAt = new Date().toISOString();
+  scene.status = scene.clips.every((item) => item.status === 'accepted') ? 'complete' : 'active';
+  scene.updatedAt = clip.updatedAt;
+  project.updatedAt = clip.updatedAt;
+  await writeProjectsRecord(record);
+  return true;
+}
+
 async function syncCreateJob(record, config) {
   const id = record.activeJobId;
   if (!id) return false;
@@ -1319,6 +1345,7 @@ async function syncCreateJob(record, config) {
     job.error = null;
     job.completedAt = result.completedAt || new Date().toISOString();
     record.activeJobId = null;
+    await updateContinuityClipForCreateJob(job, 'failed', { error: 'Create render canceled. Prepare or retry this continuity clip.' });
     return true;
   }
   if (result?.status === 'complete' && result?.kind === 'physics-backbone') {
@@ -1348,6 +1375,7 @@ async function syncCreateJob(record, config) {
       job.completedAt = result.completedAt || new Date().toISOString();
       job.cancelRequestedAt = null;
       record.activeJobId = null;
+      await updateContinuityClipForCreateJob(job, 'review', { outputPath: result.outputPath });
       return true;
     }
   }
@@ -1356,6 +1384,7 @@ async function syncCreateJob(record, config) {
   job.error = String(result?.error || 'The local Create runner ended without producing a reviewable video.').slice(0, 500);
   job.completedAt = result?.completedAt || new Date().toISOString();
   record.activeJobId = null;
+  await updateContinuityClipForCreateJob(job, 'failed', { error: job.error });
   return true;
 }
 
@@ -1512,6 +1541,7 @@ async function startCreateJob(record, job, config, backbone) {
     const startedAt = new Date().toISOString();
     Object.assign(job, { status: 'generating', stage: 'Starting local runner', progress: 1, pid: child.pid, jobPath, resultPath, startedAt, completedAt: null, cancelRequestedAt: null, error: null });
     record.activeJobId = job.id;
+    await updateContinuityClipForCreateJob(job, 'generating');
     child.unref();
   } finally {
     await logHandle.close();
@@ -1540,6 +1570,7 @@ async function maybeStartCreateJob(record, config) {
       job.stage = 'Failed before launch';
       job.error = error instanceof Error ? error.message.slice(0, 500) : 'Create job could not start.';
       job.completedAt = new Date().toISOString();
+      await updateContinuityClipForCreateJob(job, 'failed', { error: job.error });
     }
     return true;
   } finally {
@@ -1634,7 +1665,38 @@ async function controlCreate(body) {
     if (action === 'save-draft') {
       record.draft = cleanCreateDraft(body?.draft);
     } else if (action === 'enqueue') {
-      const options = normalizeCreateOptions(body?.draft);
+      let options = normalizeCreateOptions(body?.draft);
+      let continuityTarget = null;
+      if (options.continuityProjectId || options.continuitySceneId || options.continuityClipId) {
+        if (!options.continuityProjectId || !options.continuitySceneId || !options.continuityClipId) throw new Error('The prepared Project Continuity link is incomplete. Prepare the clip again from Projects.');
+        const projectsRecord = await getProjectsRecord();
+        const project = projectsRecord.projects[options.continuityProjectId];
+        const scene = project?.longScenes?.find((item) => item.id === options.continuitySceneId);
+        const clip = scene?.clips?.find((item) => item.id === options.continuityClipId);
+        const clipIndex = scene?.clips?.findIndex((item) => item.id === options.continuityClipId) ?? -1;
+        const previousClip = clipIndex > 0 ? scene.clips[clipIndex - 1] : null;
+        if (!project || !scene || !clip) throw new Error('The linked Project Continuity clip no longer exists. Prepare it again from Projects.');
+        if (clip.transition === 'continuous' && previousClip && previousClip.status !== 'accepted') throw new Error('Accept the previous continuity clip before queuing this continuation.');
+        const usesAcceptedAnchor = clip.transition === 'continuous' && Boolean(previousClip?.lastFramePath);
+        if (usesAcceptedAnchor) {
+          if (!clip.continuityAnchorPath || !isInside(clip.continuityAnchorPath, [CREATE_RUNTIME_ROOT]) || !existsSync(clip.continuityAnchorPath)) throw new Error('The prepared accepted-ending handoff is unavailable. Prepare this clip again from Projects.');
+        } else if (!clip.ingredientsReferencePath || !isInside(clip.ingredientsReferencePath, [CREATE_RUNTIME_ROOT]) || !existsSync(clip.ingredientsReferencePath)) {
+          throw new Error('The prepared canonical Ingredients sheet is unavailable. Prepare this clip again from Projects.');
+        }
+        options = {
+          ...options,
+          prompt: buildContinuityPrompt(project.continuityBible, scene, clip, previousClip),
+          duration: clip.duration,
+          useBlender: false,
+          directorMode: !usesAcceptedAnchor,
+          referenceMode: usesAcceptedAnchor ? 'first-frame' : 'text',
+          firstFramePath: usesAcceptedAnchor ? clip.continuityAnchorPath : '',
+          lastFramePath: '',
+          directorSegments: buildContinuityDirectorSegments(clip, Boolean(previousClip)),
+          ingredientsReferencePath: usesAcceptedAnchor ? '' : clip.ingredientsReferencePath,
+        };
+        continuityTarget = { projectsRecord, project, scene, clip };
+      }
       const relevantPrivatePaths = options.directorMode
         ? [options.soundtrackPath, options.ingredientsReferencePath]
         : [options.firstFramePath, options.lastFramePath, options.contextVideoPath, options.soundtrackPath, options.blenderUploadPath];
@@ -1673,8 +1735,17 @@ async function controlCreate(body) {
           error: null,
         };
         record.queue.push(id);
+        if (continuityTarget) {
+          continuityTarget.clip.status = 'queued';
+          continuityTarget.clip.createJobId = id;
+          continuityTarget.clip.error = null;
+          continuityTarget.clip.updatedAt = new Date().toISOString();
+          continuityTarget.scene.status = 'active';
+          continuityTarget.scene.updatedAt = continuityTarget.clip.updatedAt;
+        }
       }
       record.draft = { ...options, width: undefined, height: undefined, label: undefined };
+      if (continuityTarget) await writeProjectsRecord(continuityTarget.projectsRecord);
     } else if (action === 'toggle-queue') {
       record.queuePaused = body?.paused === true;
     } else if (action === 'move-first') {
@@ -1737,6 +1808,7 @@ async function controlCreate(body) {
       source.pid = null;
       source.promptId = null;
       source.cancelRequestedAt = null;
+      await updateContinuityClipForCreateJob(source, 'queued');
     } else if (action === 'upload-start') {
       const fileName = path.basename(String(body?.fileName || '')).replace(/[^a-zA-Z0-9._ -]/g, '_').slice(0, 180);
       const extension = path.extname(fileName).toLowerCase();
@@ -1950,6 +2022,15 @@ async function buildProjectsView(config, plan, record = null) {
     averageSeconds: activeProgress.averageSeconds,
   } : null;
   const queue = project.regenerationQueue.slice().reverse().map((item) => activeProgress?.queueId === item.id ? { ...item, ...queueProgress } : item);
+  const longScenes = [];
+  for (const scene of project.longScenes || []) {
+    const clips = [];
+    for (const clip of scene.clips || []) {
+      const video = clip.outputPath && isInside(clip.outputPath, [config.clipsDirectory]) ? await createVideo(clip.outputPath, config, clip.title) : null;
+      clips.push({ ...clip, video });
+    }
+    longScenes.push({ ...scene, clips });
+  }
   return {
     selectedProjectId: projectsRecord.selectedProjectId,
     projects: summaries,
@@ -1958,6 +2039,8 @@ async function buildProjectsView(config, plan, record = null) {
       assets,
       shots,
       contextAssets,
+      continuityBible: project.continuityBible,
+      longScenes,
       blenderAssets,
       blenderBackbone: blenderAssets.find((asset) => asset.id === project.blenderBackboneAssetId) || null,
       queue,
@@ -1969,6 +2052,8 @@ async function buildProjectsView(config, plan, record = null) {
         queued: project.regenerationQueue.filter((item) => item.status === 'queued').length,
         generating: project.regenerationQueue.filter((item) => item.status === 'generating').length,
         review: project.regenerationQueue.filter((item) => item.status === 'review').length,
+        continuityElements: project.continuityBible?.elements?.length || 0,
+        longSceneClips: longScenes.reduce((total, scene) => total + scene.clips.length, 0),
       },
     },
   };
@@ -2086,6 +2171,8 @@ async function controlProjects(body) {
         uploadRoot,
         blenderBackboneAssetId: null,
         contextAssetIds: [],
+        continuityBible: normalizeContinuityBible(null),
+        longScenes: [],
         shots: {},
         regenerationQueue: [],
         queuePaused: false,
@@ -2139,6 +2226,101 @@ async function controlProjects(body) {
     } else if (action === 'set-project-context') {
       const validAssets = new Set((view.project?.contextAssets || []).map((asset) => asset.id));
       project.contextAssetIds = [...new Set(Array.isArray(body?.assetIds) ? body.assetIds.map(String).filter((id) => validAssets.has(id)) : [])];
+    } else if (action === 'save-continuity-bible') {
+      const previousRevision = Math.max(1, Number(project.continuityBible?.revision) || 1);
+      project.continuityBible = {
+        ...normalizeContinuityBible(body?.bible),
+        revision: previousRevision + 1,
+        updatedAt: new Date().toISOString(),
+      };
+      const validAssets = new Set((view.project?.contextAssets || []).map((asset) => asset.id));
+      project.continuityBible.elements = project.continuityBible.elements.map((element) => ({
+        ...element,
+        referenceAssetIds: element.referenceAssetIds.filter((id) => validAssets.has(id)),
+      }));
+    } else if (action === 'save-long-scenes') {
+      const validImages = new Set((view.project?.assets || []).filter((asset) => asset.kind === 'image').map((asset) => asset.id));
+      project.longScenes = mergeLongSceneRuntimeState(body?.scenes, project.longScenes).map((scene) => ({
+        ...scene,
+        ingredientsAssetId: scene.ingredientsAssetId && validImages.has(scene.ingredientsAssetId) ? scene.ingredientsAssetId : null,
+        updatedAt: new Date().toISOString(),
+      }));
+    } else if (action === 'prepare-continuity-clip') {
+      const scene = (project.longScenes || []).find((item) => item.id === String(body?.sceneId || ''));
+      const clip = scene?.clips.find((item) => item.id === String(body?.clipId || ''));
+      if (!scene || !clip) throw new Error('Select a saved long-scene clip first.');
+      if (!clip.prompt) throw new Error('Describe what happens in this clip before preparing it.');
+      const clipIndex = scene.clips.findIndex((item) => item.id === clip.id);
+      const previousClip = clipIndex > 0 ? scene.clips[clipIndex - 1] : null;
+      if (clip.transition === 'continuous' && previousClip && previousClip.status !== 'accepted') throw new Error('Accept the previous clip before preparing a continuous continuation.');
+      const ingredient = (view.project?.assets || []).find((asset) => asset.id === scene.ingredientsAssetId && asset.kind === 'image');
+      if (!ingredient || !isInside(ingredient.fullPath, [project.rootPath, project.uploadRoot]) || !existsSync(ingredient.fullPath)) throw new Error('Choose an image asset as this scene’s canonical Ingredients reference sheet.');
+      const destinationRoot = path.join(CREATE_RUNTIME_ROOT, 'uploads');
+      await mkdir(destinationRoot, { recursive: true });
+      const extension = path.extname(ingredient.fullPath).toLowerCase();
+      const uploadId = randomBytes(18).toString('hex');
+      const destinationPath = path.join(destinationRoot, `${uploadId}${extension}`);
+      await copyFile(ingredient.fullPath, destinationPath);
+      const usesAcceptedAnchor = clip.transition === 'continuous' && Boolean(previousClip?.lastFramePath);
+      let continuityAnchorPath = null;
+      let continuityAnchorAsset = null;
+      if (usesAcceptedAnchor) {
+        if (!isInside(previousClip.lastFramePath, [project.uploadRoot]) || !existsSync(previousClip.lastFramePath)) throw new Error('The previous accepted ending anchor is unavailable. Accept that clip again before continuing.');
+        const anchorExtension = path.extname(previousClip.lastFramePath).toLowerCase();
+        continuityAnchorPath = path.join(destinationRoot, `${randomBytes(18).toString('hex')}${anchorExtension}`);
+        await copyFile(previousClip.lastFramePath, continuityAnchorPath);
+        const anchorInfo = await stat(continuityAnchorPath);
+        continuityAnchorAsset = { id: randomBytes(18).toString('hex'), name: `${previousClip.title} · accepted ending`, kind: 'image', path: continuityAnchorPath, size: anchorInfo.size };
+      }
+      const createRecord = await getCreateRecord();
+      const prompt = buildContinuityPrompt(project.continuityBible, scene, clip, previousClip);
+      const contextAsset = { id: uploadId, name: ingredient.name, kind: 'image', path: destinationPath, size: ingredient.size };
+      createRecord.draft = cleanCreateDraft({
+        ...createRecord.draft,
+        title: `${scene.title} · ${clip.title}`,
+        prompt,
+        avoid: '',
+        duration: clip.duration,
+        variations: 1,
+        promptEnhance: false,
+        useBlender: false,
+        blenderMode: 'anchors',
+        referenceMode: usesAcceptedAnchor ? 'first-frame' : 'text',
+        firstFramePath: continuityAnchorPath || '',
+        lastFramePath: '',
+        directorMode: !usesAcceptedAnchor,
+        directorSegments: buildContinuityDirectorSegments(clip, Boolean(previousClip)),
+        ingredientsReferencePath: usesAcceptedAnchor ? '' : destinationPath,
+        continuityProjectId: project.id,
+        continuitySceneId: scene.id,
+        continuityClipId: clip.id,
+        contextAssets: [continuityAnchorAsset, contextAsset, ...(createRecord.draft.contextAssets || []).filter((asset) => ![destinationPath, continuityAnchorPath].includes(asset.path))].filter(Boolean),
+      });
+      clip.status = 'prepared';
+      clip.ingredientsReferencePath = destinationPath;
+      clip.continuityAnchorPath = continuityAnchorPath;
+      clip.error = null;
+      clip.updatedAt = new Date().toISOString();
+      scene.status = 'active';
+      await writeCreateRecord(createRecord);
+    } else if (action === 'accept-continuity-clip') {
+      const scene = (project.longScenes || []).find((item) => item.id === String(body?.sceneId || ''));
+      const clip = scene?.clips.find((item) => item.id === String(body?.clipId || ''));
+      if (!scene || !clip || clip.status !== 'review' || !clip.outputPath) throw new Error('Only a rendered long-scene clip awaiting review can be accepted.');
+      if (!isInside(clip.outputPath, [config.clipsDirectory]) || !VIDEO_EXTENSIONS.has(path.extname(clip.outputPath).toLowerCase()) || !existsSync(clip.outputPath)) throw new Error('The rendered continuity clip is unavailable.');
+      const anchorRoot = path.join(project.uploadRoot, 'continuity', scene.id);
+      await mkdir(anchorRoot, { recursive: true });
+      const anchorPath = path.join(anchorRoot, `${clip.id}-last.png`);
+      const ffmpeg = findPlaybackFfmpeg(config);
+      await rm(anchorPath, { force: true });
+      await execFileAsync(ffmpeg, ['-y', '-sseof', '-0.08', '-i', clip.outputPath, '-frames:v', '1', anchorPath], { timeout: 300_000, maxBuffer: 2_000_000 });
+      const anchorInfo = await stat(anchorPath).catch(() => null);
+      if (!anchorInfo?.isFile() || anchorInfo.size < 1_000) throw new Error('The clip was preserved, but its final continuity anchor could not be extracted.');
+      clip.status = 'accepted';
+      clip.lastFramePath = anchorPath;
+      clip.acceptedAt = new Date().toISOString();
+      clip.updatedAt = clip.acceptedAt;
+      if (scene.clips.every((item) => item.status === 'accepted')) scene.status = 'complete';
     } else if (action === 'toggle-queue') {
       project.queuePaused = Boolean(body?.paused);
     } else if (action === 'remove-queued') {

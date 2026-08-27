@@ -88,6 +88,19 @@ test('Director mode normalizes a bounded Prompt Relay timeline and requires an I
   assert.throws(() => normalizeCreateOptions({ ...draft, useBlender: true }), /cannot be combined/i);
 });
 
+test('Project Continuity identity links are sanitized and retained in Create options', () => {
+  const options = normalizeCreateOptions({
+    ...createDefaultDraft(),
+    prompt: 'Continue the scene.',
+    continuityProjectId: 'project-safe<script>',
+    continuitySceneId: 'scene-01/escape',
+    continuityClipId: 'clip_002?',
+  });
+  assert.equal(options.continuityProjectId, 'project-safescript');
+  assert.equal(options.continuitySceneId, 'scene-01escape');
+  assert.equal(options.continuityClipId, 'clip_002');
+});
+
 test('fixed variation seeds are deterministic and sequential', () => {
   const options = normalizeCreateOptions({ ...createDefaultDraft(), prompt: 'A quiet lake.', seedMode: 'fixed', seed: 99, variations: 4 });
   assert.deepEqual(createJobSeeds(options), [99, 100, 101, 102]);
