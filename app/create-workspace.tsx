@@ -56,6 +56,11 @@ type CreateDraft = {
   blenderUploadPath: string;
   blenderFirstFrame: number;
   blenderLastFrame: number;
+  directorMode: boolean;
+  directorSegments: { id: string; duration: number; prompt: string }[];
+  directorTransition: number;
+  ingredientsReferencePath: string;
+  ingredientsStrength: number;
   contextAssets: { id: string; name: string; kind: 'image' | 'video' | 'audio' | 'blend'; path: string; size: number }[];
 };
 
@@ -92,6 +97,14 @@ type CreateView = {
   draft: CreateDraft;
   resolutions: { id: string; width: number; height: number; label: string }[];
   templates: { text: boolean; firstFrame: boolean; firstLast: boolean };
+  director?: {
+    ready: boolean;
+    promptRelayInstalled: boolean;
+    workflowInstalled: boolean;
+    ingredientsModelInstalled: boolean;
+    blockedReason: string | null;
+    links: { technique: string; promptRelay: string; workflow: string; ingredients: string };
+  };
   physics: {
     schemaVersion: number;
     preparationReady: boolean;
@@ -115,6 +128,21 @@ type Props = {
 };
 
 const CHUNK_SIZE = 4 * 1024 * 1024;
+const DEFAULT_DIRECTOR_SEGMENTS = [
+  { id: 'segment-1', duration: 2, prompt: 'Hold the opening composition steady and clearly establish the subject.' },
+  { id: 'segment-2', duration: 3, prompt: 'Begin the main action smoothly while preserving the same subject, wardrobe, environment, and screen direction.' },
+];
+
+function withDirectorDefaults(draft: CreateDraft) {
+  return {
+    ...draft,
+    directorMode: draft.directorMode === true,
+    directorSegments: Array.isArray(draft.directorSegments) && draft.directorSegments.length ? draft.directorSegments : DEFAULT_DIRECTOR_SEGMENTS,
+    directorTransition: Number(draft.directorTransition) || 0.001,
+    ingredientsReferencePath: draft.ingredientsReferencePath || '',
+    ingredientsStrength: Number(draft.ingredientsStrength) || 1.3,
+  };
+}
 
 function when(value: string | null) {
   if (!value) return 'Waiting';
@@ -137,7 +165,7 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
       if (!response.ok) throw new Error(payload.error || 'Create workspace could not refresh');
       setView(payload as CreateView);
       if (!initialized.current) {
-        setDraft((payload as CreateView).draft);
+        setDraft(withDirectorDefaults((payload as CreateView).draft));
         initialized.current = true;
       }
       setError('');
@@ -194,6 +222,7 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
           motion: 'subtle',
           variations: 1,
           promptEnhance: false,
+          directorMode: false,
         };
       }
       if (mode === 'blender-anchors') {
@@ -202,13 +231,45 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
           useBlender: true,
           blenderMode: 'anchors',
           referenceMode: current.referenceMode === 'first-last' ? 'first-last' : 'first-frame',
+          directorMode: false,
         };
       }
-      return { ...current, useBlender: false, blenderMode: 'anchors', referenceMode: mode };
+      return { ...current, useBlender: false, blenderMode: 'anchors', referenceMode: mode, directorMode: mode === 'text' ? current.directorMode : false };
     });
   }
 
-  async function uploadContext(files: File[], field?: 'firstFramePath' | 'lastFramePath') {
+  function toggleDirector(enabled: boolean) {
+    setDraft((current) => current ? {
+      ...current,
+      directorMode: enabled,
+      useBlender: enabled ? false : current.useBlender,
+      blenderMode: enabled ? 'anchors' : current.blenderMode,
+      referenceMode: enabled ? 'text' : current.referenceMode,
+      promptEnhance: enabled ? false : current.promptEnhance,
+      variations: enabled ? 1 : current.variations,
+    } : current);
+  }
+
+  function updateDirectorSegment(id: string, field: 'duration' | 'prompt', value: number | string) {
+    setDraft((current) => current ? {
+      ...current,
+      directorSegments: current.directorSegments.map((segment) => segment.id === id ? { ...segment, [field]: value } : segment),
+    } : current);
+  }
+
+  function addDirectorSegment() {
+    setDraft((current) => {
+      if (!current || current.directorSegments.length >= 8) return current;
+      const nextIndex = current.directorSegments.length + 1;
+      return { ...current, directorSegments: [...current.directorSegments, { id: `segment-${Date.now()}-${nextIndex}`, duration: 2, prompt: '' }] };
+    });
+  }
+
+  function removeDirectorSegment(id: string) {
+    setDraft((current) => current && current.directorSegments.length > 2 ? { ...current, directorSegments: current.directorSegments.filter((segment) => segment.id !== id) } : current);
+  }
+
+  async function uploadContext(files: File[], field?: 'firstFramePath' | 'lastFramePath' | 'ingredientsReferencePath') {
     if (!token || pending) return;
     const selectedFiles = files.slice(0, field ? 1 : 12);
     setPending(field || 'context-upload');
@@ -245,18 +306,26 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
           const next = { ...current, contextAssets: [...current.contextAssets.filter((item) => item.id !== asset.id), asset] };
           if (field) {
             next[field] = uploaded.path;
-            next.contextVideoPath = '';
-            next.useBlender = false;
-            next.blenderMode = 'anchors';
-            next.referenceMode = field === 'lastFramePath' ? 'first-last' : current.referenceMode === 'text' ? 'first-frame' : current.referenceMode;
+            if (field !== 'ingredientsReferencePath') {
+              next.contextVideoPath = '';
+              next.useBlender = false;
+              next.blenderMode = 'anchors';
+              next.directorMode = false;
+              next.referenceMode = field === 'lastFramePath' ? 'first-last' : current.referenceMode === 'text' ? 'first-frame' : current.referenceMode;
+            }
           } else if (uploaded.kind === 'image') {
-            next.useBlender = false;
-            next.blenderMode = 'anchors';
-            next.contextVideoPath = '';
-            if (!current.firstFramePath) {
+            if (current.directorMode && !current.ingredientsReferencePath) {
+              next.ingredientsReferencePath = uploaded.path;
+            } else if (!current.firstFramePath) {
+              next.useBlender = false;
+              next.blenderMode = 'anchors';
+              next.contextVideoPath = '';
               next.firstFramePath = uploaded.path;
               next.referenceMode = 'first-frame';
             } else {
+              next.useBlender = false;
+              next.blenderMode = 'anchors';
+              next.contextVideoPath = '';
               next.lastFramePath = uploaded.path;
               next.referenceMode = 'first-last';
             }
@@ -299,6 +368,7 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
       contextVideoPath: current.contextVideoPath === asset.path ? '' : current.contextVideoPath,
       soundtrackPath: current.soundtrackPath === asset.path ? '' : current.soundtrackPath,
       blenderUploadPath: current.blenderUploadPath === asset.path ? '' : current.blenderUploadPath,
+      ingredientsReferencePath: current.ingredientsReferencePath === asset.path ? '' : current.ingredientsReferencePath,
       audio: current.soundtrackPath === asset.path ? 'generate' : current.audio,
       useBlender: current.blenderUploadPath === asset.path ? false : current.useBlender,
       blenderMode: current.blenderUploadPath === asset.path ? 'anchors' : current.blenderMode,
@@ -332,13 +402,32 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
   const completed = useMemo(() => view?.jobs.filter((job) => job.status === 'complete') || [], [view]);
   const packages = useMemo(() => view?.jobs.filter((job) => job.status === 'backbone-ready') || [], [view]);
   const strictPhysics = Boolean(draft?.useBlender && draft.blenderMode === 'physics');
-  const referenceReady = draft?.useBlender
+  const directorCapability = view?.director || {
+    ready: false,
+    promptRelayInstalled: false,
+    workflowInstalled: false,
+    ingredientsModelInstalled: false,
+    blockedReason: 'Restart this branch’s local bridge to load Director capability checks.',
+    links: {
+      technique: 'https://www.youtube.com/watch?v=nJgP9eM64tc',
+      promptRelay: 'https://github.com/kijai/ComfyUI-PromptRelay',
+      workflow: 'https://github.com/Lightricks/ComfyUI-LTXVideo/tree/main/example_workflows/2.5',
+      ingredients: 'https://huggingface.co/Lightricks/LTX-2.3-22b-IC-LoRA-Ingredients',
+    },
+  };
+  const directorDuration = draft?.directorSegments.reduce((total, segment) => total + Number(segment.duration || 0), 0) || 0;
+  const directorSegmentsReady = Boolean(draft?.directorSegments.length && draft.directorSegments.length >= 2 && draft.directorSegments.every((segment) => segment.prompt.trim() && segment.duration >= 1 && segment.duration <= 10) && directorDuration >= 3 && directorDuration <= 20);
+  const referenceReady = draft?.directorMode
+    ? Boolean(draft.ingredientsReferencePath)
+    : draft?.useBlender
     ? Boolean(view?.blender.installed && (draft.blenderProjectId || draft.blenderUploadPath))
     : draft?.referenceMode === 'text' || Boolean((draft?.firstFramePath || draft?.contextVideoPath) && (draft.referenceMode !== 'first-last' || draft.lastFramePath || draft.contextVideoPath));
-  const templateReady = strictPhysics ? view?.physics?.preparationReady : draft?.referenceMode === 'text' ? view?.templates.text : draft?.referenceMode === 'first-last' ? view?.templates.firstLast : view?.templates.firstFrame;
-  const enqueueReady = Boolean(draft?.prompt.trim() && referenceReady && templateReady && !pending);
-  const readyNow = strictPhysics ? Boolean(view?.physics?.canPrepare) : Boolean(view?.canStart);
-  const readinessMessage = strictPhysics
+  const templateReady = draft?.directorMode ? directorCapability.ready : strictPhysics ? view?.physics?.preparationReady : draft?.referenceMode === 'text' ? view?.templates.text : draft?.referenceMode === 'first-last' ? view?.templates.firstLast : view?.templates.firstFrame;
+  const enqueueReady = Boolean(draft?.prompt.trim() && referenceReady && templateReady && (!draft.directorMode || directorSegmentsReady) && !pending);
+  const readyNow = draft?.directorMode ? Boolean(directorCapability.ready && view?.canStart) : strictPhysics ? Boolean(view?.physics?.canPrepare) : Boolean(view?.canStart);
+  const readinessMessage = draft?.directorMode
+    ? directorCapability.ready ? view?.canStart ? 'Director timeline and Ingredients workflow are ready' : view?.blockedReason || 'Waiting safely for the local generation adapter' : directorCapability.blockedReason || 'Checking Director dependencies'
+    : strictPhysics
     ? active || (!view?.physics?.canPrepare && view?.blockedReason && !view.blockedReason.includes('official ComfyUI'))
       ? view?.blockedReason || 'Waiting for the shared local generation lock.'
       : view?.physics?.preparationReady
@@ -347,6 +436,7 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
     : view?.canStart ? 'Official local LTX 2.5 workflow is available' : view?.blockedReason || 'Checking local adapter';
 
   function contextRole(asset: CreateDraft['contextAssets'][number]) {
+    if (draft.ingredientsReferencePath === asset.path) return 'Ingredients reference sheet';
     if (draft.firstFramePath === asset.path) return 'First frame';
     if (draft.lastFramePath === asset.path) return 'Last frame';
     if (draft.contextVideoPath === asset.path) return 'Video anchors';
@@ -360,7 +450,7 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
   return (
     <section className="create-workspace" id="create">
       <div className="create-heading">
-        <div><p className="kicker">LOCAL TEXT-TO-VIDEO LAB</p><h2>Imagine it. Queue it. Render it.</h2><p>Use LTX creatively, or make Blender the sole authority for physically correct camera and object motion.</p></div>
+        <div><p className="kicker">LOCAL TEXT-TO-VIDEO LAB</p><h2>Imagine it. Direct it. Render it.</h2><p>Use timed Prompt Relay direction, create freely with LTX, or make Blender the authority for camera and object motion.</p></div>
         <div className={`studio-readiness ${readyNow ? 'ready' : ''}`}>
           {readyNow ? strictPhysics ? <PackageCheck size={17} /> : <WandSparkles size={17} /> : active ? <LoaderCircle className="spinning" size={17} /> : <Clock3 size={17} />}
           <span><small>{active ? active.kind === 'physics-backbone' ? 'ANIMATION EVALUATING' : 'CREATE RENDERING' : readyNow ? strictPhysics ? 'BACKBONE PREP READY' : 'CREATE READY' : view.queued ? `${view.queued} WAITING` : 'SAFE WAIT'}</small><b>{readinessMessage}</b></span>
@@ -382,10 +472,40 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
             <div className="create-card-head"><span><Sparkles size={14} /> STORY & DIRECTION</span><small>{draft.prompt.length}/8000</small></div>
             <div className="create-fields">
               <label><span>PROJECT TITLE <small>optional</small></span><input value={draft.title} maxLength={120} placeholder="Neon harbor arrival" onChange={(event) => update('title', event.target.value)} /></label>
-              <label><span>WHAT SHOULD HAPPEN?</span><textarea value={draft.prompt} maxLength={8000} placeholder="A lone astronaut walks through a flooded greenhouse at sunrise…" onChange={(event) => update('prompt', event.target.value)} /></label>
+              <label><span>{draft.directorMode ? 'GLOBAL CONTINUITY PROMPT' : 'WHAT SHOULD HAPPEN?'}</span><textarea value={draft.prompt} maxLength={8000} placeholder={draft.directorMode ? 'Describe the subject, wardrobe, environment, lighting, lens, and style that must persist through every segment…' : 'A lone astronaut walks through a flooded greenhouse at sunrise…'} onChange={(event) => update('prompt', event.target.value)} /></label>
               <label><span>AVOID <small>production constraints, not spoken dialogue</small></span><textarea className="compact" value={draft.avoid} maxLength={1000} placeholder="logos, captions, deformed hands, camera shake…" onChange={(event) => update('avoid', event.target.value)} /></label>
-              <label className="create-check"><input type="checkbox" checked={draft.promptEnhance} disabled={strictPhysics} onChange={(event) => update('promptEnhance', event.target.checked)} /><span><b>Enhance prompt locally</b><small>{strictPhysics ? 'Disabled while preparing structural passes; the prompt is retained as future appearance intent.' : 'Uses the dedicated Gemma e2b-it enhancer and adds startup time. Leave off when you want the most literal wording.'}</small></span></label>
+              <label className="create-check"><input type="checkbox" checked={draft.promptEnhance} disabled={strictPhysics || draft.directorMode} onChange={(event) => update('promptEnhance', event.target.checked)} /><span><b>Enhance prompt locally</b><small>{draft.directorMode ? 'Director keeps your global and timed prompts literal; enhancement is disabled.' : strictPhysics ? 'Disabled while preparing structural passes; the prompt is retained as future appearance intent.' : 'Uses the dedicated Gemma e2b-it enhancer and adds startup time. Leave off when you want the most literal wording.'}</small></span></label>
             </div>
+          </div>
+
+          <div className={`create-card director-card ${draft.directorMode ? 'enabled' : ''}`}>
+            <div className="create-card-head"><span><Clock3 size={14} /> DIRECTOR TIMELINE</span><small>Prompt Relay + Ingredients</small></div>
+            <div className="director-intro">
+              <label className="create-check"><input type="checkbox" checked={draft.directorMode} onChange={(event) => toggleDirector(event.target.checked)} /><span><b>Direct actions on a timed sequence</b><small>A persistent global prompt anchors continuity while each segment tells LTX what changes during that time span.</small></span></label>
+              <div className={`director-capability ${directorCapability.ready ? 'ready' : ''}`}>
+                <div><b>{directorCapability.ready ? 'Director runtime ready' : 'Director setup required'}</b><small>{directorCapability.blockedReason || 'Public Prompt Relay and the official LTX Ingredients workflow are detected.'}</small></div>
+                <div className="director-checks"><span className={directorCapability.promptRelayInstalled ? 'ready' : ''}>{directorCapability.promptRelayInstalled ? <Check size={11} /> : <CircleAlert size={11} />} Prompt Relay</span><span className={directorCapability.workflowInstalled ? 'ready' : ''}>{directorCapability.workflowInstalled ? <Check size={11} /> : <CircleAlert size={11} />} Official workflow</span><span className={directorCapability.ingredientsModelInstalled ? 'ready' : ''}>{directorCapability.ingredientsModelInstalled ? <Check size={11} /> : <CircleAlert size={11} />} Ingredients model</span></div>
+                {!directorCapability.ready && <div className="director-links"><a href={directorCapability.links.promptRelay} target="_blank" rel="noreferrer">Get Prompt Relay</a><a href={directorCapability.links.workflow} target="_blank" rel="noreferrer">Get workflow</a><a href={directorCapability.links.ingredients} target="_blank" rel="noreferrer">Get model</a></div>}
+              </div>
+            </div>
+            {draft.directorMode && <div className="director-editor">
+              <div className="director-guide"><Sparkles size={15} /><span><b>Keep identity global; keep actions local</b><small>Start with a stable establishing segment, allow at least 2 seconds for complex action, and avoid abrupt contradictions between neighboring segments. This guides temporal attention; it is not frame-level animation control.</small></span></div>
+              <label className={`director-sheet ${draft.ingredientsReferencePath ? 'uploaded' : ''}`}><input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void uploadContext([file], 'ingredientsReferencePath'); }} /><ImagePlus size={18} /><span><b>{pending === 'ingredientsReferencePath' ? 'Uploading reference sheet…' : draft.ingredientsReferencePath ? 'Ingredients reference sheet ready' : 'Upload Ingredients reference sheet'}</b><small>Place only the important character, wardrobe, prop, or location references side by side. This sheet guides every frame; it does not become frame one.</small></span></label>
+              <div className="director-segment-head"><span>TIMED ACTION SEGMENTS</span><small>{directorDuration}s total · {draft.directorSegments.length}/8 segments</small></div>
+              <div className="director-segments">{draft.directorSegments.map((segment, index) => {
+                const start = draft.directorSegments.slice(0, index).reduce((total, item) => total + Number(item.duration || 0), 0);
+                const end = start + Number(segment.duration || 0);
+                return <div className="director-segment" key={segment.id}>
+                  <div className="director-segment-time"><b>{String(index + 1).padStart(2, '0')}</b><span>{start}s → {end}s</span></div>
+                  <label><span>ACTION DURING THIS SEGMENT</span><textarea value={segment.prompt} maxLength={2000} placeholder={index === 0 ? 'The subject holds still while the composition is established…' : 'The subject turns left and walks toward the doorway…'} onChange={(event) => updateDirectorSegment(segment.id, 'prompt', event.target.value)} /></label>
+                  <label className="director-duration"><span>SECONDS</span><input type="number" min={1} max={10} step={1} value={segment.duration} onChange={(event) => updateDirectorSegment(segment.id, 'duration', Number(event.target.value))} /></label>
+                  <button className="director-remove" title="Remove segment" disabled={draft.directorSegments.length <= 2} onClick={() => removeDirectorSegment(segment.id)}><Trash2 size={13} /></button>
+                </div>;
+              })}</div>
+              <div className="director-add-row"><button className="secondary-button" disabled={draft.directorSegments.length >= 8} onClick={addDirectorSegment}><Plus size={13} /> Add segment</button><span className={directorSegmentsReady ? 'ready' : ''}>{directorSegmentsReady ? <Check size={12} /> : <CircleAlert size={12} />} Timeline must total 3–20 seconds; each segment must be 1–10 seconds.</span></div>
+              <div className="director-settings"><label><span>INGREDIENTS STRENGTH</span><input type="number" min={0.1} max={2} step={0.1} value={draft.ingredientsStrength} onChange={(event) => update('ingredientsStrength', Number(event.target.value))} /></label><label><span>TRANSITION EPSILON</span><input type="number" min={0.000001} max={0.99} step={0.0001} value={draft.directorTransition} onChange={(event) => update('directorTransition', Number(event.target.value))} /></label></div>
+              <div className="create-context-note"><CircleAlert size={13} /><span>The official Ingredients workflow follows the reference sheet’s aspect ratio and uses a 544 px short edge. The standard resolution selector below is retained in the draft but is not applied to Director renders yet.</span></div>
+            </div>}
           </div>
 
           <div className="create-card create-context-card">
@@ -407,10 +527,10 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
           <div className="create-card">
             <div className="create-card-head"><span><Film size={14} /> FORMAT</span><small>One local video per variation</small></div>
             <div className="create-option-grid">
-              <label><span>RESOLUTION</span><select value={draft.resolution} onChange={(event) => update('resolution', event.target.value)}>{view.resolutions.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
-              <label><span>DURATION</span><select value={draft.duration} disabled={strictPhysics} onChange={(event) => update('duration', Number(event.target.value))}>{[3, 5, 8, 10, 12, 15, 20].map((value) => <option key={value} value={value}>{value} seconds</option>)}</select></label>
+              <label><span>RESOLUTION</span><select value={draft.resolution} disabled={draft.directorMode} onChange={(event) => update('resolution', event.target.value)}>{view.resolutions.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
+              <label><span>DURATION</span>{draft.directorMode ? <input value={`${directorDuration} seconds from timeline`} disabled readOnly /> : <select value={draft.duration} disabled={strictPhysics} onChange={(event) => update('duration', Number(event.target.value))}>{[3, 5, 8, 10, 12, 15, 20].map((value) => <option key={value} value={value}>{value} seconds</option>)}</select>}</label>
               <label><span>FRAME RATE</span><select value={draft.frameRate} onChange={(event) => update('frameRate', Number(event.target.value))}>{[16, 24, 25, 30].map((value) => <option key={value} value={value}>{value} fps</option>)}</select></label>
-              <label><span>VARIATIONS</span><select value={strictPhysics ? 1 : draft.variations} disabled={strictPhysics} onChange={(event) => update('variations', Number(event.target.value))}>{[1, 2, 3, 4].map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
+              <label><span>VARIATIONS</span><select value={strictPhysics || draft.directorMode ? 1 : draft.variations} disabled={strictPhysics || draft.directorMode} onChange={(event) => update('variations', Number(event.target.value))}>{[1, 2, 3, 4].map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
               <label><span>SEED</span><select value={draft.seedMode} onChange={(event) => update('seedMode', event.target.value as CreateDraft['seedMode'])}><option value="random">Random each batch</option><option value="fixed">Fixed / repeatable</option></select></label>
               <label><span>SEED VALUE</span><input type="number" min={0} max={2147483647} disabled={draft.seedMode !== 'fixed'} value={draft.seed} onChange={(event) => update('seed', Number(event.target.value))} /></label>
             </div>
@@ -452,8 +572,8 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
           </div>
 
           <div className="create-submit">
-            <div><b>{strictPhysics ? 'One versioned Blender animation backbone will join the private queue' : `${draft.variations} ${draft.variations === 1 ? 'video' : 'variations'} will join the private Create queue`}</b><span>{draft.resolution} · {strictPhysics ? `frames ${draft.blenderFirstFrame}–${draft.blenderLastFrame}` : `${draft.duration}s`} · {draft.frameRate} fps · {strictPhysics ? 'Full Blender animation owns motion' : draft.useBlender ? 'Blender frame anchors' : draft.referenceMode}</span></div>
-            <div className="create-submit-actions"><button className="secondary-button" disabled={Boolean(pending)} onClick={() => void action('save-draft', { draft }, 'Create draft saved locally')}>Save draft</button><button className="project-primary" disabled={!enqueueReady} onClick={() => void action('enqueue', { draft }, strictPhysics ? 'Blender animation backbone queued safely' : `${draft.variations} Create ${draft.variations === 1 ? 'job' : 'jobs'} queued safely`)}>{pending === 'enqueue' ? <LoaderCircle className="spinning" size={15} /> : strictPhysics ? <PackageCheck size={15} /> : <Plus size={15} />} {strictPhysics ? 'Prepare animation backbone' : 'Queue creation'}</button></div>
+            <div><b>{draft.directorMode ? 'One timed Director render will join the private queue' : strictPhysics ? 'One versioned Blender animation backbone will join the private queue' : `${draft.variations} ${draft.variations === 1 ? 'video' : 'variations'} will join the private Create queue`}</b><span>{draft.directorMode ? 'Ingredients aspect' : draft.resolution} · {draft.directorMode ? `${directorDuration}s in ${draft.directorSegments.length} segments` : strictPhysics ? `frames ${draft.blenderFirstFrame}–${draft.blenderLastFrame}` : `${draft.duration}s`} · {draft.frameRate} fps · {draft.directorMode ? 'Prompt Relay Director' : strictPhysics ? 'Full Blender animation owns motion' : draft.useBlender ? 'Blender frame anchors' : draft.referenceMode}</span></div>
+            <div className="create-submit-actions"><button className="secondary-button" disabled={Boolean(pending)} onClick={() => void action('save-draft', { draft }, 'Create draft saved locally')}>Save draft</button><button className="project-primary" disabled={!enqueueReady} onClick={() => void action('enqueue', { draft }, draft.directorMode ? 'Director timeline queued safely' : strictPhysics ? 'Blender animation backbone queued safely' : `${draft.variations} Create ${draft.variations === 1 ? 'job' : 'jobs'} queued safely`)}>{pending === 'enqueue' ? <LoaderCircle className="spinning" size={15} /> : strictPhysics ? <PackageCheck size={15} /> : <Plus size={15} />} {draft.directorMode ? 'Queue Director render' : strictPhysics ? 'Prepare animation backbone' : 'Queue creation'}</button></div>
           </div>
         </div>
 
@@ -469,7 +589,7 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
               {!view.jobs.some((job) => !['complete', 'backbone-ready'].includes(job.status)) && <div className="project-empty-small"><Check size={20} /><b>Queue is clear</b><span>New video and backbone jobs appear here.</span></div>}
             </div>
           </div>
-          <div className="create-card create-safety-card"><div className="create-card-head"><span><Box size={14} /> LOCAL SAFETY</span></div><ul><li>Uses official local ComfyUI workflows.</li><li>Never launches beside Studio, the album worker, or an occupied port.</li><li>Prompts and job files stay in git-ignored local state.</li><li>Blender renders a working copy of the master scene.</li><li>Animation-backbone mode will not claim LTX refinement until every structural pass has a verified 2.5 consumer.</li></ul></div>
+          <div className="create-card create-safety-card"><div className="create-card-head"><span><Box size={14} /> LOCAL SAFETY</span></div><ul><li>Uses official local ComfyUI workflows and the public Prompt Relay node.</li><li>Director refuses to queue when a required component is missing; it never silently falls back.</li><li>Never launches beside Studio, the album worker, or an occupied port.</li><li>Prompts and job files stay in git-ignored local state.</li><li>Blender renders a working copy of the master scene.</li></ul></div>
         </aside>
       </div>
 

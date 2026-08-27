@@ -2,7 +2,7 @@
 
 All notable changes to LTX / Watch are documented here.
 
-## Unreleased — `feature/blender-physics-backbone`
+## Unreleased — `feature/director-timeline`
 
 ### Added
 
@@ -16,6 +16,8 @@ All notable changes to LTX / Watch are documented here.
 - Completed **Generated from scratch** videos can be renamed in place from their history card. The local filename and displayed title change together, with Windows-safe normalization and collision protection.
 - A fixed-purpose background Blender adapter with sequential physics evaluation, job-scoped progress/cancellation, immutable master scenes, and reviewable backbone-package history.
 - Explicit LTX 2.5 refinement gate: strict physics packages remain preparation-only until a verified 2.5 adapter consumes every structural pass without inventing or retiming motion.
+- Capability-gated **Director timeline** with a persistent global continuity prompt, two-to-eight timed action segments, private Ingredients reference sheet, IC-LoRA strength, transition epsilon, setup diagnostics, and truthful upstream limitations.
+- Recursive ComfyUI subgraph compilation plus a verified Prompt Relay patch that routes timed conditioning through Lightricks' official LTX 2.5 Ingredients guide and the patched model to sampling without hardcoded node IDs.
 
 ### Security
 

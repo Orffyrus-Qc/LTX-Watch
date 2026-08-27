@@ -199,6 +199,58 @@ test('Create stages reference images at the ComfyUI input root and cleans them',
   }
 });
 
+test('Director patch relays timed prompts through the official Ingredients conditioning chain', (context) => {
+  const python = process.env.LTX_STUDIO_TEST_PYTHON || (process.platform === 'win32' ? 'python.exe' : 'python3');
+  const runner = path.join(appRoot, 'scripts', 'ltx-create-runner.py');
+  const code = [
+    'import importlib.util, json, os',
+    'spec = importlib.util.spec_from_file_location("ltx_create_director_test", os.environ["LTX_CREATE_RUNNER"])',
+    'module = importlib.util.module_from_spec(spec)',
+    'spec.loader.exec_module(module)',
+    'prompt = {',
+    '  "model": {"class_type": "LTXICLoRALoaderModelOnly", "inputs": {"strength_model": 1.3}},',
+    '  "clip": {"class_type": "CLIPLoader", "inputs": {}},',
+    '  "latent": {"class_type": "EmptyLTXVLatentVideo", "inputs": {}},',
+    '  "conditioning": {"class_type": "LTXVConditioning", "inputs": {"positive": ["base", 0]}},',
+    '  "guide": {"class_type": "LTXAddVideoICLoRAGuide", "inputs": {"positive": ["conditioning", 0]}},',
+    '  "guider": {"class_type": "CFGGuider", "inputs": {"model": ["model", 0]}},',
+    '}',
+    'job = {',
+    '  "prompt": "Persistent silver robot in a red raincoat.", "frameRate": 24,',
+    '  "director": {"transition": 0.001, "ingredientsStrength": 1.1, "segments": [',
+    '    {"duration": 2, "prompt": "Holds still."},',
+    '    {"duration": 3, "prompt": "Turns left | then walks."}',
+    '  ]}',
+    '}',
+    'result = module.patch_director_prompt(prompt, job)',
+    'print(json.dumps({',
+    '  "relay": result["ltx_watch_director_relay"],',
+    '  "conditioned": result["conditioning"]["inputs"]["positive"],',
+    '  "model": result["guider"]["inputs"]["model"],',
+    '  "strength": result["model"]["inputs"]["strength_model"],',
+    '}))',
+  ].join('\n');
+  const run = spawnSync(python, ['-c', code], {
+    cwd: appRoot,
+    encoding: 'utf8',
+    windowsHide: true,
+    env: { ...process.env, LTX_CREATE_RUNNER: runner },
+  });
+  if (run.error?.code === 'ENOENT') {
+    context.skip(`Python executable not available: ${python}`);
+    return;
+  }
+  assert.equal(run.status, 0, run.stderr || run.stdout);
+  const result = JSON.parse(run.stdout);
+  assert.equal(result.relay.class_type, 'PromptRelayEncode');
+  assert.equal(result.relay.inputs.global_prompt, 'Persistent silver robot in a red raincoat.');
+  assert.equal(result.relay.inputs.local_prompts, 'Holds still.|Turns left / then walks.');
+  assert.equal(result.relay.inputs.segment_lengths, '48,73');
+  assert.deepEqual(result.conditioned, ['ltx_watch_director_relay', 1]);
+  assert.deepEqual(result.model, ['ltx_watch_director_relay', 0]);
+  assert.equal(result.strength, 1.1);
+});
+
 test('Create retry replaces a stale result before the new runner is spawned', async () => {
   const server = await readFile(path.join(appRoot, 'local-server.mjs'), 'utf8');
   const resultReset = server.indexOf("await writeFile(resultPath, `${JSON.stringify({ status: 'generating'");

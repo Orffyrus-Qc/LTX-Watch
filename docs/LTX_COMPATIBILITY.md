@@ -63,10 +63,27 @@ The adapter supports ComfyUI's official local full-workflow templates:
 | Text only | `video_ltx2_5_t2v.json` |
 | First frame | `video_ltx2_5_i2v.json` |
 | First + last frame | `video_ltx2_5_flf2v.json` |
+| Director timeline + Ingredients | `LTX-2.5_ICLoRA_Ingredients_Single_Stage_Distilled.json` plus public `PromptRelayEncode` |
 
 Do not substitute the `LtxApi*` cloud nodes: Create is a local-first adapter. Template discovery is constrained to the installed `comfyui_workflow_templates_json/templates` package beneath the configured ComfyUI Python environment.
 
-The compiler identifies the template's single subgraph by its definition ID, maps exposed inputs by `label`/`name`, detaches the `ResolutionSelector` width/height links when needed, resolves top-level and internal subgraph links, and queries the isolated loopback server's `/object_info/<class_type>` route to preserve ComfyUI's current required/optional input order. It handles `COMFY_AUTOGROW_V3` and `COMFY_DYNAMICCOMBO_V3`, ignores notes and UI-only resolution selectors, and constrains `SaveVideo.filename_prefix` to `video/ltx-watch-create/<job-id>`. Node numeric IDs are not an API and must not become constants.
+The compiler expands any number of nested ComfyUI subgraphs by definition ID, maps exposed inputs by `label`/`name`, resolves graph-input and graph-output sentinels recursively, and queries the isolated loopback server's `/object_info/<class_type>` route to preserve ComfyUI's current required/optional input order. It handles `COMFY_AUTOGROW_V3` and `COMFY_DYNAMICCOMBO_V3`, ignores notes and UI-only resolution selectors, and constrains `SaveVideo.filename_prefix` to `video/ltx-watch-create/<job-id>`. Node numeric IDs are not an API and must not become semantic constants.
+
+### Director Prompt Relay contract
+
+Director uses three explicitly detected local dependencies:
+
+- `custom_nodes/ComfyUI-PromptRelay` from `kijai/ComfyUI-PromptRelay`
+- Lightricks' official `example_workflows/2.5/LTX-2.5_ICLoRA_Ingredients_Single_Stage_Distilled.json`
+- `models/loras/ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors`
+
+The browser submits only normalized segment text/duration, transition epsilon, Ingredients strength, and the server-created private upload identity. It cannot choose a workflow path, node class, model filename, or graph edge. The bridge resolves those trusted paths from the configured ComfyUI root and writes them only into ignored job JSON.
+
+After recursive compilation, the runner identifies patch points by unique node classes and verified graph relationships: `LTXICLoRALoaderModelOnly`, `CLIPLoader`, `EmptyLTXVLatentVideo`, and the `LTXVConditioning` feeding `LTXAddVideoICLoRAGuide`. It inserts `PromptRelayEncode`, routes relay conditioning through the Ingredients guide, routes the patched model to its existing model consumers, and applies the bounded IC-LoRA strength. Ambiguous or missing patch points fail visibly. There is no fallback to T2V/I2V/FLF2V.
+
+Segment durations are converted to pixel-space frame counts and reconciled to LTX's `1 + multiple-of-8` frame rule. The reference sheet is copied into the private job, staged under a unique immediate ComfyUI input filename, and removed after the isolated server stops. The upstream workflow currently owns output geometry: it preserves the sheet aspect ratio and resizes its short edge to 544 pixels. Do not claim that the regular resolution preset is active until a separately verified geometry adapter exists.
+
+Director and Blender are mutually exclusive in this adapter. Prompt Relay is temporal attention guidance, not frame-level authority; Blender physics packages remain the path for authoritative geometry, camera, trajectories, collisions, and deformation.
 
 Static template enum values can lag renamed local model files. For ordinary ComfyUI combo inputs, including constants linked through an exposed subgraph input, the compiler preserves a value that still exists. If it is missing, it may select a live value only when the filename family plus precision/format markers such as `int8` and `convrot` leave exactly one candidate, or when the node exposes only one choice. The exposed `prompt_enhance_model` input has an additional semantic-role constraint: it may resolve only to a dedicated `gemma4_e2b_it_*` checkpoint and must never use the main `with-proj-ltx-2.5` text encoder. When exactly one dedicated enhancer variant is installed, that role identity takes precedence over a stale template precision suffix. Upload selectors such as `LoadImage.image` are excluded from reconciliation: they are file identities, not model enums. Ambiguous substitutions remain invalid and fail visibly; the adapter must never choose an arbitrary checkpoint or replace an uploaded reference with a sample input.
 

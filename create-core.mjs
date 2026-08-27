@@ -1,6 +1,7 @@
-export const CREATE_SCHEMA_VERSION = 2;
+export const CREATE_SCHEMA_VERSION = 3;
 export const CREATE_PROMPT_LIMIT = 8_000;
 export const CREATE_BATCH_LIMIT = 4;
+export const CREATE_DIRECTOR_SEGMENT_LIMIT = 8;
 
 const RESOLUTIONS = new Map([
   ['960x544', { width: 960, height: 544, label: '960 × 544 · faster' }],
@@ -47,6 +48,29 @@ function boundedInteger(value, minimum, maximum, fallback, label) {
   return number;
 }
 
+function boundedNumber(value, minimum, maximum, fallback, label) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  if (number < minimum || number > maximum) throw new Error(`${label} must be between ${minimum} and ${maximum}.`);
+  return number;
+}
+
+function cleanDirectorSegments(value) {
+  if (!Array.isArray(value)) return createDefaultDirectorSegments();
+  return value.slice(0, CREATE_DIRECTOR_SEGMENT_LIMIT).map((segment, index) => ({
+    id: String(segment?.id || `segment-${index + 1}`).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 80) || `segment-${index + 1}`,
+    duration: Math.round(Number(segment?.duration) || 0),
+    prompt: String(segment?.prompt || '').replace(/\0/g, '').replace(/\r\n?/g, '\n').slice(0, 2_000),
+  }));
+}
+
+export function createDefaultDirectorSegments() {
+  return [
+    { id: 'segment-1', duration: 2, prompt: 'Hold the opening composition steady and clearly establish the subject.' },
+    { id: 'segment-2', duration: 3, prompt: 'Begin the main action smoothly while preserving the same subject, wardrobe, environment, and screen direction.' },
+  ];
+}
+
 export function resolutionOptions() {
   return [...RESOLUTIONS.entries()].map(([id, value]) => ({ id, ...value }));
 }
@@ -79,17 +103,23 @@ export function createDefaultDraft() {
     blenderUploadPath: '',
     blenderFirstFrame: 1,
     blenderLastFrame: 120,
+    directorMode: false,
+    directorSegments: createDefaultDirectorSegments(),
+    directorTransition: 0.001,
+    ingredientsReferencePath: '',
+    ingredientsStrength: 1.3,
     contextAssets: [],
   };
 }
 
 export function cleanCreateDraft(input = {}) {
   const fallback = createDefaultDraft();
-  const limits = { title: 120, prompt: CREATE_PROMPT_LIMIT, avoid: 1_000, customStyle: 600, firstFramePath: 1_000, lastFramePath: 1_000, contextVideoPath: 1_000, soundtrackPath: 1_000, blenderProjectId: 160, blenderUploadPath: 1_000 };
+  const limits = { title: 120, prompt: CREATE_PROMPT_LIMIT, avoid: 1_000, customStyle: 600, firstFramePath: 1_000, lastFramePath: 1_000, contextVideoPath: 1_000, soundtrackPath: 1_000, blenderProjectId: 160, blenderUploadPath: 1_000, ingredientsReferencePath: 1_000 };
   const draft = {};
   for (const [key, defaultValue] of Object.entries(fallback)) {
     const value = input && typeof input === 'object' ? input[key] : undefined;
-    if (Array.isArray(defaultValue)) draft[key] = Array.isArray(value) ? value.filter((item) => item && typeof item === 'object').slice(0, 24).map((item) => ({
+    if (key === 'directorSegments') draft[key] = cleanDirectorSegments(value);
+    else if (Array.isArray(defaultValue)) draft[key] = Array.isArray(value) ? value.filter((item) => item && typeof item === 'object').slice(0, 24).map((item) => ({
       id: String(item.id || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 80),
       name: String(item.name || '').replace(/\0/g, '').slice(0, 180),
       kind: ['image', 'video', 'audio', 'blend'].includes(item.kind) ? item.kind : 'unknown',
@@ -105,6 +135,7 @@ export function cleanCreateDraft(input = {}) {
 
 export function normalizeCreateOptions(input = {}) {
   const fallback = createDefaultDraft();
+  const cleaned = cleanCreateDraft(input);
   const resolution = RESOLUTIONS.has(input.resolution) ? input.resolution : fallback.resolution;
   const seedMode = input.seedMode === 'fixed' ? 'fixed' : 'random';
   const referenceMode = ['text', 'first-frame', 'first-last'].includes(input.referenceMode) ? input.referenceMode : 'text';
@@ -113,35 +144,43 @@ export function normalizeCreateOptions(input = {}) {
   const style = Object.hasOwn(STYLE_GUIDANCE, input.style) ? input.style : fallback.style;
   const audio = ['generate', 'ambient', 'silent', 'soundtrack'].includes(input.audio) ? input.audio : fallback.audio;
   const blenderMode = input.blenderMode === 'physics' ? 'physics' : 'anchors';
+  const directorMode = input.directorMode === true;
+  const directorSegments = cleanDirectorSegments(input.directorSegments);
+  const directorDuration = directorSegments.reduce((total, segment) => total + segment.duration, 0);
   const result = {
     title: text(input.title, 120, 'Title'),
     prompt: text(input.prompt, CREATE_PROMPT_LIMIT, 'Prompt'),
     avoid: text(input.avoid, 1_000, 'Avoid notes'),
     resolution,
     ...RESOLUTIONS.get(resolution),
-    duration: boundedInteger(input.duration, 3, 20, fallback.duration, 'Duration'),
+    duration: directorMode ? directorDuration : boundedInteger(input.duration, 3, 20, fallback.duration, 'Duration'),
     frameRate: boundedInteger(input.frameRate, 12, 30, fallback.frameRate, 'Frame rate'),
     seedMode,
     seed: boundedInteger(input.seed, 0, 2_147_483_647, fallback.seed, 'Seed'),
-    variations: blenderMode === 'physics' ? 1 : boundedInteger(input.variations, 1, CREATE_BATCH_LIMIT, fallback.variations, 'Variations'),
-    promptEnhance: blenderMode === 'physics' ? false : input.promptEnhance === true,
+    variations: blenderMode === 'physics' || directorMode ? 1 : boundedInteger(input.variations, 1, CREATE_BATCH_LIMIT, fallback.variations, 'Variations'),
+    promptEnhance: blenderMode === 'physics' || directorMode ? false : input.promptEnhance === true,
     camera: blenderMode === 'physics' ? 'locked' : camera,
     motion: blenderMode === 'physics' ? 'subtle' : motion,
     style,
     customStyle: text(input.customStyle, 600, 'Custom style'),
     audio,
-    referenceMode,
+    referenceMode: directorMode ? 'text' : referenceMode,
     firstFramePath: text(input.firstFramePath, 1_000, 'First-frame path'),
     lastFramePath: text(input.lastFramePath, 1_000, 'Last-frame path'),
     contextVideoPath: text(input.contextVideoPath, 1_000, 'Context-video path'),
     soundtrackPath: text(input.soundtrackPath, 1_000, 'Soundtrack path'),
-    useBlender: input.useBlender === true,
-    blenderMode,
+    useBlender: directorMode ? false : input.useBlender === true,
+    blenderMode: directorMode ? 'anchors' : blenderMode,
     blenderProjectId: text(input.blenderProjectId, 160, 'Blender project id'),
     blenderUploadPath: text(input.blenderUploadPath, 1_000, 'Uploaded Blender path'),
     blenderFirstFrame: boundedInteger(input.blenderFirstFrame, 1, 1_000_000, fallback.blenderFirstFrame, 'Blender first frame'),
     blenderLastFrame: boundedInteger(input.blenderLastFrame, 1, 1_000_000, fallback.blenderLastFrame, 'Blender last frame'),
-    contextAssets: cleanCreateDraft(input).contextAssets,
+    directorMode,
+    directorSegments,
+    directorTransition: boundedNumber(input.directorTransition, 0.000001, 0.99, fallback.directorTransition, 'Director transition softness'),
+    ingredientsReferencePath: text(input.ingredientsReferencePath, 1_000, 'Ingredients reference path'),
+    ingredientsStrength: boundedNumber(input.ingredientsStrength, 0.1, 2, fallback.ingredientsStrength, 'Ingredients strength'),
+    contextAssets: cleaned.contextAssets,
   };
   if (!result.prompt) throw new Error('Describe the video you want to create.');
   if (result.style === 'custom' && !result.customStyle) throw new Error('Add a custom visual style or choose a preset.');
@@ -151,7 +190,26 @@ export function normalizeCreateOptions(input = {}) {
   if (result.audio === 'soundtrack' && !result.soundtrackPath) throw new Error('Drop an audio file before selecting the context soundtrack.');
   if (result.useBlender && result.blenderLastFrame < result.blenderFirstFrame) throw new Error('The Blender last frame must be after the first frame.');
   if (result.blenderMode === 'physics' && !result.useBlender) throw new Error('Physics-authority mode requires a Blender backbone.');
+  if (result.directorMode) {
+    if (result.directorSegments.length < 2) throw new Error('Director mode needs at least two timed segments.');
+    if (result.directorSegments.some((segment) => !segment.prompt.trim())) throw new Error('Every Director segment needs an action prompt.');
+    if (result.directorSegments.some((segment) => segment.duration < 1 || segment.duration > 10)) throw new Error('Each Director segment must last between 1 and 10 seconds.');
+    if (result.duration < 3 || result.duration > 20) throw new Error('Director segments must total between 3 and 20 seconds.');
+    if (!result.ingredientsReferencePath) throw new Error('Director mode requires an Ingredients reference sheet.');
+    if (input.useBlender === true) throw new Error('Director timeline and Blender backbone modes cannot be combined yet.');
+  }
   return result;
+}
+
+export function directorTimeline(options) {
+  if (!options?.directorMode) return null;
+  let cursor = 0;
+  const segments = options.directorSegments.map((segment, index) => {
+    const start = Math.round(cursor * 10) / 10;
+    cursor += segment.duration;
+    return { ...segment, index: index + 1, start, end: Math.round(cursor * 10) / 10 };
+  });
+  return { duration: Math.round(cursor * 10) / 10, segments };
 }
 
 export function composeCreatePrompt(options) {

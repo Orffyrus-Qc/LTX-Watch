@@ -69,6 +69,14 @@ const PROJECTS_RUNTIME_ROOT = path.join(APP_ROOT, '.ltx-watch-projects');
 const CREATE_STATE_PATH = path.join(APP_ROOT, 'create.state.json');
 const CREATE_RUNTIME_ROOT = path.join(APP_ROOT, '.ltx-watch-create');
 const CREATE_RUNNER_PATH = path.join(APP_ROOT, 'scripts', 'ltx-create-runner.py');
+const DIRECTOR_WORKFLOW_NAME = 'LTX-2.5_ICLoRA_Ingredients_Single_Stage_Distilled.json';
+const DIRECTOR_INGREDIENTS_MODEL = 'ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors';
+const DIRECTOR_LINKS = {
+  technique: 'https://www.youtube.com/watch?v=nJgP9eM64tc',
+  promptRelay: 'https://github.com/kijai/ComfyUI-PromptRelay',
+  workflow: 'https://github.com/Lightricks/ComfyUI-LTXVideo/tree/main/example_workflows/2.5',
+  ingredients: 'https://huggingface.co/Lightricks/LTX-2.3-22b-IC-LoRA-Ingredients',
+};
 const PHYSICS_BACKBONE_SCRIPT_PATH = path.join(APP_ROOT, 'scripts', 'blender-physics-backbone.py');
 const HIDDEN_PYTHON_TREE_PATH = path.join(APP_ROOT, 'scripts', 'run-hidden-python.py');
 const CREATE_UPLOAD_CHUNK_LIMIT = 4 * 1024 * 1024;
@@ -101,6 +109,7 @@ let sourcePlanCache = { key: '', expiresAt: 0, value: [], promise: null };
 const projectUploads = new Map();
 const createUploads = new Map();
 let blenderCache = { expiresAt: 0, value: null };
+let directorCache = { key: '', expiresAt: 0, value: null };
 let gpuTelemetryCache = { expiresAt: 0, value: null, promise: null };
 const browserPlaybackJobs = new Map();
 
@@ -1205,6 +1214,58 @@ function resolveCreatePlan(config) {
   return { ...studio, templates };
 }
 
+async function findNamedFile(root, fileName, maximumDepth = 3) {
+  if (!root || !existsSync(root)) return null;
+  async function walk(directory, depth) {
+    let entries = [];
+    try { entries = await readdir(directory, { withFileTypes: true }); } catch { return null; }
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.toLowerCase() === fileName.toLowerCase()) return path.join(directory, entry.name);
+    }
+    if (depth >= maximumDepth) return null;
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+      const found = await walk(path.join(directory, entry.name), depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  return walk(root, 0);
+}
+
+async function resolveDirectorCapability(config) {
+  const cacheKey = path.resolve(config.comfyRoot).toLowerCase();
+  if (directorCache.key === cacheKey && directorCache.expiresAt > Date.now() && directorCache.value) return directorCache.value;
+  const promptRelayRoots = [
+    path.join(config.comfyRoot, 'custom_nodes', 'ComfyUI-PromptRelay'),
+    path.join(config.comfyRoot, 'custom_nodes', 'comfyui-promptrelay'),
+  ];
+  const workflowCandidates = [
+    path.join(config.comfyRoot, 'custom_nodes', 'ComfyUI-LTXVideo', 'example_workflows', '2.5', DIRECTOR_WORKFLOW_NAME),
+    path.join(config.comfyRoot, 'user', 'default', 'workflows', DIRECTOR_WORKFLOW_NAME),
+    path.join(config.comfyRoot, 'workflows', DIRECTOR_WORKFLOW_NAME),
+  ];
+  const promptRelayPath = promptRelayRoots.find((candidate) => existsSync(path.join(candidate, '__init__.py'))) || null;
+  const workflowPath = workflowCandidates.find(existsSync) || null;
+  const ingredientsModelPath = await findNamedFile(path.join(config.comfyRoot, 'models', 'loras'), DIRECTOR_INGREDIENTS_MODEL, 3);
+  const missing = [];
+  if (!promptRelayPath) missing.push('Prompt Relay custom node');
+  if (!workflowPath) missing.push('official LTX 2.5 Ingredients workflow');
+  if (!ingredientsModelPath) missing.push('Ingredients IC-LoRA model');
+  const capability = {
+    ready: missing.length === 0,
+    promptRelayInstalled: Boolean(promptRelayPath),
+    workflowInstalled: Boolean(workflowPath),
+    ingredientsModelInstalled: Boolean(ingredientsModelPath),
+    workflowPath,
+    ingredientsModelPath,
+    links: DIRECTOR_LINKS,
+    blockedReason: missing.length ? `Install ${missing.join(', ')} to enable Director renders.` : null,
+  };
+  directorCache = { key: cacheKey, expiresAt: Date.now() + 30_000, value: capability };
+  return capability;
+}
+
 async function getCreateBackbones(config) {
   const record = await getProjectsRecord();
   const result = [];
@@ -1360,8 +1421,10 @@ async function startPhysicsBackboneJob(record, job, config, backbone) {
 async function startCreateJob(record, job, config, backbone) {
   const launch = resolveCreatePlan(config);
   if (!launch) throw new Error('Create needs a compatible local LTX runner, ComfyUI Python, and the bundled Create adapter.');
+  const directorCapability = job.options.directorMode ? await resolveDirectorCapability(config) : null;
   const templateKey = job.options.referenceMode === 'first-last' ? 'firstLast' : job.options.referenceMode === 'first-frame' || job.options.useBlender ? 'firstFrame' : 'text';
-  if (!launch.templates[templateKey]) throw new Error('The matching official ComfyUI LTX 2.5 workflow template is not installed. Update ComfyUI templates first.');
+  if (job.options.directorMode && !directorCapability?.ready) throw new Error(directorCapability?.blockedReason || 'Director dependencies are unavailable.');
+  if (!job.options.directorMode && !launch.templates[templateKey]) throw new Error('The matching official ComfyUI LTX 2.5 workflow template is not installed. Update ComfyUI templates first.');
   const jobsDirectory = path.join(CREATE_RUNTIME_ROOT, 'jobs', job.id);
   await mkdir(jobsDirectory, { recursive: true });
   const jobPath = path.join(jobsDirectory, 'job.json');
@@ -1369,7 +1432,7 @@ async function startCreateJob(record, job, config, backbone) {
   const cancelPath = path.join(jobsDirectory, 'cancel.requested.json');
   await rm(cancelPath, { force: true });
   const referencePaths = [];
-  for (const source of [job.options.firstFramePath, job.options.lastFramePath].filter(Boolean)) {
+  for (const source of (job.options.directorMode ? [] : [job.options.firstFramePath, job.options.lastFramePath]).filter(Boolean)) {
     if (!isInside(source, [CREATE_RUNTIME_ROOT])) throw new Error('Create reference frames must be uploaded through the local interface.');
     const info = await stat(source).catch(() => null);
     if (!info?.isFile()) throw new Error('An uploaded Create reference frame is no longer available.');
@@ -1387,8 +1450,9 @@ async function startCreateJob(record, job, config, backbone) {
     await copyFile(source, destination);
     return destination;
   };
-  const videoContextPath = await copyContextFile(job.options.contextVideoPath, 'context-video', ['video']);
+  const videoContextPath = await copyContextFile(job.options.directorMode ? '' : job.options.contextVideoPath, 'context-video', ['video']);
   const soundtrackPath = await copyContextFile(job.options.soundtrackPath, 'soundtrack', ['audio']);
+  const ingredientsReferencePath = await copyContextFile(job.options.directorMode ? job.options.ingredientsReferencePath : '', 'ingredients-reference', ['image']);
   const blender = job.options.useBlender ? await getCachedBlender() : null;
   if (job.options.useBlender && (!blender?.executable || !backbone)) throw new Error('Blender and a selected or dropped .blend backbone are required for this mode.');
   const outputPrefix = `video/ltx-watch-create/${job.id}`;
@@ -1411,6 +1475,14 @@ async function startCreateJob(record, job, config, backbone) {
     referencePaths,
     videoContextPath,
     soundtrackPath,
+    director: job.options.directorMode ? {
+      enabled: true,
+      workflowPath: directorCapability.workflowPath,
+      ingredientsReferencePath,
+      segments: job.options.directorSegments,
+      transition: job.options.directorTransition,
+      ingredientsStrength: job.options.ingredientsStrength,
+    } : null,
     useBlender: job.options.useBlender,
     blenderExecutable: blender?.executable || null,
     blenderProjectPath: backbone?.fullPath || null,
@@ -1477,8 +1549,8 @@ async function maybeStartCreateJob(record, config) {
 
 async function buildCreateView({ sync = false } = {}) {
   const config = await getConfig();
-  const [status, comfy, record, studio, backbones, blender] = await Promise.all([
-    readJson(config.statusFile, {}), getComfyQueue(config), getCreateRecord(), getStudioRecord(), getCreateBackbones(config), getCachedBlender(),
+  const [status, comfy, record, studio, backbones, blender, director] = await Promise.all([
+    readJson(config.statusFile, {}), getComfyQueue(config), getCreateRecord(), getStudioRecord(), getCreateBackbones(config), getCachedBlender(), resolveDirectorCapability(config),
   ]);
   let changed = await syncCreateJob(record, config);
   if (sync && await maybeStartCreateJob(record, config)) changed = true;
@@ -1518,7 +1590,7 @@ async function buildCreateView({ sync = false } = {}) {
       summary: physicsJob
         ? `${job.options.width}×${job.options.height} · frames ${job.options.blenderFirstFrame}–${job.options.blenderLastFrame} · ${job.options.frameRate} fps`
         : `${job.options.width}×${job.options.height} · ${job.options.duration}s · ${job.options.frameRate} fps`,
-      mode: physicsJob ? 'Blender animation backbone' : job.options.useBlender ? 'Blender frame anchors' : job.options.referenceMode === 'text' ? 'Text' : job.options.referenceMode === 'first-last' ? 'First + last frame' : 'First frame',
+      mode: physicsJob ? 'Blender animation backbone' : job.options.directorMode ? `Director timeline · ${job.options.directorSegments.length} segments` : job.options.useBlender ? 'Blender frame anchors' : job.options.referenceMode === 'text' ? 'Text' : job.options.referenceMode === 'first-last' ? 'First + last frame' : 'First frame',
       kind: physicsJob ? 'physics-backbone' : 'video',
       packagePath: job.packagePath && isInside(job.packagePath, [CREATE_RUNTIME_ROOT]) ? job.packagePath : null,
       manifestPath: job.manifestPath && isInside(job.manifestPath, [CREATE_RUNTIME_ROOT]) ? job.manifestPath : null,
@@ -1539,6 +1611,14 @@ async function buildCreateView({ sync = false } = {}) {
     templates: {
       text: Boolean(launch?.templates.text), firstFrame: Boolean(launch?.templates.firstFrame), firstLast: Boolean(launch?.templates.firstLast),
     },
+    director: {
+      ready: director.ready,
+      promptRelayInstalled: director.promptRelayInstalled,
+      workflowInstalled: director.workflowInstalled,
+      ingredientsModelInstalled: director.ingredientsModelInstalled,
+      blockedReason: director.blockedReason,
+      links: director.links,
+    },
     physics,
     blender: { installed: Boolean(blender?.executable), version: blender?.version?.text || null, backbones: backbones.map((item) => ({ projectId: item.projectId, projectName: item.projectName, assetName: item.assetName })) },
     jobs,
@@ -1555,10 +1635,17 @@ async function controlCreate(body) {
       record.draft = cleanCreateDraft(body?.draft);
     } else if (action === 'enqueue') {
       const options = normalizeCreateOptions(body?.draft);
-      for (const privatePath of [options.firstFramePath, options.lastFramePath, options.contextVideoPath, options.soundtrackPath, options.blenderUploadPath].filter(Boolean)) {
+      const relevantPrivatePaths = options.directorMode
+        ? [options.soundtrackPath, options.ingredientsReferencePath]
+        : [options.firstFramePath, options.lastFramePath, options.contextVideoPath, options.soundtrackPath, options.blenderUploadPath];
+      for (const privatePath of relevantPrivatePaths.filter(Boolean)) {
         if (!isInside(privatePath, [CREATE_RUNTIME_ROOT]) || !existsSync(privatePath)) throw new Error('Upload Create context through the local interface before queuing.');
       }
       const config = await getConfig();
+      if (options.directorMode) {
+        const director = await resolveDirectorCapability(config);
+        if (!director.ready) throw new Error(director.blockedReason || 'Director dependencies are unavailable.');
+      }
       const backbones = options.useBlender ? await getCreateBackbones(config) : [];
       if (options.useBlender && !options.blenderUploadPath && !backbones.some((item) => item.projectId === options.blenderProjectId)) throw new Error('Choose a project with an assigned .blend backbone or drop a .blend file.');
       if (options.useBlender && !(await getCachedBlender())?.executable) throw new Error('Blender is not detected. Install Blender or switch to a non-Blender creation mode.');

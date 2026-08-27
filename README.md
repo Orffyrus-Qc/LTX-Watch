@@ -30,6 +30,7 @@ The app runs entirely on your computer. It does not upload prompts, videos, logs
 - Loopback-only local bridge with an ephemeral control token
 - Integrated **LTX Watch Studio** shot-by-shot review mode
 - Experimental **Create** workspace for original local LTX 2.5 text-to-video, image-to-video, and first/last-frame generation
+- Optional **Director timeline** for persistent global continuity plus timed Prompt Relay action segments and an Ingredients reference sheet
 - Unified private drag-and-drop context tray for images, videos, songs, and `.blend` scenes
 - Optional Blender-backed reference frames rendered from an immutable copy of a project backbone
 - Optional Blender-authoritative physics packages with beauty, depth, normal, motion-vector, and camera passes
@@ -49,6 +50,7 @@ The app runs entirely on your computer. It does not upload prompts, videos, logs
 - A local ComfyUI installation
 - An LTX workflow that writes video files to a local output directory
 - ComfyUI's official local `video_ltx2_5_t2v`, `video_ltx2_5_i2v`, and `video_ltx2_5_flf2v` workflow templates for the matching Create modes
+- Optional Director mode: [`ComfyUI-PromptRelay`](https://github.com/kijai/ComfyUI-PromptRelay), Lightricks' official `LTX-2.5_ICLoRA_Ingredients_Single_Stage_Distilled.json` workflow, and `ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors`
 - Optional: `ffprobe.exe` in the ComfyUI root for duration and resolution metadata
 - FFmpeg in the ComfyUI root or system path for dropped video/audio context and assembled-final browser compatibility copies
 - Optional: Blender 4.5 or Blender 5 for the ComfyUI-Blender integration
@@ -153,6 +155,19 @@ Saved dashboard settings in `local.config.json` take precedence over auto-detect
 5. Blender mode can use either a `.blend` backbone assigned in **Projects** or a dropped `.blend`. **Creative anchors** copies the scene, renders selected timeline frame(s), and passes those PNGs to the official local I2V or FLF2V workflow. It never saves over the source scene.
 6. Choose **Blender animation** directly in **Visual Backbone** when Blender must own the complete shot. Select a frame range and LTX Watch evaluates the copied scene sequentially into a versioned package containing RGBA beauty frames, linear depth, surface normals, motion vectors, and per-frame camera transforms. Camera and motion controls are locked because Blender—not LTX—owns animation. **Blender frames** remains the creative alternative that sends only first/end frames to LTX.
 7. Press **Queue creation** for LTX output or **Prepare backbone** for strict physics passes. Jobs run one at a time only after the album worker, Studio, Projects regeneration, and the configured ComfyUI port are idle.
+
+### Director timeline and Ingredients continuity
+
+Director mode implements the public technique demonstrated in [What if AI Video Was Truly Controllable?](https://www.youtube.com/watch?v=nJgP9eM64tc) without copying or depending on the creator's private node:
+
+1. Enable **Director timeline** and write one global prompt containing only the subject identity, wardrobe, environment, lighting, lens, and style that must persist.
+2. Upload one Ingredients reference sheet containing only important characters, wardrobe, props, or locations. The sheet guides every frame and is not used as the opening frame.
+3. Describe the changing action in two to eight sequential segments. Start with a stable establishing segment, give complex action at least two seconds, and avoid contradictory cuts between adjacent prompts.
+4. The bridge converts segment durations to pixel-frame spans, inserts the public `PromptRelayEncode` node into Lightricks' official LTX 2.5 Ingredients graph, sends its temporal conditioning through `LTXAddVideoICLoRAGuide`, and sends its patched model to the sampler.
+
+Director is deliberately capability-gated. The queue button remains disabled if Prompt Relay, the official Ingredients workflow, the IC-LoRA model, a valid sheet, or a valid timeline is missing. It never falls back to an ordinary text workflow. The model's gated license must be accepted manually on Hugging Face; LTX Watch does not accept licenses or download model weights implicitly.
+
+The official Ingredients workflow currently derives the video aspect ratio from the reference sheet and uses a 544-pixel short edge. The normal Create resolution preset is therefore disabled in Director mode and is not misrepresented as active. Director and Blender backbones are mutually exclusive in this first adapter. Prompt Relay guides temporal attention; it is not frame-level animation control.
 
 Create state, prompts, uploads, runner logs, and job JSON live in ignored `create.state.json` and `.ltx-watch-create/`. Only the ignored JSON job path appears on the Python process command line. Outputs are written beneath the configured ComfyUI video folder and remain playable from Create history.
 

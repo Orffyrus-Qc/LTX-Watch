@@ -211,6 +211,80 @@ def locate_template(comfy_root: Path, mode: str):
     raise RuntimeError(f"ComfyUI's official local {name} workflow is not installed.")
 
 
+def locate_director_template(job, comfy_root: Path):
+    director = job.get("director") or {}
+    candidate = Path(str(director.get("workflowPath") or "")).resolve()
+    expected_name = "LTX-2.5_ICLoRA_Ingredients_Single_Stage_Distilled.json"
+    if candidate.name != expected_name or not candidate.is_file() or not inside(candidate, [comfy_root]):
+        raise RuntimeError("The official LTX 2.5 Ingredients workflow is unavailable or outside ComfyUI.")
+    return candidate
+
+
+def director_relay_inputs(job):
+    director = job.get("director") or {}
+    segments = director.get("segments") or []
+    if len(segments) < 2:
+        raise RuntimeError("Director mode needs at least two timed segments.")
+    durations = [int(segment.get("duration") or 0) for segment in segments]
+    prompts = [str(segment.get("prompt") or "").strip().replace("|", "/") for segment in segments]
+    if any(duration < 1 or duration > 10 for duration in durations) or any(not prompt for prompt in prompts):
+        raise RuntimeError("Director segment durations or prompts are invalid.")
+    frame_rate = int(job["frameRate"])
+    requested_frames = sum(durations) * frame_rate
+    workflow_frames = 1 + (requested_frames // 8) * 8
+    frame_lengths = [duration * frame_rate for duration in durations]
+    frame_lengths[-1] += workflow_frames - sum(frame_lengths)
+    return {
+        "global_prompt": str(job["prompt"]),
+        "local_prompts": "|".join(prompts),
+        "segment_lengths": ",".join(str(length) for length in frame_lengths),
+        "epsilon": float(director.get("transition", 0.001)),
+    }
+
+
+def patch_director_prompt(prompt, job):
+    relay_inputs = director_relay_inputs(job)
+
+    def keys_for(class_type):
+        return [key for key, node in prompt.items() if node.get("class_type") == class_type]
+
+    model_keys = keys_for("LTXICLoRALoaderModelOnly")
+    clip_keys = keys_for("CLIPLoader")
+    latent_keys = keys_for("EmptyLTXVLatentVideo")
+    guide_keys = keys_for("LTXAddVideoICLoRAGuide")
+    if not all(len(items) == 1 for items in (model_keys, clip_keys, latent_keys, guide_keys)):
+        raise RuntimeError("The official Ingredients workflow structure changed; Director patch points are ambiguous.")
+    model_key, clip_key, latent_key, guide_key = model_keys[0], clip_keys[0], latent_keys[0], guide_keys[0]
+    guide_positive = prompt[guide_key].get("inputs", {}).get("positive")
+    if not isinstance(guide_positive, list) or len(guide_positive) != 2:
+        raise RuntimeError("The official Ingredients guide no longer exposes its positive conditioning input.")
+    conditioning_key = str(guide_positive[0])
+    conditioning = prompt.get(conditioning_key)
+    if conditioning is None or conditioning.get("class_type") != "LTXVConditioning":
+        raise RuntimeError("The official Ingredients conditioning chain changed.")
+
+    relay_key = "ltx_watch_director_relay"
+    if relay_key in prompt:
+        raise RuntimeError("The official Ingredients workflow conflicts with the Director relay node id.")
+    prompt[relay_key] = {
+        "class_type": "PromptRelayEncode",
+        "inputs": {
+            "model": [model_key, 0],
+            "clip": [clip_key, 0],
+            "latent": [latent_key, 0],
+            **relay_inputs,
+        },
+    }
+    conditioning["inputs"]["positive"] = [relay_key, 1]
+    source_model = [model_key, 0]
+    for key, node in prompt.items():
+        if key != relay_key and node.get("inputs", {}).get("model") == source_model:
+            node["inputs"]["model"] = [relay_key, 0]
+    strength = float((job.get("director") or {}).get("ingredientsStrength", 1.3))
+    prompt[model_key].setdefault("inputs", {})["strength_model"] = strength
+    return prompt
+
+
 class WorkflowCompiler:
     def __init__(self, base_url: str):
         self.base_url = base_url.rstrip("/")
@@ -231,42 +305,10 @@ class WorkflowCompiler:
 
     def compile(self, workflow, overrides, reference_names, output_prefix):
         graph = copy.deepcopy(workflow)
-        subgraphs = graph.get("definitions", {}).get("subgraphs", [])
-        if len(subgraphs) != 1:
-            raise RuntimeError("The official LTX workflow structure changed: expected one subgraph.")
-        subgraph = subgraphs[0]
-        subgraph_node = next((node for node in graph.get("nodes", []) if node.get("type") == subgraph.get("id")), None)
-        if not subgraph_node:
-            raise RuntimeError("The official LTX workflow subgraph node is missing.")
+        definitions = {item.get("id"): item for item in graph.get("definitions", {}).get("subgraphs", [])}
 
-        sub_inputs = subgraph.get("inputs", [])
-        sub_input_roles = {}
-        widget_index_by_input = {}
-        widget_index = 0
-        for index, sub_input in enumerate(sub_inputs):
-            sub_input_roles[index] = self._input_label(sub_input)
-            input_type = sub_input.get("type", "")
-            if not (isinstance(input_type, str) and input_type in CONNECTION_TYPES):
-                widget_index_by_input[index] = widget_index
-                widget_index += 1
-
-        top_inputs_by_name = {item.get("name"): item for item in subgraph_node.get("inputs", [])}
-        for index, sub_input in enumerate(sub_inputs):
-            label = self._input_label(sub_input)
-            if label == "fram_rate":  # spelling used by the official FLF2V 2.5 template
-                label = "frame_rate"
-            if label not in overrides or index not in widget_index_by_input:
-                continue
-            top_input = top_inputs_by_name.get(sub_input.get("name"))
-            if top_input:
-                top_input["link"] = None
-            slot = widget_index_by_input[index]
-            widgets = subgraph_node.setdefault("widgets_values", [])
-            if slot >= len(widgets):
-                raise RuntimeError(f"The official LTX workflow no longer exposes the {label} setting.")
-            widgets[slot] = overrides[label]
-
-        load_images = [node for node in graph.get("nodes", []) if node.get("type") == "LoadImage"]
+        all_graphs = [graph, *definitions.values()]
+        load_images = [node for item in all_graphs for node in item.get("nodes", []) if node.get("type") == "LoadImage"]
         load_images.sort(key=lambda node: ("first" not in str(node.get("title", "")).lower(), str(node.get("title", "")).lower()))
         if len(reference_names) > len(load_images):
             raise RuntimeError("The selected official workflow does not expose enough reference-frame inputs.")
@@ -277,109 +319,174 @@ class WorkflowCompiler:
             else:
                 widgets.append(reference_name)
 
-        for node in graph.get("nodes", []):
-            if node.get("type") == "SaveVideo":
+        for item in all_graphs:
+            for node in item.get("nodes", []):
+                if node.get("type") != "SaveVideo":
+                    continue
                 widgets = node.setdefault("widgets_values", [])
                 if widgets:
                     widgets[0] = output_prefix
 
-        top_links = {link[0]: (link[1], link[2]) for link in graph.get("links", [])}
-        internal_links = {link["id"]: (link["origin_id"], link["origin_slot"]) for link in subgraph.get("links", [])}
-        connected_top_inputs = {
-            item.get("name"): item.get("link")
-            for item in subgraph_node.get("inputs", [])
-            if item.get("link") is not None
+        primitive_titles = {
+            "prompt (positive)": "prompt",
+            "prompt (negative)": "negative_prompt",
+            "fps (frames per second)": "frame_rate",
+            "duration in seconds (determines frames #)": "duration",
         }
+        for item in all_graphs:
+            for node in item.get("nodes", []):
+                override_name = primitive_titles.get(str(node.get("title") or "").strip().lower())
+                if override_name in overrides:
+                    widgets = node.setdefault("widgets_values", [])
+                    if widgets:
+                        widgets[0] = overrides[override_name]
+                    else:
+                        widgets.append(overrides[override_name])
 
-        input_resolution = {}
-        widget_index = 0
-        for index, sub_input in enumerate(sub_inputs):
-            input_type = sub_input.get("type", "")
-            is_connection = isinstance(input_type, str) and input_type in CONNECTION_TYPES
-            name = sub_input.get("name")
-            if name in connected_top_inputs:
-                origin_id, origin_slot = top_links[connected_top_inputs[name]]
-                input_resolution[index] = ("node", origin_id, origin_slot)
-                if not is_connection:
-                    widget_index += 1
-            else:
-                widgets = subgraph_node.get("widgets_values", [])
-                if widget_index >= len(widgets):
-                    raise RuntimeError("The official LTX workflow input layout changed.")
-                input_resolution[index] = ("constant", widgets[widget_index])
-                widget_index += 1
-
-        output_resolution = {}
-        for link in subgraph.get("links", []):
-            if link.get("target_id") == -20:
-                output_resolution[link["target_slot"]] = (link["origin_id"], link["origin_slot"])
-
-        def resolve_link(link_id, internal):
-            table = internal_links if internal else top_links
-            origin_id, origin_slot = table[link_id]
-            if origin_id == -10:
-                resolved = input_resolution[origin_slot]
-                return resolved[1] if resolved[0] == "constant" else [str(resolved[1]), resolved[2]]
-            if origin_id == subgraph_node.get("id"):
-                real_id, real_slot = output_resolution[origin_slot]
-                return [str(real_id), real_slot]
-            return [str(origin_id), origin_slot]
-
-        def resolve_semantic_role(link_id, internal):
-            if not internal:
-                return None
-            origin_id, origin_slot = internal_links[link_id]
-            return sub_input_roles.get(origin_slot) if origin_id == -10 else None
-
-        top_nodes = [
-            node for node in graph.get("nodes", [])
-            if node.get("type") not in {"MarkdownNote", "ResolutionSelector", subgraph.get("id")}
-        ]
-        all_nodes = [(node, False) for node in top_nodes] + [(node, True) for node in subgraph.get("nodes", [])]
         prompt = {}
-        for node, internal in all_nodes:
-            class_type = node.get("type")
-            metadata = self.object_info(class_type)
-            required = metadata.get("input", {}).get("required", {})
-            optional = metadata.get("input", {}).get("optional", {})
-            parameters = list(required.items()) + list(optional.items())
-            linked = {
-                item["name"]: resolve_link(item["link"], internal)
-                for item in node.get("inputs", [])
-                if item.get("link") is not None
-            }
-            linked_roles = {
-                item["name"]: resolve_semantic_role(item["link"], internal)
-                for item in node.get("inputs", [])
-                if item.get("link") is not None
-            }
-            widgets = list(node.get("widgets_values", []))
-            compiled_inputs = {}
-            for name, definition in parameters:
-                parameter_type = definition[0] if isinstance(definition, list) else definition
-                is_connection = isinstance(parameter_type, str) and parameter_type in CONNECTION_TYPES
-                if parameter_type == "COMFY_AUTOGROW_V3":
+        used_keys = set()
+
+        def graph_links(item):
+            result = {}
+            for link in item.get("links", []):
+                if isinstance(link, list):
+                    result[link[0]] = (link[1], link[2], link[3], link[4])
+                else:
+                    result[link["id"]] = (link["origin_id"], link["origin_slot"], link["target_id"], link["target_slot"])
+            return result
+
+        def normalize_label(item):
+            label = self._input_label(item)
+            return "frame_rate" if label == "fram_rate" else label
+
+        def compile_graph(item, scope, external_inputs):
+            links = graph_links(item)
+            nodes = {node.get("id"): node for node in item.get("nodes", [])}
+            instance_cache = {}
+
+            def key_for(node_id):
+                preferred = str(node_id)
+                if preferred not in used_keys:
+                    return preferred
+                return f"{scope}_{preferred}"
+
+            ordinary_keys = {}
+            for node in item.get("nodes", []):
+                if node.get("type") in definitions or node.get("type") in {"MarkdownNote", "ResolutionSelector"}:
                     continue
-                if parameter_type == "COMFY_DYNAMICCOMBO_V3":
-                    mode = linked[name] if name in linked else widgets.pop(0) if widgets else None
-                    compiled_inputs[name] = mode
-                    options = definition[1].get("options", []) if isinstance(definition, list) and len(definition) > 1 else []
-                    selected = next((option for option in options if option.get("key") == mode), None)
-                    for sub_name in (selected or {}).get("inputs", {}).get("required", {}):
-                        dotted = f"{name}.{sub_name}"
-                        compiled_inputs[dotted] = linked[dotted] if dotted in linked else widgets.pop(0) if widgets else None
+                key = key_for(node.get("id"))
+                used_keys.add(key)
+                ordinary_keys[node.get("id")] = key
+
+            def compile_instance(node):
+                instance_id = node.get("id")
+                if instance_id in instance_cache:
+                    return instance_cache[instance_id]
+                definition = definitions[node.get("type")]
+                inputs_by_name = {entry.get("name"): entry for entry in node.get("inputs", [])}
+                widgets = list(node.get("widgets_values", []))
+                resolved_inputs = {}
+                for index, definition_input in enumerate(definition.get("inputs", [])):
+                    input_type = definition_input.get("type", "")
+                    is_connection = isinstance(input_type, str) and input_type in CONNECTION_TYPES
+                    role = normalize_label(definition_input)
+                    instance_input = inputs_by_name.get(definition_input.get("name"))
+                    linked = instance_input and instance_input.get("link") is not None
+                    if not is_connection and role in overrides:
+                        resolved_inputs[index] = ("constant", overrides[role], None, role)
+                        if widgets:
+                            widgets.pop(0)
+                    elif linked:
+                        resolved_inputs[index] = resolve_link(instance_input["link"])
+                        if not is_connection and widgets:
+                            widgets.pop(0)
+                    elif not is_connection and widgets:
+                        resolved_inputs[index] = ("constant", widgets.pop(0), None, role)
+                    elif is_connection:
+                        resolved_inputs[index] = None
+                    else:
+                        raise RuntimeError(f"The official LTX workflow no longer exposes the {role} setting.")
+                instance_scope = f"{scope}_{instance_id}" if scope else str(instance_id)
+                outputs = compile_graph(definition, instance_scope, resolved_inputs)
+                instance_cache[instance_id] = outputs
+                return outputs
+
+            def resolve_link(link_id):
+                if link_id not in links:
+                    raise RuntimeError("The official LTX workflow contains a missing link.")
+                origin_id, origin_slot, _target_id, _target_slot = links[link_id]
+                if origin_id == -10:
+                    resolved = external_inputs.get(origin_slot)
+                    if resolved is None:
+                        raise RuntimeError("The official LTX workflow has an unconnected required subgraph input.")
+                    return resolved
+                origin = nodes.get(origin_id)
+                if not origin:
+                    raise RuntimeError("The official LTX workflow link origin is missing.")
+                if origin.get("type") in definitions:
+                    outputs = compile_instance(origin)
+                    if origin_slot not in outputs:
+                        raise RuntimeError("The official LTX workflow subgraph output layout changed.")
+                    return outputs[origin_slot]
+                return ("node", ordinary_keys[origin_id], origin_slot, None)
+
+            for node in item.get("nodes", []):
+                if node.get("type") in definitions:
+                    compile_instance(node)
+
+            for node in item.get("nodes", []):
+                class_type = node.get("type")
+                if class_type in definitions or class_type in {"MarkdownNote", "ResolutionSelector"}:
                     continue
-                if name in linked:
-                    compiled_inputs[name] = linked[name] if is_connection else reconcile_widget_value(linked[name], definition, linked_roles.get(name))
-                    if not is_connection and widgets:
-                        widgets.pop(0)
-                elif not is_connection and widgets:
-                    compiled_inputs[name] = reconcile_widget_value(widgets.pop(0), definition)
-            for name, value in linked.items():
-                compiled_inputs.setdefault(name, value)
-            if class_type == "SaveVideo":
-                compiled_inputs["filename_prefix"] = output_prefix
-            prompt[str(node["id"])] = {"class_type": class_type, "inputs": compiled_inputs}
+                metadata = self.object_info(class_type)
+                required = metadata.get("input", {}).get("required", {})
+                optional = metadata.get("input", {}).get("optional", {})
+                parameters = list(required.items()) + list(optional.items())
+                linked_resolutions = {
+                    entry["name"]: resolve_link(entry["link"])
+                    for entry in node.get("inputs", [])
+                    if entry.get("link") is not None
+                }
+                linked = {
+                    name: resolution[1] if resolution[0] == "constant" else [resolution[1], resolution[2]]
+                    for name, resolution in linked_resolutions.items()
+                }
+                linked_roles = {name: resolution[3] for name, resolution in linked_resolutions.items()}
+                widgets = list(node.get("widgets_values", []))
+                compiled_inputs = {}
+                for name, definition in parameters:
+                    parameter_type = definition[0] if isinstance(definition, list) else definition
+                    is_connection = isinstance(parameter_type, str) and parameter_type in CONNECTION_TYPES
+                    if parameter_type == "COMFY_AUTOGROW_V3":
+                        continue
+                    if parameter_type == "COMFY_DYNAMICCOMBO_V3":
+                        mode = linked[name] if name in linked else widgets.pop(0) if widgets else None
+                        compiled_inputs[name] = mode
+                        options = definition[1].get("options", []) if isinstance(definition, list) and len(definition) > 1 else []
+                        selected = next((option for option in options if option.get("key") == mode), None)
+                        for sub_name in (selected or {}).get("inputs", {}).get("required", {}):
+                            dotted = f"{name}.{sub_name}"
+                            compiled_inputs[dotted] = linked[dotted] if dotted in linked else widgets.pop(0) if widgets else None
+                        continue
+                    if name in linked:
+                        compiled_inputs[name] = linked[name] if is_connection else reconcile_widget_value(linked[name], definition, linked_roles.get(name))
+                        if not is_connection and widgets:
+                            widgets.pop(0)
+                    elif not is_connection and widgets:
+                        compiled_inputs[name] = reconcile_widget_value(widgets.pop(0), definition)
+                for name, value in linked.items():
+                    compiled_inputs.setdefault(name, value)
+                if class_type == "SaveVideo":
+                    compiled_inputs["filename_prefix"] = output_prefix
+                prompt[ordinary_keys[node.get("id")]] = {"class_type": class_type, "inputs": compiled_inputs}
+
+            outputs = {}
+            for link_id, (_origin_id, _origin_slot, target_id, target_slot) in links.items():
+                if target_id == -20:
+                    outputs[target_slot] = resolve_link(link_id)
+            return outputs
+
+        compile_graph(graph, "root", {})
         return prompt
 
 
@@ -489,6 +596,18 @@ def prepare_reference_files(job, runtime_root: Path, comfy_root: Path, source_ru
     return relative_names, staged_paths
 
 
+def prepare_ingredients_reference(job, runtime_root: Path, comfy_root: Path):
+    source = Path(str((job.get("director") or {}).get("ingredientsReferencePath") or ""))
+    if not source.is_file() or source.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"} or not inside(source, [runtime_root]):
+        raise RuntimeError("The private Director Ingredients reference sheet is unavailable.")
+    destination = comfy_root / "input"
+    destination.mkdir(parents=True, exist_ok=True)
+    job_token = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(job["id"]))[:80]
+    target = destination / f"ltx_watch_director_{job_token}_ingredients{source.suffix.lower()}"
+    shutil.copy2(source, target)
+    return target.name, target
+
+
 def cleanup_reference_files(staged_paths):
     for staged_path in staged_paths:
         try:
@@ -552,6 +671,16 @@ def validate_job(job):
     for reference in job.get("referencePaths", []):
         if not inside(Path(reference), [runtime_root]):
             raise RuntimeError("A reference path is outside the private Create job folder.")
+    director = job.get("director") or {}
+    if director.get("enabled"):
+        if job.get("useBlender"):
+            raise RuntimeError("Director timeline and Blender backbone modes cannot be combined yet.")
+        for key in ("workflowPath", "ingredientsReferencePath"):
+            if not director.get(key):
+                raise RuntimeError(f"Director mode is missing {key}.")
+        if not inside(Path(director["ingredientsReferencePath"]), [runtime_root]):
+            raise RuntimeError("The Ingredients reference path is outside the private Create job folder.")
+        director_relay_inputs(job)
     return runtime_root
 
 
@@ -574,7 +703,8 @@ def run_job(job):
     mode = job["referenceMode"]
     if job.get("useBlender") and mode == "text":
         mode = "first-frame"
-    template = read_json(locate_template(comfy_root, mode))
+    director_enabled = bool((job.get("director") or {}).get("enabled"))
+    template = read_json(locate_director_template(job, comfy_root) if director_enabled else locate_template(comfy_root, mode))
     base_url = f"http://127.0.0.1:{int(job['port'])}"
     worker_name = f"create-{job['id'][:8]}"
     args = source.parse_args([
@@ -593,6 +723,7 @@ def run_job(job):
     server = None
     server_log = None
     staged_reference_paths = []
+    staged_ingredients_path = None
     cancel_stop = threading.Event()
     cancel_seen = threading.Event()
     cancel_watcher = threading.Thread(
@@ -604,7 +735,11 @@ def run_job(job):
     cancel_watcher.start()
     try:
         require_not_canceled(job)
-        references, staged_reference_paths = prepare_reference_files(job, runtime_root, comfy_root, source)
+        if director_enabled:
+            ingredients_name, staged_ingredients_path = prepare_ingredients_reference(job, runtime_root, comfy_root)
+            references = [ingredients_name]
+        else:
+            references, staged_reference_paths = prepare_reference_files(job, runtime_root, comfy_root, source)
         progress(job, "Starting isolated ComfyUI", 8)
         server, server_log = source.start_comfy_server("ltx_watch_create", job["id"][:8], safer=bool(job.get("safer", False)))
         if server is None or not source.wait_for_server(base_url):
@@ -613,15 +748,19 @@ def run_job(job):
         progress(job, "Compiling official LTX 2.5 workflow", 14)
         overrides = {
             "prompt": job["prompt"],
+            "negative_prompt": "",
             "prompt_enhance": bool(job.get("promptEnhance")),
             "duration": int(job["duration"]),
             "width": int(job["width"]),
             "height": int(job["height"]),
             "seed": int(job["seed"]),
+            "noise_seed": int(job["seed"]),
             "frame_rate": int(job["frameRate"]),
         }
         compiler = WorkflowCompiler(base_url)
         prompt = compiler.compile(template, overrides, list(references), job["outputPrefix"])
+        if director_enabled:
+            prompt = patch_director_prompt(prompt, job)
         require_not_canceled(job)
         progress(job, "Loading models and sampling frames", 20)
         response = submit(base_url, prompt, f"ltx-watch-create-{job['id']}")
@@ -643,6 +782,7 @@ def run_job(job):
                 source.stop_comfy_server(server, server_log, base_url)
         finally:
             cleanup_reference_files(staged_reference_paths)
+            cleanup_reference_files([staged_ingredients_path] if staged_ingredients_path else [])
             source.release_lock(str(lock_path))
 
     output = newest_output(comfy_root / "output", job["outputPrefix"], started)

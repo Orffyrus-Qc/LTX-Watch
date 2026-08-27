@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   composeCreatePrompt,
   createDefaultDraft,
+  directorTimeline,
   createJobSeeds,
   normalizeCreateOptions,
   normalizeCreateRecord,
@@ -62,6 +63,29 @@ test('physics-authority mode removes creative motion instructions and keeps Blen
   assert.match(prompt, /Blender owns every camera transform/i);
   assert.match(prompt, /Structural drift is a failed result/i);
   assert.doesNotMatch(prompt, /cinematic orbit|energetic but coherent/i);
+});
+
+test('Director mode normalizes a bounded Prompt Relay timeline and requires an Ingredients sheet', () => {
+  const draft = {
+    ...createDefaultDraft(),
+    prompt: 'One silver robot, red raincoat, wet night market, anamorphic cinematic lighting.',
+    directorMode: true,
+    ingredientsReferencePath: 'private/ingredients.png',
+    variations: 4,
+    promptEnhance: true,
+    directorSegments: [
+      { id: 'establish', duration: 2, prompt: 'The robot holds still and looks toward camera.' },
+      { id: 'action', duration: 3, prompt: 'The robot turns left and walks under the lanterns.' },
+    ],
+  };
+  const options = normalizeCreateOptions(draft);
+  assert.equal(options.duration, 5);
+  assert.equal(options.variations, 1);
+  assert.equal(options.promptEnhance, false);
+  assert.deepEqual(directorTimeline(options).segments.map(({ start, end }) => [start, end]), [[0, 2], [2, 5]]);
+  assert.throws(() => normalizeCreateOptions({ ...draft, ingredientsReferencePath: '' }), /Ingredients reference sheet/i);
+  assert.throws(() => normalizeCreateOptions({ ...draft, directorSegments: [{ id: 'only', duration: 5, prompt: 'One action.' }] }), /at least two/i);
+  assert.throws(() => normalizeCreateOptions({ ...draft, useBlender: true }), /cannot be combined/i);
 });
 
 test('fixed variation seeds are deterministic and sequential', () => {
