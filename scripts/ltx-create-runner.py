@@ -27,6 +27,7 @@ CONNECTION_TYPES = {
     "SIGMAS", "GUIDER", "IMAGE", "AUDIO", "VIDEO", "LATENT_UPSCALE_MODEL",
     "*", "MASK", "IMAGE,MASK", "COMFY_MATCHTYPE_V3",
 }
+UI_ONLY_NODE_TYPES = {"MarkdownNote", "Note", "ResolutionSelector", "Reroute"}
 
 MODEL_FORMAT_TOKEN = re.compile(r"^(?:(?:int|fp|bf|nf|q)\d+[a-z0-9_]*|convrot|gguf|awq|gptq)$")
 GENERIC_FILENAME_TOKENS = {"safetensors", "ckpt", "pt", "pth", "bin", "model", "models"}
@@ -165,6 +166,40 @@ def reconcile_combo_value(value, definition, semantic_role=None):
         else:
             return value
 
+    if semantic_role == "ltx_text_encoder":
+        # The projected LTX encoder and the standalone e2b-it prompt enhancer
+        # are both Gemma 4 files. Only a with-proj LTX checkpoint is valid for
+        # CLIPLoader conditioning, even when its installed precision differs.
+        role_candidates = []
+        for choice in choices:
+            candidate_tokens = set(_filename_tokens(choice))
+            if {"with", "proj", "ltx"}.issubset(candidate_tokens) and not {"e2b", "it"}.issubset(candidate_tokens):
+                role_candidates.append(choice)
+        if value in role_candidates:
+            return value
+        if len(role_candidates) == 1:
+            return role_candidates[0]
+        if role_candidates:
+            choices = role_candidates
+        else:
+            return value
+
+    if semantic_role == "ltx_checkpoint":
+        # GemmaAPITextEncode reads the LTX model id from checkpoint metadata.
+        # A models/checkpoints folder may also contain unrelated checkpoints
+        # (for example SAM), so select only the sole LTX transformer candidate.
+        role_candidates = []
+        for choice in choices:
+            candidate_tokens = set(_filename_tokens(choice))
+            if "ltx" in candidate_tokens and "transformer" in candidate_tokens:
+                role_candidates.append(choice)
+        if len(role_candidates) == 1:
+            return role_candidates[0]
+        if role_candidates:
+            choices = role_candidates
+        else:
+            return value
+
     if value in choices:
         return value
     if len(choices) == 1:
@@ -242,6 +277,13 @@ def director_relay_inputs(job):
     }
 
 
+def director_conditioning_prompt(job):
+    """Match PromptRelay's combined token sequence through ComfyUI's native encoder."""
+    relay_inputs = director_relay_inputs(job)
+    locals_list = [item.strip() for item in relay_inputs["local_prompts"].split("|") if item.strip()]
+    return relay_inputs["global_prompt"] + "".join(f" {item}" for item in locals_list)
+
+
 def patch_director_prompt(prompt, job):
     relay_inputs = director_relay_inputs(job)
 
@@ -275,7 +317,11 @@ def patch_director_prompt(prompt, job):
             **relay_inputs,
         },
     }
-    conditioning["inputs"]["positive"] = [relay_key, 1]
+    # Keep the official CLIPTextEncode conditioning path. Native LTX 2.5
+    # attaches unprocessed AV-embedding metadata there; routing PromptRelay's
+    # io.Conditioning output directly can lose that metadata and produce a 4-D
+    # tensor at the LTX connector. The compiler feeds this path the identical
+    # combined token sequence via director_conditioning_prompt().
     source_model = [model_key, 0]
     for key, node in prompt.items():
         if key != relay_key and node.get("inputs", {}).get("model") == source_model:
@@ -372,7 +418,7 @@ class WorkflowCompiler:
 
             ordinary_keys = {}
             for node in item.get("nodes", []):
-                if node.get("type") in definitions or node.get("type") in {"MarkdownNote", "ResolutionSelector"}:
+                if node.get("type") in definitions or node.get("type") in UI_ONLY_NODE_TYPES:
                     continue
                 key = key_for(node.get("id"))
                 used_keys.add(key)
@@ -383,6 +429,11 @@ class WorkflowCompiler:
                 if instance_id in instance_cache:
                     return instance_cache[instance_id]
                 definition = definitions[node.get("type")]
+                consumed_external_slots = {
+                    origin_slot
+                    for origin_id, origin_slot, _target_id, _target_slot in graph_links(definition).values()
+                    if origin_id == -10
+                }
                 inputs_by_name = {entry.get("name"): entry for entry in node.get("inputs", [])}
                 widgets = list(node.get("widgets_values", []))
                 resolved_inputs = {}
@@ -404,6 +455,11 @@ class WorkflowCompiler:
                         resolved_inputs[index] = ("constant", widgets.pop(0), None, role)
                     elif is_connection:
                         resolved_inputs[index] = None
+                    elif index not in consumed_external_slots:
+                        # Official workflow subgraphs can retain obsolete exposed
+                        # settings that are no longer connected to any inner node.
+                        # They are UI metadata, not required execution inputs.
+                        resolved_inputs[index] = None
                     else:
                         raise RuntimeError(f"The official LTX workflow no longer exposes the {role} setting.")
                 instance_scope = f"{scope}_{instance_id}" if scope else str(instance_id)
@@ -411,7 +467,11 @@ class WorkflowCompiler:
                 instance_cache[instance_id] = outputs
                 return outputs
 
-            def resolve_link(link_id):
+            def resolve_link(link_id, visited=None):
+                visited = set() if visited is None else set(visited)
+                if link_id in visited:
+                    raise RuntimeError("The official LTX workflow contains a cyclic reroute link.")
+                visited.add(link_id)
                 if link_id not in links:
                     raise RuntimeError("The official LTX workflow contains a missing link.")
                 origin_id, origin_slot, _target_id, _target_slot = links[link_id]
@@ -423,6 +483,14 @@ class WorkflowCompiler:
                 origin = nodes.get(origin_id)
                 if not origin:
                     raise RuntimeError("The official LTX workflow link origin is missing.")
+                if origin.get("type") == "Reroute":
+                    reroute_links = [
+                        entry.get("link") for entry in origin.get("inputs", [])
+                        if entry.get("link") is not None
+                    ]
+                    if len(reroute_links) != 1:
+                        raise RuntimeError("The official LTX workflow contains an invalid reroute node.")
+                    return resolve_link(reroute_links[0], visited)
                 if origin.get("type") in definitions:
                     outputs = compile_instance(origin)
                     if origin_slot not in outputs:
@@ -436,7 +504,7 @@ class WorkflowCompiler:
 
             for node in item.get("nodes", []):
                 class_type = node.get("type")
-                if class_type in definitions or class_type in {"MarkdownNote", "ResolutionSelector"}:
+                if class_type in definitions or class_type in UI_ONLY_NODE_TYPES:
                     continue
                 metadata = self.object_info(class_type)
                 required = metadata.get("input", {}).get("required", {})
@@ -457,6 +525,11 @@ class WorkflowCompiler:
                 for name, definition in parameters:
                     parameter_type = definition[0] if isinstance(definition, list) else definition
                     is_connection = isinstance(parameter_type, str) and parameter_type in CONNECTION_TYPES
+                    semantic_role = linked_roles.get(name)
+                    if class_type == "CLIPLoader" and name == "clip_name" and semantic_role in {"gemma4_12b_encoder", "text_encoder"}:
+                        semantic_role = "ltx_text_encoder"
+                    if class_type == "GemmaAPITextEncode" and name == "ckpt_name":
+                        semantic_role = "ltx_checkpoint"
                     if parameter_type == "COMFY_AUTOGROW_V3":
                         continue
                     if parameter_type == "COMFY_DYNAMICCOMBO_V3":
@@ -469,11 +542,11 @@ class WorkflowCompiler:
                             compiled_inputs[dotted] = linked[dotted] if dotted in linked else widgets.pop(0) if widgets else None
                         continue
                     if name in linked:
-                        compiled_inputs[name] = linked[name] if is_connection else reconcile_widget_value(linked[name], definition, linked_roles.get(name))
+                        compiled_inputs[name] = linked[name] if is_connection else reconcile_widget_value(linked[name], definition, semantic_role)
                         if not is_connection and widgets:
                             widgets.pop(0)
                     elif not is_connection and widgets:
-                        compiled_inputs[name] = reconcile_widget_value(widgets.pop(0), definition)
+                        compiled_inputs[name] = reconcile_widget_value(widgets.pop(0), definition, semantic_role)
                 for name, value in linked.items():
                     compiled_inputs.setdefault(name, value)
                 if class_type == "SaveVideo":
@@ -747,7 +820,7 @@ def run_job(job):
         require_not_canceled(job)
         progress(job, "Compiling official LTX 2.5 workflow", 14)
         overrides = {
-            "prompt": job["prompt"],
+            "prompt": director_conditioning_prompt(job) if director_enabled else job["prompt"],
             "negative_prompt": "",
             "prompt_enhance": bool(job.get("promptEnhance")),
             "duration": int(job["duration"]),

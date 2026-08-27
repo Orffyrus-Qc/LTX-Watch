@@ -123,6 +123,8 @@ test('Create runner reconciles an unambiguous renamed model enum', async (contex
     '  "missingEnhancer": module.reconcile_combo_value("gemma4_e2b_it_int8_convrot.safetensors", [["gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors"], {}], "prompt_enhance_model"),',
     '  "existing": module.reconcile_combo_value("gemma4_e2b_it_bf16.safetensors", choices),',
     '  "ambiguous": module.reconcile_combo_value("gemma4_e2b_it.safetensors", choices),',
+    '  "ltxCheckpoint": module.reconcile_combo_value("ltx-2.5-22b-distilled-transformer-bf16.safetensors", [["sam3.1_multiplex_fp16.safetensors", "ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors"], {}], "ltx_checkpoint"),',
+    '  "ltxTextEncoder": module.reconcile_combo_value("gemma4-12b-with-proj-ltx-2.5-bf16.safetensors", [["gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors", "gemma4_e2b_it_bf16.safetensors"], {}], "ltx_text_encoder"),',
     '  "imageUpload": module.reconcile_widget_value("ltx_watch_create_fixture_reference_1.png", [["example.png"], {"image_upload": True}]),',
     '  "subgraph": compiled["393"]["inputs"]["clip_name"],',
     '}))',
@@ -144,6 +146,8 @@ test('Create runner reconciles an unambiguous renamed model enum', async (contex
   assert.equal(result.missingEnhancer, 'gemma4_e2b_it_int8_convrot.safetensors');
   assert.equal(result.existing, 'gemma4_e2b_it_bf16.safetensors');
   assert.equal(result.ambiguous, 'gemma4_e2b_it.safetensors');
+  assert.equal(result.ltxCheckpoint, 'ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors');
+  assert.equal(result.ltxTextEncoder, 'gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors');
   assert.equal(result.imageUpload, 'ltx_watch_create_fixture_reference_1.png');
   assert.equal(result.subgraph, 'gemma4_e2b_it_bf16.safetensors');
 });
@@ -226,6 +230,7 @@ test('Director patch relays timed prompts through the official Ingredients condi
     'print(json.dumps({',
     '  "relay": result["ltx_watch_director_relay"],',
     '  "conditioned": result["conditioning"]["inputs"]["positive"],',
+    '  "conditioningPrompt": module.director_conditioning_prompt(job),',
     '  "model": result["guider"]["inputs"]["model"],',
     '  "strength": result["model"]["inputs"]["strength_model"],',
     '}))',
@@ -246,9 +251,91 @@ test('Director patch relays timed prompts through the official Ingredients condi
   assert.equal(result.relay.inputs.global_prompt, 'Persistent silver robot in a red raincoat.');
   assert.equal(result.relay.inputs.local_prompts, 'Holds still.|Turns left / then walks.');
   assert.equal(result.relay.inputs.segment_lengths, '48,73');
-  assert.deepEqual(result.conditioned, ['ltx_watch_director_relay', 1]);
+  assert.deepEqual(result.conditioned, ['base', 0]);
+  assert.equal(result.conditioningPrompt, 'Persistent silver robot in a red raincoat. Holds still. Turns left / then walks.');
   assert.deepEqual(result.model, ['ltx_watch_director_relay', 0]);
   assert.equal(result.strength, 1.1);
+});
+
+test('Create compiler treats official workflow reroutes as UI-only passthrough links', (context) => {
+  const python = process.env.LTX_STUDIO_TEST_PYTHON || (process.platform === 'win32' ? 'python.exe' : 'python3');
+  const runner = path.join(appRoot, 'scripts', 'ltx-create-runner.py');
+  const code = [
+    'import importlib.util, json, os',
+    'spec = importlib.util.spec_from_file_location("ltx_create_reroute_test", os.environ["LTX_CREATE_RUNNER"])',
+    'module = importlib.util.module_from_spec(spec)',
+    'spec.loader.exec_module(module)',
+    'workflow = {',
+    '  "nodes": [',
+    '    {"id": 1, "type": "SourceNode", "inputs": [], "widgets_values": []},',
+    '    {"id": 2, "type": "Reroute", "inputs": [{"name": "", "type": "*", "link": 10}], "widgets_values": []},',
+    '    {"id": 3, "type": "TargetNode", "inputs": [{"name": "value", "type": "*", "link": 11}], "widgets_values": []},',
+    '    {"id": 4, "type": "Note", "inputs": [], "widgets_values": ["UI-only guidance"]}',
+    '  ],',
+    '  "links": [[10, 1, 0, 2, 0, "*"], [11, 2, 0, 3, 0, "*"]]',
+    '}',
+    'compiler = module.WorkflowCompiler("http://127.0.0.1:1")',
+    'compiler.object_info = lambda class_type: {"input": {"required": {"value": ["*", {}]}}} if class_type == "TargetNode" else {"input": {"required": {}}}',
+    'compiled = compiler.compile(workflow, {}, [], "video/ltx-watch-create/test")',
+    'print(json.dumps(compiled))',
+  ].join('\n');
+  const run = spawnSync(python, ['-c', code], {
+    cwd: appRoot,
+    encoding: 'utf8',
+    windowsHide: true,
+    env: { ...process.env, LTX_CREATE_RUNNER: runner },
+  });
+  if (run.error?.code === 'ENOENT') {
+    context.skip(`Python executable not available: ${python}`);
+    return;
+  }
+  assert.equal(run.status, 0, run.stderr || run.stdout);
+  const result = JSON.parse(run.stdout);
+  assert.deepEqual(result['3'].inputs.value, ['1', 0]);
+  assert.equal(result['2'], undefined);
+  assert.equal(result['4'], undefined);
+});
+
+test('Create compiler ignores obsolete unconsumed subgraph settings', (context) => {
+  const python = process.env.LTX_STUDIO_TEST_PYTHON || (process.platform === 'win32' ? 'python.exe' : 'python3');
+  const runner = path.join(appRoot, 'scripts', 'ltx-create-runner.py');
+  const code = [
+    'import importlib.util, json, os',
+    'spec = importlib.util.spec_from_file_location("ltx_create_unused_input_test", os.environ["LTX_CREATE_RUNNER"])',
+    'module = importlib.util.module_from_spec(spec)',
+    'spec.loader.exec_module(module)',
+    'workflow = {',
+    '  "nodes": [',
+    '    {"id": 1, "type": "SourceNode", "inputs": [], "widgets_values": []},',
+    '    {"id": 2, "type": "subgraph", "inputs": [{"name": "used", "type": "*", "link": 10}, {"name": "obsolete", "type": "INT", "link": None}], "widgets_values": []}',
+    '  ],',
+    '  "links": [[10, 1, 0, 2, 0, "*"]],',
+    '  "definitions": {"subgraphs": [{',
+    '    "id": "subgraph",',
+    '    "inputs": [{"name": "used", "label": "used", "type": "*"}, {"name": "obsolete", "label": "obsolete", "type": "INT"}],',
+    '    "nodes": [{"id": 3, "type": "TargetNode", "inputs": [{"name": "value", "type": "*", "link": 11}], "widgets_values": []}],',
+    '    "links": [[11, -10, 0, 3, 0, "*"]]',
+    '  }]}',
+    '}',
+    'compiler = module.WorkflowCompiler("http://127.0.0.1:1")',
+    'compiler.object_info = lambda class_type: {"input": {"required": {"value": ["*", {}]}}} if class_type == "TargetNode" else {"input": {"required": {}}}',
+    'compiled = compiler.compile(workflow, {}, [], "video/ltx-watch-create/test")',
+    'print(json.dumps(compiled))',
+  ].join('\n');
+  const run = spawnSync(python, ['-c', code], {
+    cwd: appRoot,
+    encoding: 'utf8',
+    windowsHide: true,
+    env: { ...process.env, LTX_CREATE_RUNNER: runner },
+  });
+  if (run.error?.code === 'ENOENT') {
+    context.skip(`Python executable not available: ${python}`);
+    return;
+  }
+  assert.equal(run.status, 0, run.stderr || run.stdout);
+  const result = JSON.parse(run.stdout);
+  const target = Object.values(result).find((node) => node.class_type === 'TargetNode');
+  assert.deepEqual(target.inputs.value, ['1', 0]);
 });
 
 test('Create retry replaces a stale result before the new runner is spawned', async () => {

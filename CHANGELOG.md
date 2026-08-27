@@ -31,6 +31,7 @@ All notable changes to LTX / Watch are documented here.
 
 ### Fixed
 
+- Director now compiles the current official Ingredients workflow's UI reroutes, notes, and obsolete unconsumed subgraph inputs; reconciles transformer, projected text-encoder, and prompt-enhancer model roles independently; preserves native LTX audio/video conditioning metadata while Prompt Relay patches the sampler model; and reports incompatible Kornia installations before queueing. A private idle-GPU smoke render completed successfully against the verified public dependency set.
 - Long-scene plans now split 13–20 second Director actions into valid bounded segments, and stale browser saves preserve newer queued, generating, review, accepted, failed, output, and anchor state.
 
 - Recovery-launched album workers now run through an app-owned recursive hidden-process adapter, preventing short-lived ComfyUI, Python, and FFmpeg console flashes from descendant processes on Windows.

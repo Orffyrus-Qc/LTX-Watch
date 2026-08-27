@@ -7,6 +7,7 @@ import {
   chooseComfyBlenderChannel,
   compareVersions,
   isComfyBlenderReceiptCurrent,
+  isDirectorKorniaCompatible,
   parseBlenderVersion,
   parseGpuCsv,
   parseRequirements,
@@ -40,6 +41,13 @@ test('numeric package versions compare independently of CUDA build suffixes', ()
   assert.equal(compareVersions('2.13.0+cu130', '2.13.0'), 0);
   assert.equal(compareVersions('1.49.6', '1.48.7'), 1);
   assert.equal(compareVersions('0.5.9', '0.5.10'), -1);
+});
+
+test('Director detects the Kornia pyramid API removal without importing packages', () => {
+  assert.equal(isDirectorKorniaCompatible('0.8.2', true), true);
+  assert.equal(isDirectorKorniaCompatible('0.8.3', true), false);
+  assert.equal(isDirectorKorniaCompatible('0.8.3', false), true);
+  assert.equal(isDirectorKorniaCompatible(null, false), false);
 });
 
 test('ComfyUI-Blender receipts compare equivalent Blender version text semantically', () => {

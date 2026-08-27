@@ -59,11 +59,10 @@ Saving an edited scene plan preserves server-owned render state so a stale brows
 
 Keep the project manifest and UI stable when possible; change the narrow generation adapter.
 
-1. Verify the current official T2V/I2V/FLF2V templates and the Director dependencies listed in `docs/LTX_COMPATIBILITY.md`.
+1. Verify the current official T2V/I2V/FLF2V templates and every Director dependency listed in `docs/LTX_COMPATIBILITY.md`, including the installed ComfyUI-LTXVideo node's Kornia API compatibility.
 2. If a verified workflow can consume both an Ingredients identity sheet and an explicit start frame, add a new versioned continuity visual contract. Do not silently reinterpret the existing modes.
 3. Patch graphs only in `scripts/ltx-create-runner.py`, using semantic class/consumer relationships and fixture graphs. Never accept graph structure from the browser.
 4. Preserve the server-side Project Continuity identity check and canonical prompt rebuild in `local-server.mjs`.
 5. Update `project-core.mjs` normalization before adding persistent fields. Optional fields can migrate forward; renames/removals require a schema-version change and migration coverage.
 6. Add pure tests for prompt composition, segment bounds, state migration, stale-save protection, path containment, and each workflow contract.
 7. Never run a real enqueue, installation, cancellation, pause/resume, Blender job, or GPU workflow as an automated test.
-

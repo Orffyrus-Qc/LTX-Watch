@@ -16,7 +16,7 @@ import {
   parseShotRange,
   sceneKey,
 } from './studio-core.mjs';
-import { buildEnvironmentAudit, findBlenderInstallation } from './lib/environment-audit.mjs';
+import { buildEnvironmentAudit, findBlenderInstallation, isDirectorKorniaCompatible } from './lib/environment-audit.mjs';
 import { updateComfyUiCore } from './lib/comfyui-core-update.mjs';
 import { installComfyUiBlender, normalizeLoopbackComfyUrl } from './lib/comfyui-blender-setup.mjs';
 import { moveFile } from './lib/move-file.mjs';
@@ -1237,6 +1237,27 @@ async function findNamedFile(root, fileName, maximumDepth = 3) {
   return walk(root, 0);
 }
 
+async function findPythonPackageVersion(comfyRoot, packageName) {
+  const normalized = String(packageName || '').replace(/[-.]+/g, '_');
+  const roots = [
+    path.join(comfyRoot, 'venv', 'Lib', 'site-packages'),
+    path.join(comfyRoot, '.venv', 'Lib', 'site-packages'),
+    path.join(comfyRoot, 'python_embeded', 'Lib', 'site-packages'),
+    path.join(comfyRoot, 'python', 'Lib', 'site-packages'),
+  ];
+  for (const root of roots) {
+    let entries = [];
+    try { entries = await readdir(root, { withFileTypes: true }); } catch { continue; }
+    const prefix = `${normalized}-`.toLowerCase();
+    const receipt = entries.find((entry) => entry.isDirectory()
+      && entry.name.toLowerCase().startsWith(prefix)
+      && entry.name.toLowerCase().endsWith('.dist-info'));
+    if (!receipt) continue;
+    return receipt.name.slice(prefix.length, -'.dist-info'.length);
+  }
+  return null;
+}
+
 async function resolveDirectorCapability(config) {
   const cacheKey = path.resolve(config.comfyRoot).toLowerCase();
   if (directorCache.key === cacheKey && directorCache.expiresAt > Date.now() && directorCache.value) return directorCache.value;
@@ -1244,27 +1265,44 @@ async function resolveDirectorCapability(config) {
     path.join(config.comfyRoot, 'custom_nodes', 'ComfyUI-PromptRelay'),
     path.join(config.comfyRoot, 'custom_nodes', 'comfyui-promptrelay'),
   ];
+  const ltxVideoRoots = [
+    path.join(config.comfyRoot, 'custom_nodes', 'ComfyUI-LTXVideo'),
+    path.join(config.comfyRoot, 'custom_nodes', 'comfyui-ltxvideo'),
+  ];
+  const ltxVideoPath = ltxVideoRoots.find((candidate) => existsSync(path.join(candidate, '__init__.py'))) || null;
   const workflowCandidates = [
-    path.join(config.comfyRoot, 'custom_nodes', 'ComfyUI-LTXVideo', 'example_workflows', '2.5', DIRECTOR_WORKFLOW_NAME),
+    ...(ltxVideoPath ? [path.join(ltxVideoPath, 'example_workflows', '2.5', DIRECTOR_WORKFLOW_NAME)] : []),
     path.join(config.comfyRoot, 'user', 'default', 'workflows', DIRECTOR_WORKFLOW_NAME),
     path.join(config.comfyRoot, 'workflows', DIRECTOR_WORKFLOW_NAME),
   ];
   const promptRelayPath = promptRelayRoots.find((candidate) => existsSync(path.join(candidate, '__init__.py'))) || null;
   const workflowPath = workflowCandidates.find(existsSync) || null;
   const ingredientsModelPath = await findNamedFile(path.join(config.comfyRoot, 'models', 'loras'), DIRECTOR_INGREDIENTS_MODEL, 3);
+  const korniaVersion = await findPythonPackageVersion(config.comfyRoot, 'kornia');
+  const pyramidSource = ltxVideoPath
+    ? await readFile(path.join(ltxVideoPath, 'pyramid_blending.py'), 'utf8').catch(() => '')
+    : '';
+  const requiresLegacyKorniaPyramidApi = /\b(?:find_next_powerof_two|is_powerof_two|pad)\b/.test(pyramidSource);
+  const korniaCompatible = isDirectorKorniaCompatible(korniaVersion, requiresLegacyKorniaPyramidApi);
   const missing = [];
   if (!promptRelayPath) missing.push('Prompt Relay custom node');
+  if (!ltxVideoPath) missing.push('official ComfyUI-LTXVideo custom node');
   if (!workflowPath) missing.push('official LTX 2.5 Ingredients workflow');
   if (!ingredientsModelPath) missing.push('Ingredients IC-LoRA model');
+  if (!korniaVersion) missing.push('Kornia Python dependency');
+  else if (!korniaCompatible) missing.push('a Kornia version compatible with the installed ComfyUI-LTXVideo node');
   const capability = {
     ready: missing.length === 0,
     promptRelayInstalled: Boolean(promptRelayPath),
+    ltxVideoInstalled: Boolean(ltxVideoPath),
     workflowInstalled: Boolean(workflowPath),
     ingredientsModelInstalled: Boolean(ingredientsModelPath),
+    korniaVersion,
+    korniaCompatible,
     workflowPath,
     ingredientsModelPath,
     links: DIRECTOR_LINKS,
-    blockedReason: missing.length ? `Install ${missing.join(', ')} to enable Director renders.` : null,
+    blockedReason: missing.length ? `Director setup needs ${missing.join(', ')}.` : null,
   };
   directorCache = { key: cacheKey, expiresAt: Date.now() + 30_000, value: capability };
   return capability;

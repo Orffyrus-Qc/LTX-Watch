@@ -52,7 +52,7 @@ The app runs entirely on your computer. It does not upload prompts, videos, logs
 - A local ComfyUI installation
 - An LTX workflow that writes video files to a local output directory
 - ComfyUI's official local `video_ltx2_5_t2v`, `video_ltx2_5_i2v`, and `video_ltx2_5_flf2v` workflow templates for the matching Create modes
-- Optional Director mode: [`ComfyUI-PromptRelay`](https://github.com/kijai/ComfyUI-PromptRelay), Lightricks' official `LTX-2.5_ICLoRA_Ingredients_Single_Stage_Distilled.json` workflow, and `ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors`
+- Optional Director mode: [`ComfyUI-PromptRelay`](https://github.com/kijai/ComfyUI-PromptRelay), Lightricks' official `ComfyUI-LTXVideo` node and `LTX-2.5_ICLoRA_Ingredients_Single_Stage_Distilled.json` workflow, `ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors`, and a compatible Kornia runtime (the currently verified node revision uses Kornia 0.8.2)
 - Optional: `ffprobe.exe` in the ComfyUI root for duration and resolution metadata
 - FFmpeg in the ComfyUI root or system path for dropped video/audio context and assembled-final browser compatibility copies
 - Optional: Blender 4.5 or Blender 5 for the ComfyUI-Blender integration
@@ -165,9 +165,9 @@ Director mode implements the public technique demonstrated in [What if AI Video 
 1. Enable **Director timeline** and write one global prompt containing only the subject identity, wardrobe, environment, lighting, lens, and style that must persist.
 2. Upload one Ingredients reference sheet containing only important characters, wardrobe, props, or locations. The sheet guides every frame and is not used as the opening frame.
 3. Describe the changing action in two to eight sequential segments. Start with a stable establishing segment, give complex action at least two seconds, and avoid contradictory cuts between adjacent prompts.
-4. The bridge converts segment durations to pixel-frame spans, inserts the public `PromptRelayEncode` node into Lightricks' official LTX 2.5 Ingredients graph, sends its temporal conditioning through `LTXAddVideoICLoRAGuide`, and sends its patched model to the sampler.
+4. The bridge converts segment durations to pixel-frame spans and inserts the public `PromptRelayEncode` node into Lightricks' official LTX 2.5 Ingredients graph. Prompt Relay's patched model drives temporal scheduling, while the matching combined prompt stays on LTX 2.5's native `CLIPTextEncode` → `LTXVConditioning` → `LTXAddVideoICLoRAGuide` path so audio/video embedding metadata is preserved.
 
-Director is deliberately capability-gated. The queue button remains disabled if Prompt Relay, the official Ingredients workflow, the IC-LoRA model, a valid sheet, or a valid timeline is missing. It never falls back to an ordinary text workflow. The model's gated license must be accepted manually on Hugging Face; LTX Watch does not accept licenses or download model weights implicitly.
+Director is deliberately capability-gated. The queue button remains disabled if Prompt Relay, ComfyUI-LTXVideo, the official Ingredients workflow, a compatible Kornia runtime, the IC-LoRA model, a valid sheet, or a valid timeline is missing. It never falls back to an ordinary text workflow. The model's gated license must be accepted manually on Hugging Face; LTX Watch does not accept licenses or download model weights implicitly.
 
 The official Ingredients workflow currently derives the video aspect ratio from the reference sheet and uses a 544-pixel short edge. The normal Create resolution preset is therefore disabled in Director mode and is not misrepresented as active. Director and Blender backbones are mutually exclusive in this first adapter. Prompt Relay guides temporal attention; it is not frame-level animation control.
 
