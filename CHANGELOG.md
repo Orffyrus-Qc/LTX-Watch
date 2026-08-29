@@ -6,6 +6,7 @@ All notable changes to LTX / Watch are documented here.
 
 ### Added
 
+- Overview **Pause after current** control. It keeps the existing immediate **Pause render** behavior and, when armed, lets the active album job finish, then suspends the worker so the next queued job does not start.
 - Experimental **Create** workspace for original local LTX 2.5 text-to-video, first-frame, and first/last-frame generation using ComfyUI's official full-workflow templates.
 - Private persistent drafts, one-to-four variation queue, random/fixed seeds, prompt enhancement, format, camera, motion, style, audio, progress, history, playback, Explorer, retry, pause-between-jobs, and **Move first** controls.
 - Unified drag-and-drop context intake for images, video, songs, and `.blend` scenes, with private chunked uploads, video frame extraction, final-soundtrack replacement, and optional Blender-backed anchors.

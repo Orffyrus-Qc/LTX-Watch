@@ -6,6 +6,7 @@ import {
   ChevronRight,
   CircleAlert,
   Clapperboard,
+  CirclePause,
   Clock3,
   Cpu,
   Download,
@@ -117,6 +118,8 @@ type MonitorState = {
     recoveryReason: 'system-restarted' | 'process-ended' | null;
     recoveryAvailable: boolean;
     restartedShot: string | null;
+    pauseAfterCurrent?: boolean;
+    pauseAfterCurrentSlug?: string | null;
     message: string;
     token: string;
   };
@@ -301,7 +304,20 @@ export default function Dashboard() {
   const [search, setSearch] = useState('');
   const [visibleCount, setVisibleCount] = useState(9);
   const [toast, setToast] = useState('');
+  const [toastTone, setToastTone] = useState<'ok' | 'error'>('ok');
   const [workspace, setWorkspace] = useState<'watch' | 'create' | 'studio' | 'projects'>('watch');
+
+  function showToast(message: string, tone: 'ok' | 'error' = 'ok') {
+    setToastTone(tone);
+    setToast(message);
+  }
+
+  function controlErrorMessage(message: string, fallback: string) {
+    if (/action must be pause or resume/i.test(message)) {
+      return 'The local bridge is still the old process. Restart LTX Watch, then press Pause after current again.';
+    }
+    return message || fallback;
+  }
 
   const loadState = useCallback(async (quiet = false) => {
     if (!quiet) setRefreshing(true);
@@ -336,9 +352,9 @@ export default function Dashboard() {
   }, []);
   useEffect(() => {
     if (!toast) return;
-    const timer = window.setTimeout(() => setToast(''), 2600);
+    const timer = window.setTimeout(() => setToast(''), toastTone === 'error' ? 8000 : 5000);
     return () => window.clearTimeout(timer);
-  }, [toast]);
+  }, [toast, toastTone]);
   useEffect(() => {
     const video = selectedVideo;
     const token = state?.control.token;
@@ -506,9 +522,9 @@ export default function Dashboard() {
       const response = await fetch(`${API_BASE}/api/config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings) });
       if (!response.ok) throw new Error('Settings were not saved');
       setSettingsOpen(false);
-      setToast('Monitor settings saved');
+      showToast('Monitor settings saved');
       await loadState();
-    } catch (requestError) { setToast(requestError instanceof Error ? requestError.message : 'Settings were not saved'); }
+    } catch (requestError) { showToast(requestError instanceof Error ? requestError.message : 'Settings were not saved', 'error'); }
   }
 
   async function toggleGenerator() {
@@ -523,12 +539,33 @@ export default function Dashboard() {
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || `Could not ${action} the generator`);
-      setToast(payload.control?.recoveryReason || payload.control?.restartedShot
+      showToast(payload.control?.recoveryReason || payload.control?.restartedShot
         ? payload.control.message
         : action === 'pause' ? 'Generation paused — VRAM is preserved' : 'Generation resumed');
       await loadState(true);
     } catch (requestError) {
-      setToast(requestError instanceof Error ? requestError.message : `Could not ${action} the generator`);
+      showToast(controlErrorMessage(requestError instanceof Error ? requestError.message : '', `Could not ${action} the generator`), 'error');
+    } finally { setControlPending(false); }
+  }
+
+  async function togglePauseAfterCurrent() {
+    if (!state?.control?.canControl || controlPending || state.control.state === 'paused' || state.control.state === 'recovery') return;
+    const action = state.control.pauseAfterCurrent ? 'cancel-pause-after-current' : 'pause-after-current';
+    setControlPending(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/control`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-LTX-Control-Token': state.control.token },
+        body: JSON.stringify({ action }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'Could not update pause-after-current');
+      showToast(action === 'pause-after-current'
+        ? 'Armed: this job will finish, then the queue will hold'
+        : 'Canceled: the queue will continue after this job');
+      await loadState(true);
+    } catch (requestError) {
+      showToast(controlErrorMessage(requestError instanceof Error ? requestError.message : '', 'Could not arm pause after current'), 'error');
     } finally { setControlPending(false); }
   }
 
@@ -539,6 +576,8 @@ export default function Dashboard() {
   const live = Boolean(state?.connection.worker || state?.connection.comfy);
   const recoveryRequired = state?.control?.state === 'recovery';
   const isPaused = state?.control?.state === 'paused' || recoveryRequired;
+  const pauseAfterCurrent = Boolean(state?.control?.pauseAfterCurrent);
+  const canPauseAfterCurrent = Boolean(state?.control?.canControl && active && (state?.queue.length || pauseAfterCurrent) && !isPaused);
   const greeting = new Date().getHours() < 12 ? 'Good morning' : new Date().getHours() < 18 ? 'Good afternoon' : 'Good evening';
 
   return (
@@ -574,10 +613,16 @@ export default function Dashboard() {
           <div className="header-actions">
             <button className="icon-button" onClick={() => loadState()} aria-label="Refresh data" title="Refresh data"><RefreshCw size={16} className={refreshing ? 'spinning' : ''} /></button>
             <button className="secondary-button" onClick={() => state?.config.finalsDirectory && openInExplorer(state.config.finalsDirectory)}><FolderOpen size={15} /> Open outputs</button>
-            {workspace === 'watch' && <button className={`control-button ${isPaused ? 'resume' : 'pause'}`} onClick={toggleGenerator} disabled={!state?.control?.canControl || controlPending} title={recoveryRequired ? 'Restart the interrupted shot from the beginning' : isPaused ? 'Resume the suspended LTX worker' : 'Suspend the active LTX worker and its ComfyUI subprocesses'}>
-              {controlPending ? <LoaderCircle size={15} className="spinning" /> : isPaused ? <Play size={15} fill="currentColor" /> : <Pause size={15} fill="currentColor" />}
-              <span>{controlPending ? 'Working…' : recoveryRequired ? 'Retry interrupted shot' : isPaused ? 'Resume render' : 'Pause render'}</span>
-            </button>}
+            {workspace === 'watch' && <>
+              <button className={`control-button ${isPaused ? 'resume' : 'pause'}`} onClick={toggleGenerator} disabled={!state?.control?.canControl || controlPending} title={recoveryRequired ? 'Restart the interrupted shot from the beginning' : isPaused ? 'Resume the suspended LTX worker' : 'Suspend the active LTX worker and its ComfyUI subprocesses'}>
+                {controlPending ? <LoaderCircle size={15} className="spinning" /> : isPaused ? <Play size={15} fill="currentColor" /> : <Pause size={15} fill="currentColor" />}
+                <span>{controlPending ? 'Working…' : recoveryRequired ? 'Retry interrupted shot' : isPaused ? 'Resume render' : 'Pause render'}</span>
+              </button>
+              {!isPaused && <button className={`control-button drain ${pauseAfterCurrent ? 'armed' : ''}`} onClick={togglePauseAfterCurrent} disabled={!canPauseAfterCurrent || controlPending} aria-pressed={pauseAfterCurrent} title={pauseAfterCurrent ? 'Cancel: the queue will continue after this job' : 'Let the current job finish, then hold the rest of the queue'}>
+                <CirclePause size={15} />
+                <span>{pauseAfterCurrent ? 'Waiting for current job' : 'Pause after current'}</span>
+              </button>}
+            </>}
             <div className={`sync ${error ? 'sync-error' : ''}`}><span className="status-dot" /> {error ? 'BRIDGE OFFLINE' : workspace === 'create' ? 'CREATE · LOCAL' : workspace === 'studio' ? state?.studio.canGenerate ? 'STUDIO READY' : 'STUDIO SAFE WAIT' : workspace === 'projects' ? 'PROJECTS · LOCAL' : 'LIVE · AUTO REFRESH'}</div>
           </div>
         </header>
@@ -585,12 +630,13 @@ export default function Dashboard() {
         {error && <div className="error-banner" role="alert"><CircleAlert size={16} /><span><strong>Local bridge unavailable.</strong> Start the monitor with <code>npm run dev</code> and this page will reconnect automatically.</span></div>}
 
         {workspace === 'create' ? <CreateWorkspace token={state?.control.token} apiBase={API_BASE} refreshSeconds={state?.config.refreshSeconds} onToast={setToast} onOpen={openInExplorer} onPlay={(video: StudioVideo) => playVideo(video)} /> : workspace === 'studio' ? <StudioWorkspace studio={state?.studio} token={state?.control.token} apiBase={API_BASE} onRefresh={() => loadState(true)} onToast={setToast} onPlay={(video: StudioVideo) => playVideo(video)} /> : workspace === 'projects' ? <ProjectWorkspace token={state?.control.token} apiBase={API_BASE} refreshSeconds={state?.config.refreshSeconds} onToast={setToast} onOpen={openInExplorer} onPlay={(video: StudioVideo) => playVideo(video)} onOpenCreate={() => setWorkspace('create')} /> : <>
-        <section className={`hero ${active ? '' : 'hero-idle'} ${isPaused ? 'hero-paused' : ''}`} id="overview">
+        {pauseAfterCurrent && <div className="drain-banner" role="status"><CirclePause size={16} /><span><strong>Pause after current is armed.</strong> This job will finish. The next queued job will not start.</span><button type="button" onClick={() => void togglePauseAfterCurrent()} disabled={controlPending}>Cancel wait</button></div>}
+        <section className={`hero ${active ? '' : 'hero-idle'} ${isPaused ? 'hero-paused' : ''} ${pauseAfterCurrent ? 'hero-drain' : ''}`} id="overview">
           <div className="hero-copy">
-            <div className="job-label"><span className="pulse" /> {recoveryRequired ? 'SHOT RESTART REQUIRED' : isPaused ? 'GENERATION PAUSED' : active ? 'GENERATING NOW' : state?.connection.worker ? 'WORKER TRANSITIONING' : 'NO ACTIVE JOB'} <span>{current ? `SHOT ${Math.min(current.completedShots + 1, current.totalShots)} OF ${current.totalShots}` : 'STANDING BY'}</span></div>
+            <div className="job-label"><span className="pulse" /> {recoveryRequired ? 'SHOT RESTART REQUIRED' : isPaused ? 'GENERATION PAUSED' : pauseAfterCurrent ? 'FINISHING CURRENT JOB' : active ? 'GENERATING NOW' : state?.connection.worker ? 'WORKER TRANSITIONING' : 'NO ACTIVE JOB'} <span>{current ? `SHOT ${Math.min(current.completedShots + 1, current.totalShots)} OF ${current.totalShots}` : 'STANDING BY'}</span></div>
             <h2>{current ? titleFromSlug(current.slug) : state?.queue[0] ? `Next: ${titleFromSlug(state.queue[0].slug)}` : 'Render queue complete'}</h2>
             <p>{current ? `${current.section.replace(/_/g, ' ')} · ${state?.config.modelLabel || 'LTX Video'} · Worker ${current.worker.toUpperCase()}` : `${state?.config.modelLabel || 'LTX Video'} · Local output monitor`}</p>
-            <div className="progress-row"><span>{recoveryRequired ? `Resume will retry shot ${current?.currentShot || ''} from the beginning` : isPaused ? 'Paused in place · VRAM remains allocated' : current?.stage || 'Waiting for the next generation event'}</span><strong>{current ? `${Math.round(current.progress)}%` : '—'}</strong></div>
+            <div className="progress-row"><span>{recoveryRequired ? `Resume will retry shot ${current?.currentShot || ''} from the beginning` : isPaused ? 'Paused in place · VRAM remains allocated' : pauseAfterCurrent ? 'This job will finish, then the queue will hold' : current?.stage || 'Waiting for the next generation event'}</span><strong>{current ? `${Math.round(current.progress)}%` : '—'}</strong></div>
             <div className="progress"><span style={{ width: `${current?.progress || 0}%` }} /></div>
             <div className="metrics">
               <div><Clock3 size={18} /><span><small>ELAPSED</small><b>{current ? formatDuration(elapsedSeconds, true) : '—'}</b></span></div>
@@ -792,7 +838,7 @@ export default function Dashboard() {
         </section>
       </div>}
 
-      {toast && <div className="toast" role="status"><Check size={15} />{toast}</div>}
+      {toast && <div className={`toast ${toastTone === 'error' ? 'toast-error' : ''}`} role="status">{toastTone === 'error' ? <CircleAlert size={15} /> : <Check size={15} />}{toast}</div>}
     </main>
   );
 }

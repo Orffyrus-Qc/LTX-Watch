@@ -312,6 +312,8 @@ The bridge binds to loopback only. Control requests require a random token gener
 
 **Pause render** suspends the configured LTX worker and all of its active child processes. **Resume render** reverses that suspension. The operation does not kill, interrupt, or restart ComfyUI.
 
+**Pause after current** leaves the active job running. When that job finishes, LTX / Watch suspends the worker so the next queued job does not start. Press the button again to cancel the wait. Immediate **Pause render** still works at any time.
+
 Important behavior:
 
 - The current shot remains in memory.

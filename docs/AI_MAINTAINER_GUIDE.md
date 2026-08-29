@@ -255,6 +255,8 @@ When adapting a new worker launcher:
 
 If the new runner does not expose a stable PID, disable pause/resume (`canControl: false`) until a safe adapter exists.
 
+**Pause after current** is a drain flag on the orchestrator record. It must not replace immediate pause. Polling `/api/state` may apply the existing suspend path only after the armed current job is no longer current. Never terminate or `/interrupt` ComfyUI to implement the drain.
+
 ### Studio generation
 
 Studio generation is separate from native pause/resume. Preserve these invariants:

@@ -33,6 +33,7 @@ import {
   browserPlaybackKey,
   browserPlaybackPaths,
 } from './lib/browser-playback.mjs';
+import { resolvePauseAfterCurrent, withPauseAfterCurrent } from './lib/pause-after-current.mjs';
 import {
   PROJECT_FILE_LIMIT,
   buildContinuityPrompt,
@@ -109,6 +110,7 @@ let studioMutationInFlight = false;
 let projectMutationInFlight = false;
 let createMutationInFlight = false;
 let generationLaunchInFlight = false;
+let pauseAfterCurrentInFlight = false;
 let sourcePlanCache = { key: '', expiresAt: 0, value: [], promise: null };
 const projectUploads = new Map();
 const createUploads = new Map();
@@ -490,6 +492,7 @@ async function getOrchestratorRecord() {
   const record = await readJson(ORCHESTRATOR_STATE_PATH, {
     mode: 'running', rootPids: [], affectedPids: [], changedAt: null,
     trackScope: null, trackPausedMs: 0, shotScope: null, shotPausedMs: 0,
+    pauseAfterCurrent: false, pauseAfterCurrentSlug: null,
   });
   const recoveryReason = getStalePauseReason(record);
   if (!recoveryReason) return record;
@@ -618,6 +621,7 @@ function getControlView(record, status, config) {
     : record.recoveryReason === 'process-ended'
       ? `The paused worker ended before it could resume. Resume will restart shot ${parseShotScope(record)?.shot || ''} from the beginning.`
       : null;
+  const pauseAfterCurrent = record.pauseAfterCurrent === true && !paused && !recovery;
   return {
     state: recovery ? 'recovery' : paused ? 'paused' : 'running',
     canControl: recovery ? recoveryAvailable : workerPids.length > 0,
@@ -627,8 +631,14 @@ function getControlView(record, status, config) {
     recoveryReason: record.recoveryReason || null,
     recoveryAvailable,
     restartedShot: record.restartedShot || null,
+    pauseAfterCurrent,
+    pauseAfterCurrentSlug: pauseAfterCurrent ? record.pauseAfterCurrentSlug || null : null,
     message: recoveryMessage || (paused
-      ? 'The LTX worker and its active ComfyUI subprocesses are suspended.'
+      ? (record.pauseAfterCurrentApplied
+        ? 'Paused after the current job finished. The next queued job was not started.'
+        : 'The LTX worker and its active ComfyUI subprocesses are suspended.')
+      : pauseAfterCurrent
+        ? 'The current job will finish. The next queued job will not start.'
       : record.restartedShot
         ? `Shot ${record.restartedShot} restarted from the beginning after the interrupted process ended.`
       : workerPids.length
@@ -657,36 +667,96 @@ function runProcessOrchestrator(mode, rootPids, expectedCommandFragment) {
   });
 }
 
+async function writeOrchestratorRecord(record) {
+  await writeFile(ORCHESTRATOR_STATE_PATH, `${JSON.stringify(record, null, 2)}\n`, 'utf8');
+  return record;
+}
+
+async function suspendGenerator(record, status, config, current, { afterCurrent = false } = {}) {
+  const currentView = getControlView(record, status, config);
+  if (!currentView.canControl) throw new Error('No active LTX worker is available to control.');
+  const result = await runProcessOrchestrator('suspend', currentView.workerPids, config.workerCommandFragment);
+  const now = new Date();
+  const trackScope = current?.slug || null;
+  const shotScope = current ? `${current.slug}/${current.currentShot || ''}` : null;
+  const next = withPauseAfterCurrent({
+    mode: 'paused',
+    rootPids: currentView.workerPids,
+    affectedPids: result.affected,
+    pausedAt: now.toISOString(),
+    changedAt: now.toISOString(),
+    trackScope,
+    trackPausedMs: record.trackScope === trackScope ? Number(record.trackPausedMs || 0) : 0,
+    shotScope,
+    shotPausedMs: record.shotScope === shotScope ? Number(record.shotPausedMs || 0) : 0,
+    pauseAfterCurrentApplied: afterCurrent === true,
+  }, { armed: false });
+  await writeOrchestratorRecord(next);
+  return getControlView(next, status, config);
+}
+
+async function maybeApplyPauseAfterCurrent(record, status, config, current) {
+  const decision = resolvePauseAfterCurrent(record, current?.slug || null, getControlView(record, status, config));
+  if (decision.type === 'idle' || decision.type === 'keep') return record;
+  if (decision.type === 'bind') {
+    const next = withPauseAfterCurrent(record, { armed: true, slug: decision.slug });
+    await writeOrchestratorRecord(next);
+    return next;
+  }
+  if (decision.type === 'clear') {
+    const next = withPauseAfterCurrent({ ...record, pauseAfterCurrentApplied: false }, { armed: false });
+    await writeOrchestratorRecord(next);
+    return next;
+  }
+  if (decision.type !== 'pause' || pauseAfterCurrentInFlight) return record;
+  pauseAfterCurrentInFlight = true;
+  try {
+    await suspendGenerator(record, status, config, current, { afterCurrent: true });
+    return getOrchestratorRecord();
+  } catch {
+    return record;
+  } finally {
+    pauseAfterCurrentInFlight = false;
+  }
+}
+
 async function controlGenerator(action) {
   const config = await getConfig();
   const [status, record, logText] = await Promise.all([
     readJson(config.statusFile, {}), getOrchestratorRecord(), readTail(config.logFile),
   ]);
   const currentView = getControlView(record, status, config);
+  const current = parseLog(logText).current;
   if (action === 'pause' && currentView.state === 'paused') return currentView;
   if (action === 'resume' && currentView.state === 'running') return currentView;
+  if (action === 'pause-after-current') {
+    if (currentView.state === 'paused' || currentView.state === 'recovery') return currentView;
+    if (!currentView.canControl) throw new Error('No active LTX worker is available to control.');
+    if (!current?.slug) throw new Error('No current job is running to finish first.');
+    const next = withPauseAfterCurrent({
+      ...record,
+      changedAt: new Date().toISOString(),
+      pauseAfterCurrentApplied: false,
+    }, { armed: true, slug: current.slug });
+    await writeOrchestratorRecord(next);
+    return getControlView(next, status, config);
+  }
+  if (action === 'cancel-pause-after-current') {
+    const next = withPauseAfterCurrent({ ...record, pauseAfterCurrentApplied: false }, { armed: false });
+    await writeOrchestratorRecord(next);
+    return getControlView(next, status, config);
+  }
   if (!currentView.canControl) throw new Error('No active LTX worker is available to control.');
 
-  const current = parseLog(logText).current;
   const now = new Date();
   if (action === 'pause') {
-    const result = await runProcessOrchestrator('suspend', currentView.workerPids, config.workerCommandFragment);
-    const trackScope = current?.slug || null;
-    const shotScope = current ? `${current.slug}/${current.currentShot || ''}` : null;
-    const next = {
-      mode: 'paused', rootPids: currentView.workerPids, affectedPids: result.affected,
-      pausedAt: now.toISOString(), changedAt: now.toISOString(),
-      trackScope, trackPausedMs: record.trackScope === trackScope ? Number(record.trackPausedMs || 0) : 0,
-      shotScope, shotPausedMs: record.shotScope === shotScope ? Number(record.shotPausedMs || 0) : 0,
-    };
-    await writeFile(ORCHESTRATOR_STATE_PATH, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
-    return getControlView(next, status, config);
+    return suspendGenerator(record, status, config, current);
   }
 
   if (currentView.state === 'recovery') {
     const recovered = await restartInterruptedShot(config, record);
     const pausedForMs = Math.max(0, now.getTime() - new Date(record.pausedAt || now).getTime());
-    const next = {
+    const next = withPauseAfterCurrent({
       ...record,
       mode: 'running',
       rootPids: recovered.workerPids,
@@ -698,10 +768,11 @@ async function controlGenerator(action) {
       recoveryScript: recovered.script,
       archivedInterruptedFiles: recovered.archived,
       recoveryReason: null,
+      pauseAfterCurrentApplied: false,
       trackPausedMs: Number(record.trackPausedMs || 0) + pausedForMs,
       shotPausedMs: Number(record.shotPausedMs || 0) + pausedForMs,
-    };
-    await writeFile(ORCHESTRATOR_STATE_PATH, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+    }, { armed: false });
+    await writeOrchestratorRecord(next);
     return getControlView(next, recovered.status, config);
   }
 
@@ -723,7 +794,7 @@ async function controlGenerator(action) {
     await writeFile(ORCHESTRATOR_STATE_PATH, `${JSON.stringify(recoveryRecord, null, 2)}\n`, 'utf8');
     const recovered = await restartInterruptedShot(config, recoveryRecord);
     const pausedForMs = Math.max(0, now.getTime() - new Date(record.pausedAt || now).getTime());
-    const next = {
+    const next = withPauseAfterCurrent({
       ...recoveryRecord,
       mode: 'running',
       rootPids: recovered.workerPids,
@@ -734,20 +805,22 @@ async function controlGenerator(action) {
       recoveryScript: recovered.script,
       archivedInterruptedFiles: recovered.archived,
       recoveryReason: null,
+      pauseAfterCurrentApplied: false,
       trackPausedMs: Number(record.trackPausedMs || 0) + pausedForMs,
       shotPausedMs: Number(record.shotPausedMs || 0) + pausedForMs,
-    };
-    await writeFile(ORCHESTRATOR_STATE_PATH, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+    }, { armed: false });
+    await writeOrchestratorRecord(next);
     return getControlView(next, recovered.status, config);
   }
   const pausedForMs = Math.max(0, now.getTime() - new Date(record.pausedAt || now).getTime());
-  const next = {
+  const next = withPauseAfterCurrent({
     ...record, mode: 'running', rootPids: [], affectedPids: [], pausedAt: null,
     changedAt: now.toISOString(), resumedAt: now.toISOString(), recoveryReason: null,
+    pauseAfterCurrentApplied: false,
     trackPausedMs: Number(record.trackPausedMs || 0) + pausedForMs,
     shotPausedMs: Number(record.shotPausedMs || 0) + pausedForMs,
-  };
-  await writeFile(ORCHESTRATOR_STATE_PATH, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+  }, { armed: false });
+  await writeOrchestratorRecord(next);
   return getControlView(next, status, config);
 }
 
@@ -2415,13 +2488,15 @@ async function appendProjectUpload(req, uploadId) {
 
 async function buildState() {
   const config = await getConfig();
-  const [status, plan, logText, finals, clips, comfy, orchestratorRecord] = await Promise.all([
+  const [status, plan, logText, finals, clips, comfy, initialOrchestratorRecord] = await Promise.all([
     readJson(config.statusFile, {}), readJson(config.planFile, {}), readTail(config.logFile),
     walkVideos(config.finalsDirectory, 'final', config.maxVideos), walkVideos(config.clipsDirectory, 'clip', config.maxVideos),
     getComfyQueue(config), getOrchestratorRecord(),
   ]);
+  let orchestratorRecord = initialOrchestratorRecord;
   const parsed = parseLog(logText);
   const gpus = await getGpuTelemetry(status, plan);
+  orchestratorRecord = await maybeApplyPauseAfterCurrent(orchestratorRecord, status, config, parsed.current);
   const control = getControlView(orchestratorRecord, status, config);
   const completedShots = await countCompletedShots(config, parsed.current);
   const allFiles = [...finals, ...clips].sort((a, b) => b.modifiedMs - a.modifiedMs).slice(0, config.maxVideos);
@@ -2764,7 +2839,9 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && requestUrl.pathname === '/api/control') {
       if (req.headers['x-ltx-control-token'] !== CONTROL_TOKEN) return sendJson(res, 403, { error: 'Invalid local control token' });
       const action = (await readBody(req)).action;
-      if (action !== 'pause' && action !== 'resume') return sendJson(res, 400, { error: 'Action must be pause or resume' });
+      if (!['pause', 'resume', 'pause-after-current', 'cancel-pause-after-current'].includes(action)) {
+        return sendJson(res, 400, { error: 'Action must be pause, resume, pause-after-current, or cancel-pause-after-current' });
+      }
       return sendJson(res, 200, { ok: true, control: await controlGenerator(action) });
     }
     if (req.method === 'POST' && requestUrl.pathname === '/api/studio') {

@@ -34,6 +34,7 @@ Do not rely on blog posts or copied endpoint lists when the upstream source or O
 ## Hard safety rules
 
 - Never call the real `/api/control` pause/resume action during an automated check.
+- Never call `/api/control` `pause-after-current` during an automated check; it can later apply the real suspend path when the current job ends.
 - Never call a real `/api/studio` generate action during an automated check. Use the fixture runner under `tests/fixtures`.
 - Never enqueue a mapped shot through `/api/projects` during an automated or live UI check; a queued item may start a real Studio generation when the GPU is idle.
 - Never enqueue through `/api/create` or press **Queue creation** during an automated or live UI check; an authorized Create item may start a real local LTX workflow when the GPU becomes idle.
