@@ -5,7 +5,7 @@
 ![LTX](https://img.shields.io/badge/LTX-2.5-C8FF32?labelColor=111417)
 ![Local first](https://img.shields.io/badge/data-local%20only-C8FF32?labelColor=111417)
 
-![LTX Watch dashboard showing active generation progress, queued jobs, output history, and live activity](docs/images/ltx-watch-dashboard.png)
+![LTX Watch overview with Pause after current armed, live album progress, queued jobs, and output history](docs/images/ltx-watch-dashboard.png)
 
 **LTX / Watch** is a private, local-first dashboard and production workspace for LTX Video jobs running through ComfyUI. It includes a human-in-the-loop Studio where each shot is generated, reviewed, corrected, and explicitly accepted before moving forward.
 
@@ -43,6 +43,20 @@ The app runs entirely on your computer. It does not upload prompts, videos, logs
 - First-class Blender/3D assets with one designated project backbone scene for shared cameras, blocking, and spatial continuity
 - Persistent **Continuity Bible** for reusable world, visual-language, invariant, negative, character, location, wardrobe, prop, vehicle, and style memory
 - Open-ended long-scene planner with review-gated 5–20 second clips, canonical Ingredients cuts, and accepted-ending first-frame handoffs for continuous clips
+
+## Screenshots
+
+**Create** — story, Director timeline, Ingredients requirement, context drop, and format controls.
+
+![Create workspace with story, global continuity prompt, and Director timeline](docs/images/ltx-watch-create.png)
+
+![Director timed action segments with the Ingredients reference requirement](docs/images/ltx-watch-create-director.png)
+
+![Create context drop, format, visual backbone, and creative controls](docs/images/ltx-watch-create-context.png)
+
+**Projects** — shot library, LTX mapping, and selective regeneration.
+
+![Projects workspace with indexed shots, LTX mapping, and regeneration controls](docs/images/ltx-watch-projects.png)
 
 ## Requirements
 
