@@ -460,13 +460,15 @@ Coding agents should start with [AGENTS.md](AGENTS.md) and [docs/AI_MAINTAINER_G
 
 ### The dashboard says “Bridge offline”
 
-Run the complete local command, not the site-only command:
+Start LTX Watch with **Start LTX Watch.bat** or:
 
 ```powershell
 npm run dev
 ```
 
-`npm run site:dev` starts only the web UI and cannot read local outputs.
+That launcher always brings up the local bridge before the UI. `npm run site:dev` starts only the web page and cannot read local outputs. Closing Grok does not start or stop LTX Watch; leave the Start LTX Watch window open.
+
+If the page is already open from an earlier session, start the bat file anyway. It will start the missing bridge on `127.0.0.1:4312` without replacing the running UI.
 
 ### Videos do not appear
 
