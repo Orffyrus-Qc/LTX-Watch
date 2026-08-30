@@ -1,14 +1,21 @@
 import { spawn } from 'node:child_process';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
+const projectRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const mode = process.argv[2] === 'start' ? 'start' : 'dev';
 const sitePort = Math.min(65_535, Math.max(1_024, Number(process.env.LTX_WATCH_SITE_PORT || 3000)));
 const apiPort = Math.min(65_535, Math.max(1_024, Number(process.env.LTX_WATCH_API_PORT || 4311)));
-const bridgeUrl = `http://127.0.0.1:${apiPort}/api/health`;
-const uiUrl = `http://127.0.0.1:${sitePort}/`;
-const siteScript = `npm run site:${mode}${sitePort === 3000 ? '' : ` -- --port ${sitePort}`}`;
-const siteCommand = process.platform === 'win32'
-  ? [process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', siteScript]]
-  : ['npm', ['run', `site:${mode}`, ...(sitePort === 3000 ? [] : ['--', '--port', String(sitePort)])]];
+const vinextCli = path.join(projectRoot, 'node_modules', 'vinext', 'dist', 'cli.js');
+const serveProduction = path.join(projectRoot, 'scripts', 'serve-production.mjs');
+
+function candidateUrls(port, pathName = '/') {
+  return [
+    `http://127.0.0.1:${port}${pathName}`,
+    `http://localhost:${port}${pathName}`,
+    `http://[::1]:${port}${pathName}`,
+  ];
+}
 
 async function isAvailable(url) {
   try {
@@ -19,17 +26,27 @@ async function isAvailable(url) {
   }
 }
 
-async function waitFor(url, timeoutMs = 20_000) {
+async function anyAvailable(urls) {
+  for (const url of urls) {
+    if (await isAvailable(url)) return url;
+  }
+  return null;
+}
+
+async function waitFor(urls, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (await isAvailable(url)) return true;
+    const ready = await anyAvailable(urls);
+    if (ready) return ready;
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 200));
   }
-  return false;
+  return null;
 }
 
 function startHidden(file, args) {
   const child = spawn(file, args, {
+    cwd: projectRoot,
+    env: process.env,
     detached: true,
     stdio: 'ignore',
     windowsHide: true,
@@ -47,15 +64,22 @@ function openBrowser(url) {
   child.unref();
 }
 
-if (!(await isAvailable(bridgeUrl))) startHidden(process.execPath, ['local-server.mjs']);
-if (!(await waitFor(bridgeUrl))) {
-  console.error(`LTX Watch bridge did not start on 127.0.0.1:${apiPort}.`);
+const bridgeUrls = candidateUrls(apiPort, '/api/health');
+if (!(await anyAvailable(bridgeUrls))) {
+  startHidden(process.execPath, [path.join(projectRoot, 'local-server.mjs')]);
+}
+if (!(await waitFor(bridgeUrls))) {
+  console.error(`LTX Watch bridge did not start on port ${apiPort}.`);
   process.exit(1);
 }
 
-if (!(await isAvailable(uiUrl))) startHidden(siteCommand[0], siteCommand[1]);
-if (!(await waitFor(uiUrl, 30_000))) {
-  console.error(`LTX Watch UI did not start on http://127.0.0.1:${sitePort}. The hidden bridge is still running.`);
+const uiUrls = candidateUrls(sitePort);
+if (!(await anyAvailable(uiUrls))) {
+  if (mode === 'start') startHidden(process.execPath, [serveProduction]);
+  else startHidden(process.execPath, [vinextCli, 'dev', '--port', String(sitePort)]);
+}
+if (!(await waitFor(uiUrls, 45_000))) {
+  console.error(`LTX Watch UI did not start on port ${sitePort}. The hidden bridge is still running.`);
   process.exit(1);
 }
 
