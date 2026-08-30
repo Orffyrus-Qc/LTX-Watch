@@ -575,7 +575,11 @@ export default function Dashboard() {
   }
 
   async function quitWatch() {
-    if (!state?.control?.token || quitPending) return;
+    if (quitPending) return;
+    if (!state?.control?.token) {
+      showToast('The local bridge is not ready yet. Start LTX Watch again, then use Quit.', 'error');
+      return;
+    }
     setQuitPending(true);
     try {
       const response = await fetch(`${API_BASE}/api/quit`, {
@@ -584,7 +588,10 @@ export default function Dashboard() {
         body: JSON.stringify({ confirm: true }),
       });
       const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload.error || 'Could not close LTX Watch');
+      if (!response.ok) {
+        if (response.status === 404) throw new Error('This bridge is too old for Quit. Close any leftover CMD window, start LTX Watch again, then retry.');
+        throw new Error(payload.error || 'Could not close LTX Watch');
+      }
       setQuitOpen(false);
       setClosed(true);
     } catch (requestError) {
@@ -881,7 +888,7 @@ export default function Dashboard() {
           <p className="settings-intro">The current generating job and any queued jobs will keep running after LTX Watch closes. Open LTX Watch again whenever you want to pause LTX.</p>
           <div className="settings-actions">
             <button className="secondary-button" onClick={() => setQuitOpen(false)} disabled={quitPending}>Keep open</button>
-            <button className="primary-button quit-confirm" onClick={() => void quitWatch()} disabled={quitPending}>{quitPending ? <LoaderCircle size={15} className="spinning" /> : <Power size={15} />} Close LTX Watch</button>
+            <button type="button" className="primary-button quit-confirm" onClick={() => void quitWatch()} disabled={quitPending}>{quitPending ? <LoaderCircle size={15} className="spinning" /> : <Power size={15} />} Close LTX Watch</button>
           </div>
         </section>
       </div>}

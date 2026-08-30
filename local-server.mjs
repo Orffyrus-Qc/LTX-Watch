@@ -2846,7 +2846,7 @@ const server = http.createServer(async (req, res) => {
       if (req.headers['x-ltx-control-token'] !== CONTROL_TOKEN) return sendJson(res, 403, { error: 'Invalid local control token' });
       const body = await readBody(req);
       if (body?.confirm !== true) return sendJson(res, 400, { error: 'Quit requires explicit confirmation.' });
-      const sitePort = Math.min(65_535, Math.max(1_024, Number(process.env.LTX_WATCH_SITE_PORT || 3000)));
+      const sitePort = Math.min(65_535, Math.max(1_024, Number(process.env.LTX_WATCH_SITE_PORT || 3001)));
       sendJson(res, 200, {
         ok: true,
         jobsContinue: true,
