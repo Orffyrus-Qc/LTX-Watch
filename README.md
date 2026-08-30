@@ -5,7 +5,7 @@
 ![LTX](https://img.shields.io/badge/LTX-2.5-C8FF32?labelColor=111417)
 ![Local first](https://img.shields.io/badge/data-local%20only-C8FF32?labelColor=111417)
 
-![LTX Watch overview with Pause after current armed, live album progress, queued jobs, and output history](docs/images/ltx-watch-dashboard.png)
+![LTX Watch overview with live album progress, Pause render, Pause after current, Quit, queued jobs, and output history](docs/images/ltx-watch-dashboard.png)
 
 **LTX / Watch** is a private, local-first dashboard and production workspace for LTX Video jobs running through ComfyUI. It includes a human-in-the-loop Studio where each shot is generated, reviewed, corrected, and explicitly accepted before moving forward.
 
