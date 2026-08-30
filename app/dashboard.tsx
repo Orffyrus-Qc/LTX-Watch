@@ -549,7 +549,7 @@ export default function Dashboard() {
   }
 
   async function togglePauseAfterCurrent() {
-    if (!state?.control?.canControl || controlPending || state.control.state === 'paused' || state.control.state === 'recovery') return;
+    if (controlPending || state.control.state === 'paused' || state.control.state === 'recovery') return;
     const action = state.control.pauseAfterCurrent ? 'cancel-pause-after-current' : 'pause-after-current';
     setControlPending(true);
     try {
@@ -577,7 +577,7 @@ export default function Dashboard() {
   const recoveryRequired = state?.control?.state === 'recovery';
   const isPaused = state?.control?.state === 'paused' || recoveryRequired;
   const pauseAfterCurrent = Boolean(state?.control?.pauseAfterCurrent);
-  const canPauseAfterCurrent = Boolean(state?.control?.canControl && active && (state?.queue.length || pauseAfterCurrent) && !isPaused);
+  const canPauseAfterCurrent = Boolean(active && !isPaused);
   const greeting = new Date().getHours() < 12 ? 'Good morning' : new Date().getHours() < 18 ? 'Good afternoon' : 'Good evening';
 
   return (

@@ -607,14 +607,14 @@ async function restartInterruptedShot(config, record) {
 }
 
 function getControlView(record, status, config) {
-  const statusUpdated = parseDate(status?.updated);
-  const statusIsFresh = !status?.updated || Boolean(statusUpdated && Date.now() - statusUpdated.getTime() < 180_000);
   const statusWorkerPids = getWorkerPids(status).filter(processExists);
   const recordedRoots = Array.isArray(record.rootPids) ? record.rootPids.map(Number) : [];
   const liveRecordedRoots = recordedRoots.filter(processExists);
   const paused = record.mode === 'paused' && liveRecordedRoots.length > 0;
   const recovery = record.mode === 'recovery';
-  const workerPids = paused ? liveRecordedRoots : recovery ? [] : statusIsFresh ? statusWorkerPids : [];
+  // A stale supervisor timestamp must not hide a still-living worker PID.
+  // The process orchestrator still verifies workerCommandFragment before suspend/resume.
+  const workerPids = paused ? liveRecordedRoots : recovery ? [] : statusWorkerPids;
   const recoveryAvailable = recovery && Boolean(resolveRecoveryPlan(config, record));
   const recoveryMessage = record.recoveryReason === 'system-restarted'
     ? `Windows restarted while shot ${parseShotScope(record)?.shot || ''} was paused. Resume will restart that shot from the beginning.`
@@ -731,7 +731,6 @@ async function controlGenerator(action) {
   if (action === 'resume' && currentView.state === 'running') return currentView;
   if (action === 'pause-after-current') {
     if (currentView.state === 'paused' || currentView.state === 'recovery') return currentView;
-    if (!currentView.canControl) throw new Error('No active LTX worker is available to control.');
     if (!current?.slug) throw new Error('No current job is running to finish first.');
     const next = withPauseAfterCurrent({
       ...record,
@@ -2523,8 +2522,7 @@ async function buildState() {
   const activeShotFraction = parsed.current ? Math.min(0.92, Math.max(0.04, (effectiveNow - shotStartedMs - shotPausedMs) / 1000 / parsed.averageShotSeconds)) : 0;
   const progress = parsed.current ? Math.min(99, ((completedShots + activeShotFraction) / parsed.current.totalShots) * 100) : 0;
   const remainingSeconds = parsed.current ? Math.max(0, (parsed.current.totalShots - completedShots - activeShotFraction) * parsed.averageShotSeconds) : 0;
-  const statusUpdated = parseDate(status.updated);
-  const workerOnline = Boolean(statusUpdated && now - statusUpdated.getTime() < 180_000 && Object.values(status.workers || {}).some((worker) => typeof worker === 'number' || worker?.alive !== false));
+  const workerOnline = getWorkerPids(status).some(processExists);
   const today = new Date();
   const todayFinals = finals.filter((file) => { const date = new Date(file.modifiedMs); return date.toDateString() === today.toDateString(); }).length;
   await syncProjectRegeneration(config, status, plan, comfy);
@@ -2561,8 +2559,7 @@ function getMaintenanceView() {
 
 async function getMaintenanceRender(config) {
   const [status, comfy] = await Promise.all([readJson(config.statusFile, {}), getComfyQueue(config)]);
-  const statusUpdated = parseDate(status.updated);
-  const workerOnline = Boolean(statusUpdated && Date.now() - statusUpdated.getTime() < 180_000 && getWorkerPids(status).some(processExists));
+  const workerOnline = getWorkerPids(status).some(processExists);
   return {
     active: workerOnline || comfy.running > 0 || comfy.pending > 0,
     worker: workerOnline,
