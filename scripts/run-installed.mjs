@@ -14,12 +14,15 @@ async function isAvailable(url) {
   }
 }
 
-function startNode(script) {
+function startNode(script, { hidden = false } = {}) {
   const child = spawn(process.execPath, [resolve(projectRoot, script)], {
     cwd: projectRoot,
-    stdio: 'inherit',
+    stdio: hidden ? 'ignore' : 'inherit',
+    detached: hidden,
+    windowsHide: hidden,
   });
-  children.push(child);
+  if (hidden) child.unref();
+  else children.push(child);
   return child;
 }
 
@@ -54,7 +57,7 @@ function stop(code = 0) {
 const bridgeUrl = 'http://127.0.0.1:4311/api/health';
 const uiUrl = 'http://127.0.0.1:3000/';
 
-if (!(await isAvailable(bridgeUrl))) startNode('local-server.mjs');
+if (!(await isAvailable(bridgeUrl))) startNode('local-server.mjs', { hidden: true });
 if (!(await isAvailable(uiUrl))) startNode('scripts/serve-production.mjs');
 
 if (!(await waitFor(bridgeUrl)) || !(await waitFor(uiUrl))) {
@@ -62,7 +65,7 @@ if (!(await waitFor(bridgeUrl)) || !(await waitFor(uiUrl))) {
   stop(1);
 } else {
   openBrowser('http://localhost:3000/');
-  console.log('LTX Watch is running. Close this window to stop services started by this launcher.');
+  console.log('LTX Watch is running. The local bridge has no window and stays in the background if you close this launcher.');
 }
 
 for (const child of children) {

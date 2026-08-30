@@ -28,9 +28,18 @@ async function waitFor(url, timeoutMs = 15_000) {
   return false;
 }
 
+function startHiddenBridge() {
+  const child = spawn(process.execPath, ['local-server.mjs'], {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+  });
+  child.unref();
+  return child;
+}
+
 const children = [];
 let stopping = false;
-let bridgeChild = null;
 
 function stop(code = 0) {
   if (stopping) return;
@@ -41,34 +50,20 @@ function stop(code = 0) {
   setTimeout(() => process.exit(code), 150).unref();
 }
 
-function spawnChild(file, args) {
-  const child = spawn(file, args, { stdio: 'inherit' });
-  children.push(child);
-  return child;
-}
-
-if (!(await isAvailable(bridgeUrl))) {
-  bridgeChild = spawnChild(process.execPath, ['local-server.mjs']);
-  bridgeChild.on('exit', (code) => {
-    if (!stopping) {
-      console.error('LTX Watch bridge stopped.');
-      stop(code || 0);
-    }
-  });
-}
+if (!(await isAvailable(bridgeUrl))) startHiddenBridge();
 
 if (!(await waitFor(bridgeUrl))) {
   console.error(`LTX Watch bridge did not start on 127.0.0.1:${apiPort}.`);
   stop(1);
 } else {
-  console.log(`LTX Watch local bridge: http://127.0.0.1:${apiPort}`);
+  console.log(`LTX Watch local bridge is running in the background on 127.0.0.1:${apiPort} (no window).`);
 }
 
 if (!(await isAvailable(uiUrl))) {
-  const siteChild = spawnChild(siteCommand[0], siteCommand[1]);
+  const siteChild = spawn(siteCommand[0], siteCommand[1], { stdio: 'inherit' });
+  children.push(siteChild);
   siteChild.on('exit', (code) => {
-    if (stopping) return;
-    if (code) console.error(`LTX Watch UI exited (${code}). The local bridge is still running.`);
+    if (!stopping) stop(code || 0);
   });
 } else {
   console.log(`LTX Watch UI already running at ${uiUrl}`);
@@ -77,13 +72,8 @@ if (!(await isAvailable(uiUrl))) {
 process.on('SIGINT', () => stop(0));
 process.on('SIGTERM', () => stop(0));
 
-if (!children.length) {
-  console.log('LTX Watch UI and bridge are already running.');
-  process.exit(0);
-}
+if (!children.length) process.exit(0);
 
 await new Promise((resolve) => {
-  const done = () => resolve();
-  if (bridgeChild) bridgeChild.once('exit', done);
-  else children[0]?.once('exit', done);
+  children[0].once('exit', resolve);
 });

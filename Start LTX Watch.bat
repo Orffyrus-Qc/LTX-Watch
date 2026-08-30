@@ -8,7 +8,7 @@ set NEXT_PUBLIC_LTX_WATCH_API=http://127.0.0.1:4312
 
 echo Starting LTX Watch...
 echo   UI     http://localhost:3001
-echo   Bridge http://127.0.0.1:4312
+echo   Bridge http://127.0.0.1:4312  (hidden background process)
 echo.
 
 start "" powershell.exe -NoProfile -WindowStyle Hidden -Command "Start-Sleep -Seconds 3; Start-Process 'http://localhost:3001'"
