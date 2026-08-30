@@ -19,7 +19,7 @@ async function isAvailable(url) {
   }
 }
 
-async function waitFor(url, timeoutMs = 15_000) {
+async function waitFor(url, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await isAvailable(url)) return true;
@@ -28,8 +28,8 @@ async function waitFor(url, timeoutMs = 15_000) {
   return false;
 }
 
-function startHiddenBridge() {
-  const child = spawn(process.execPath, ['local-server.mjs'], {
+function startHidden(file, args) {
+  const child = spawn(file, args, {
     detached: true,
     stdio: 'ignore',
     windowsHide: true,
@@ -38,42 +38,26 @@ function startHiddenBridge() {
   return child;
 }
 
-const children = [];
-let stopping = false;
-
-function stop(code = 0) {
-  if (stopping) return;
-  stopping = true;
-  for (const child of children) {
-    if (!child.killed) child.kill();
-  }
-  setTimeout(() => process.exit(code), 150).unref();
+function openBrowser(url) {
+  const child = spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', 'start', '', url], {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+  });
+  child.unref();
 }
 
-if (!(await isAvailable(bridgeUrl))) startHiddenBridge();
-
+if (!(await isAvailable(bridgeUrl))) startHidden(process.execPath, ['local-server.mjs']);
 if (!(await waitFor(bridgeUrl))) {
   console.error(`LTX Watch bridge did not start on 127.0.0.1:${apiPort}.`);
-  stop(1);
-} else {
-  console.log(`LTX Watch local bridge is running in the background on 127.0.0.1:${apiPort} (no window).`);
+  process.exit(1);
 }
 
-if (!(await isAvailable(uiUrl))) {
-  const siteChild = spawn(siteCommand[0], siteCommand[1], { stdio: 'inherit' });
-  children.push(siteChild);
-  siteChild.on('exit', (code) => {
-    if (!stopping) stop(code || 0);
-  });
-} else {
-  console.log(`LTX Watch UI already running at ${uiUrl}`);
+if (!(await isAvailable(uiUrl))) startHidden(siteCommand[0], siteCommand[1]);
+if (!(await waitFor(uiUrl, 30_000))) {
+  console.error(`LTX Watch UI did not start on http://127.0.0.1:${sitePort}. The hidden bridge is still running.`);
+  process.exit(1);
 }
 
-process.on('SIGINT', () => stop(0));
-process.on('SIGTERM', () => stop(0));
-
-if (!children.length) process.exit(0);
-
-await new Promise((resolve) => {
-  children[0].once('exit', resolve);
-});
+openBrowser(`http://localhost:${sitePort}/`);
+process.exit(0);

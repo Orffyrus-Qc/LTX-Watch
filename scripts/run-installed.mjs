@@ -3,7 +3,8 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const projectRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
-const children = [];
+const bridgeUrl = 'http://127.0.0.1:4311/api/health';
+const uiUrl = 'http://127.0.0.1:3000/';
 
 async function isAvailable(url) {
   try {
@@ -14,15 +15,14 @@ async function isAvailable(url) {
   }
 }
 
-function startNode(script, { hidden = false } = {}) {
+function startHidden(script) {
   const child = spawn(process.execPath, [resolve(projectRoot, script)], {
     cwd: projectRoot,
-    stdio: hidden ? 'ignore' : 'inherit',
-    detached: hidden,
-    windowsHide: hidden,
+    stdio: 'ignore',
+    detached: true,
+    windowsHide: true,
   });
-  if (hidden) child.unref();
-  else children.push(child);
+  child.unref();
   return child;
 }
 
@@ -44,38 +44,13 @@ function openBrowser(url) {
   child.unref();
 }
 
-let stopping = false;
-function stop(code = 0) {
-  if (stopping) return;
-  stopping = true;
-  for (const child of children) {
-    if (!child.killed) child.kill();
-  }
-  setTimeout(() => process.exit(code), 150).unref();
-}
-
-const bridgeUrl = 'http://127.0.0.1:4311/api/health';
-const uiUrl = 'http://127.0.0.1:3000/';
-
-if (!(await isAvailable(bridgeUrl))) startNode('local-server.mjs', { hidden: true });
-if (!(await isAvailable(uiUrl))) startNode('scripts/serve-production.mjs');
+if (!(await isAvailable(bridgeUrl))) startHidden('local-server.mjs');
+if (!(await isAvailable(uiUrl))) startHidden('scripts/serve-production.mjs');
 
 if (!(await waitFor(bridgeUrl)) || !(await waitFor(uiUrl))) {
   console.error('LTX Watch did not become ready within 30 seconds.');
-  stop(1);
-} else {
-  openBrowser('http://localhost:3000/');
-  console.log('LTX Watch is running. The local bridge has no window and stays in the background if you close this launcher.');
+  process.exit(1);
 }
 
-for (const child of children) {
-  child.on('exit', (code) => {
-    if (!stopping && code && code !== 0) stop(code);
-  });
-}
-
-process.on('SIGINT', () => stop(0));
-process.on('SIGTERM', () => stop(0));
-
-if (!children.length) process.exit(0);
-
+openBrowser('http://localhost:3000/');
+process.exit(0);

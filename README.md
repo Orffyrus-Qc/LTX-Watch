@@ -466,7 +466,7 @@ Start LTX Watch with **Start LTX Watch.bat** or:
 npm run dev
 ```
 
-That launcher always brings up the local bridge before the UI. The bridge runs as a hidden background process with no console window, so it cannot be closed by accident. `npm run site:dev` starts only the web page and cannot read local outputs.
+That launcher always brings up the local bridge before the UI. Both the bridge and the local web server run hidden, with no console window. Use **Quit** in the dashboard to stop LTX Watch; generation and queued jobs keep running until you open the app again to pause LTX. `npm run site:dev` starts only the web page and cannot read local outputs.
 
 If the page is already open from an earlier session, start the bat file anyway. It will start the missing hidden bridge on `127.0.0.1:4312` without replacing the running UI.
 

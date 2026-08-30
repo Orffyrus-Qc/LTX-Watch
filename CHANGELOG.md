@@ -10,6 +10,7 @@ All notable changes to LTX / Watch are documented here.
 - Pause controls stay available while the album worker process is still alive, even if the supervisor status timestamp is stale.
 - Starting LTX Watch now waits for the local bridge to become healthy before opening the UI, and keeps the bridge running if the UI is already open.
 - The local bridge starts as a hidden background process with no console window, so closing the launcher or an extra terminal does not stop it.
+- Start LTX Watch launches the UI without a console window. A dashboard **Quit** button stops only LTX Watch after confirmation; current and queued LTX jobs keep running.
 - README screenshots for Overview (including Pause after current), Create, Director timeline, context intake, and Projects.
 - Experimental **Create** workspace for original local LTX 2.5 text-to-video, first-frame, and first/last-frame generation using ComfyUI's official full-workflow templates.
 - Private persistent drafts, one-to-four variation queue, random/fixed seeds, prompt enhancement, format, camera, motion, style, audio, progress, history, playback, Explorer, retry, pause-between-jobs, and **Move first** controls.

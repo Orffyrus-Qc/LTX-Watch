@@ -23,6 +23,7 @@ import { moveFile } from './lib/move-file.mjs';
 import { installSam3Model } from './lib/sam3-setup.mjs';
 import { studioJobProgress } from './lib/studio-progress.mjs';
 import { parseLegacyGpuSnapshot, parseLiveGpuCsv } from './lib/gpu-telemetry.mjs';
+import { stopWatchService } from './lib/service-runtime.mjs';
 import {
   buildPhysicsBackboneJob,
   physicsBackboneCapability,
@@ -2840,6 +2841,21 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 400, { error: 'Action must be pause, resume, pause-after-current, or cancel-pause-after-current' });
       }
       return sendJson(res, 200, { ok: true, control: await controlGenerator(action) });
+    }
+    if (req.method === 'POST' && requestUrl.pathname === '/api/quit') {
+      if (req.headers['x-ltx-control-token'] !== CONTROL_TOKEN) return sendJson(res, 403, { error: 'Invalid local control token' });
+      const body = await readBody(req);
+      if (body?.confirm !== true) return sendJson(res, 400, { error: 'Quit requires explicit confirmation.' });
+      const sitePort = Math.min(65_535, Math.max(1_024, Number(process.env.LTX_WATCH_SITE_PORT || 3000)));
+      sendJson(res, 200, {
+        ok: true,
+        jobsContinue: true,
+        message: 'LTX Watch is closing. The current generating job and queued jobs will keep running. Open LTX Watch again whenever you want to pause LTX.',
+      });
+      setTimeout(() => {
+        stopWatchService({ apiPort: PORT, sitePort }).finally(() => process.exit(0));
+      }, 250);
+      return;
     }
     if (req.method === 'POST' && requestUrl.pathname === '/api/studio') {
       if (req.headers['x-ltx-control-token'] !== CONTROL_TOKEN) return sendJson(res, 403, { error: 'Invalid local control token' });

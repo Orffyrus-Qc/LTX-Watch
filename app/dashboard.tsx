@@ -21,6 +21,7 @@ import {
   LoaderCircle,
   Pause,
   PackageCheck,
+  Power,
   Play,
   RefreshCw,
   Search,
@@ -299,6 +300,9 @@ export default function Dashboard() {
   const [maintenanceAction, setMaintenanceAction] = useState('');
   const [environmentError, setEnvironmentError] = useState('');
   const [queueOpen, setQueueOpen] = useState(false);
+  const [quitOpen, setQuitOpen] = useState(false);
+  const [quitPending, setQuitPending] = useState(false);
+  const [closed, setClosed] = useState(false);
   const [settings, setSettings] = useState<Config | null>(null);
   const [filter, setFilter] = useState<'all' | 'final' | 'clip'>('final');
   const [search, setSearch] = useState('');
@@ -340,12 +344,13 @@ export default function Dashboard() {
     return () => window.clearTimeout(timer);
   }, [loadState]);
   useEffect(() => {
+    if (closed) return;
     const interval = window.setInterval(() => loadState(true), (state?.config.refreshSeconds || 5) * 1000);
     return () => window.clearInterval(interval);
-  }, [loadState, state?.config.refreshSeconds]);
+  }, [closed, loadState, state?.config.refreshSeconds]);
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') { setSelectedVideo(null); setSettingsOpen(false); setEnvironmentOpen(false); setQueueOpen(false); }
+      if (event.key === 'Escape') { setSelectedVideo(null); setSettingsOpen(false); setEnvironmentOpen(false); setQueueOpen(false); setQuitOpen(false); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -569,6 +574,25 @@ export default function Dashboard() {
     } finally { setControlPending(false); }
   }
 
+  async function quitWatch() {
+    if (!state?.control?.token || quitPending) return;
+    setQuitPending(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/quit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-LTX-Control-Token': state.control.token },
+        body: JSON.stringify({ confirm: true }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || 'Could not close LTX Watch');
+      setQuitOpen(false);
+      setClosed(true);
+    } catch (requestError) {
+      showToast(requestError instanceof Error ? requestError.message : 'Could not close LTX Watch', 'error');
+      setQuitPending(false);
+    }
+  }
+
   const current = state?.current;
   const active = Boolean(current);
   const elapsedSeconds = current?.elapsedSeconds || 0;
@@ -579,6 +603,18 @@ export default function Dashboard() {
   const pauseAfterCurrent = Boolean(state?.control?.pauseAfterCurrent);
   const canPauseAfterCurrent = Boolean(active && !isPaused);
   const greeting = new Date().getHours() < 12 ? 'Good morning' : new Date().getHours() < 18 ? 'Good afternoon' : 'Good evening';
+
+  if (closed) {
+    return (
+      <main className="shell closed-shell">
+        <section className="closed-card">
+          <Power size={28} />
+          <h1>LTX Watch is closed</h1>
+          <p>The current generating job and queued jobs keep running. Open LTX Watch again whenever you want to pause LTX. You can close this tab.</p>
+        </section>
+      </main>
+    );
+  }
 
   return (
     <main className="shell">
@@ -623,6 +659,7 @@ export default function Dashboard() {
                 <span>{pauseAfterCurrent ? 'Waiting for current job' : 'Pause after current'}</span>
               </button>}
             </>}
+            <button className="secondary-button quit-button" onClick={() => setQuitOpen(true)} title="Close LTX Watch"><Power size={15} /><span>Quit</span></button>
             <div className={`sync ${error ? 'sync-error' : ''}`}><span className="status-dot" /> {error ? 'BRIDGE OFFLINE' : workspace === 'create' ? 'CREATE · LOCAL' : workspace === 'studio' ? state?.studio.canGenerate ? 'STUDIO READY' : 'STUDIO SAFE WAIT' : workspace === 'projects' ? 'PROJECTS · LOCAL' : 'LIVE · AUTO REFRESH'}</div>
           </div>
         </header>
@@ -835,6 +872,17 @@ export default function Dashboard() {
             <div className="settings-row"><label><span>Refresh every</span><div className="input-unit"><input type="number" min="2" max="60" value={settings.refreshSeconds} onChange={(event) => setSettings({ ...settings, refreshSeconds: Number(event.target.value) })} /><i>seconds</i></div></label><label><span>Max videos</span><input type="number" min="20" max="500" value={settings.maxVideos} onChange={(event) => setSettings({ ...settings, maxVideos: Number(event.target.value) })} /></label></div>
           </div>
           <div className="settings-actions"><button className="secondary-button" onClick={() => setSettingsOpen(false)}>Cancel</button><button className="primary-button" onClick={saveSettings}>Save & reconnect</button></div>
+        </section>
+      </div>}
+
+      {quitOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !quitPending) setQuitOpen(false); }}>
+        <section className="drawer-modal quit-modal" role="dialog" aria-modal="true" aria-label="Close LTX Watch">
+          <div className="modal-head"><div><p className="kicker">CLOSE APP</p><h2>Close LTX Watch?</h2></div><button className="icon-button" onClick={() => setQuitOpen(false)} disabled={quitPending} aria-label="Keep LTX Watch open"><X size={18} /></button></div>
+          <p className="settings-intro">The current generating job and any queued jobs will keep running after LTX Watch closes. Open LTX Watch again whenever you want to pause LTX.</p>
+          <div className="settings-actions">
+            <button className="secondary-button" onClick={() => setQuitOpen(false)} disabled={quitPending}>Keep open</button>
+            <button className="primary-button quit-confirm" onClick={() => void quitWatch()} disabled={quitPending}>{quitPending ? <LoaderCircle size={15} className="spinning" /> : <Power size={15} />} Close LTX Watch</button>
+          </div>
         </section>
       </div>}
 
