@@ -125,12 +125,15 @@ type CreateView = {
     schemaVersion: number;
     preparationReady: boolean;
     planningReady: boolean;
+    planner?: string | null;
+    plannerModel?: string | null;
     clothReady: boolean;
     canPrepare: boolean;
     animationAuthority: 'blender';
     refinementAuthority: 'appearance-only';
     blockedReason: string;
     ollamaModel: string | null;
+    cwmModel?: string | null;
     presets: string[];
     preferredModels?: string[];
   };
@@ -610,15 +613,15 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
             {draft.useBlender ? <div className="create-blender">
               <div className={`create-capability ${view.blender.installed ? 'ready' : ''}`}><Box size={17} /><span><b>{view.blender.installed ? `Blender ${view.blender.version || ''} detected` : 'Blender is not detected'}</b><small>The master scene is copied before background rendering; LTX Watch never saves over it.</small></span></div>
               {autoPilot && <div className="physics-authority-card autopilot-card">
-                <div><Orbit size={17} /><span><b>Local AI orchestrates Blender, then LTX clothes the backbone</b><small>Ollama plans a schema-validated scene. The bundled adapter builds it. Blender records camera and blocking. LTX may only change appearance and add smaller animation. Character and object identity stay locked in the spec.</small></span></div>
-                <div className="physics-pass-list"><span>Ollama plan</span><span>Blender build</span><span>Backbone record</span><span>LTX clothing</span><span>Identity lock</span></div>
+                <div><Orbit size={17} /><span><b>Local AI orchestrates Blender, then LTX clothes the backbone</b><small>Code World Model is preferred when a loopback CWM server or an Ollama model named cwm is available. Otherwise Ollama plans. The bundled adapter builds an allowlisted scene. Blender records camera and blocking. LTX may only change appearance and add smaller animation.</small></span></div>
+                <div className="physics-pass-list"><span>CWM / Ollama plan</span><span>Blender build</span><span>Backbone record</span><span>LTX clothing</span><span>Identity lock</span></div>
                 <label><span>TRAINING PRESET</span><select value={draft.autopilotPreset} onChange={(event) => {
                   const preset = event.target.value as CreateDraft['autopilotPreset'];
                   update('autopilotPreset', preset);
                   if (preset === 'final-override-intro' && (!draft.title || draft.title === 'Final Override Introduction')) update('title', 'Final Override Introduction');
                 }}><option value="final-override-intro">Final Override Introduction · Earth / halo / moon / cathedral / biodome</option><option value="from-prompt">From prompt · local Ollama must invent an allowlisted spec</option></select></label>
                 <label className="create-check"><input type="checkbox" checked={draft.clothWithLtx} onChange={(event) => update('clothWithLtx', event.target.checked)} /><span><b>Clothe the backbone with LTX 2.5</b><small>Uses official first/last Blender frames. LTX interpolates appearance and smaller motion; it must not invent a new camera path.</small></span></label>
-                <p>{view.autopilot?.planningReady ? `Planner: ${view.autopilot.ollamaModel}` : 'Ollama is optional for the intro preset and required for prompt-driven scenes.'} {view.autopilot?.blockedReason || ''}</p>
+                <p>{view.autopilot?.planningReady ? `Planner: ${view.autopilot.planner === 'cwm' ? 'Code World Model' : 'Ollama'} · ${view.autopilot.plannerModel || view.autopilot.ollamaModel || view.autopilot.cwmModel}` : 'A local planner is optional for the intro preset and required for prompt-driven scenes.'} {view.autopilot?.blockedReason || ''}</p>
               </div>}
               {strictPhysics && <div className="physics-authority-card">
                 <div><PackageCheck size={17} /><span><b>Blender animation backbone enabled</b><small>Camera, rigid bodies, collisions, cloth, deformation, and timing come only from every evaluated frame of the Blender scene.</small></span></div>

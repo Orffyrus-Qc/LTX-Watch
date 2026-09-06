@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local Auto-Pilot orchestrator: Ollama plans, Blender builds, LTX clothes.
+"""Local Auto-Pilot orchestrator: CWM/Ollama plans, Blender builds, LTX clothes.
 
 The bridge passes only an ignored JSON job path. The planner may emit a scene
 spec JSON, never Python. Blender is spawned with the bundled fixed adapter.
@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -18,6 +19,15 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+
+CWM_SYSTEM_PROMPT = (
+    "You are a helpful AI assistant. You always reason before responding, using the following format:\n"
+    "\n"
+    "<think>\n"
+    "your internal reasoning\n"
+    "</think>\n"
+    "your external response"
+)
 
 
 ALLOWED_PRIMITIVES = {
@@ -247,6 +257,92 @@ def collect_planned_objects(planned):
     return objects[:24]
 
 
+def strip_think(text):
+    cleaned = re.sub(r"<think>.*?</think>", "", str(text or ""), flags=re.S | re.I)
+    return cleaned.strip()
+
+
+def planner_user_payload(job, spec, lock_geometry):
+    return {
+        "task": "plan-blender-autopilot-scene",
+        "lockGeometry": lock_geometry,
+        "userPrompt": job.get("prompt") or "",
+        "avoid": job.get("avoid") or "",
+        "allowedPrimitives": sorted(ALLOWED_PRIMITIVES),
+        "baseSpec": spec if lock_geometry else {
+            "kind": "blender-autopilot-scene",
+            "preset": "from-prompt",
+            "allowedPrimitives": sorted(ALLOWED_PRIMITIVES),
+        },
+        "rules": [
+            "Return one JSON object only after </think>.",
+            "Use only allowlisted primitives: planet, moon, torus-halo, gothic-machine-cathedral, geodesic-biodome, ship, satellite, laser, camera-orbit, empty-rig.",
+            "If lockGeometry is true, keep objects, camera blocking, and world; rewrite appearancePrompt, identities.lock, and shot prompts.",
+            "Do not emit Python, bpy, shell, or file paths.",
+        ],
+    }
+
+
+def finish_plan(spec, planned, lock_geometry, meta):
+    if lock_geometry:
+        return apply_appearance_overlay(spec, planned), {**meta, "geometryLocked": True}
+    objects = collect_planned_objects(planned)
+    if objects:
+        planned["objects"] = objects
+        planned["kind"] = "blender-autopilot-scene"
+        planned["preset"] = "from-prompt"
+        return planned, {**meta, "geometryLocked": False}
+    if spec.get("objects"):
+        return apply_appearance_overlay(spec, planned), {
+            **meta,
+            "status": "degraded",
+            "reason": "Planner returned no allowlisted kits; keeping the seed scene objects.",
+            "geometryLocked": False,
+        }
+    raise RuntimeError("Local planner returned no allowlisted objects.")
+
+
+def plan_with_cwm(job, spec):
+    url = str(job.get("cwmUrl") or "").rstrip("/")
+    model = str(job.get("cwmModel") or "facebook/cwm")
+    lock_geometry = intro_intent(job, spec)
+    if not url:
+        return None
+    if not is_loopback(url):
+        raise RuntimeError("Code World Model must stay on loopback")
+    payload = {
+        "model": model,
+        "temperature": 0.2,
+        "messages": [
+            {
+                "role": "system",
+                "content": CWM_SYSTEM_PROMPT + "\n\nAfter </think>, return only JSON for a blender-autopilot-scene. Never emit Python, bpy, or shell.",
+            },
+            {"role": "user", "content": json.dumps(planner_user_payload(job, spec, lock_geometry))},
+        ],
+        "chat_template_kwargs": {"enable_thinking": True, "preserve_previous_think": True},
+    }
+    try:
+        response = http_json(f"{url}/v1/chat/completions", payload, timeout=180)
+    except Exception as error:
+        if lock_geometry or spec.get("objects"):
+            return spec, {"status": "degraded", "reason": f"CWM planning failed; using the canned or seed spec ({error})", "geometryLocked": lock_geometry, "backend": "cwm"}
+        raise RuntimeError(f"Code World Model planning failed: {error}") from error
+    message = (((response.get("choices") or [{}])[0].get("message") or {}).get("content")) or ""
+    message = strip_think(message)
+    try:
+        write_json(resolved(job["runtimeRoot"]) / "planner-response.json", {"backend": "cwm", "model": model, "content": str(message)[:20_000]})
+    except Exception:
+        pass
+    try:
+        planned = extract_json_object(message)
+    except Exception as error:
+        if lock_geometry or spec.get("objects"):
+            return spec, {"status": "degraded", "reason": f"CWM JSON was unusable; keeping seed spec ({error})", "geometryLocked": lock_geometry, "backend": "cwm"}
+        raise
+    return finish_plan(spec, planned, lock_geometry, {"status": "ok", "model": model, "backend": "cwm"})
+
+
 def apply_appearance_overlay(spec, planned):
     merged = json.loads(json.dumps(spec))
     if not isinstance(planned, dict):
@@ -273,27 +369,15 @@ def plan_with_ollama(job, spec):
     model = str(job.get("ollamaModel") or "")
     lock_geometry = intro_intent(job, spec)
     if not url or not model:
-        return spec, {"status": "skipped", "reason": "Ollama was not configured", "geometryLocked": lock_geometry}
+        return spec, {"status": "skipped", "reason": "Ollama was not configured", "geometryLocked": lock_geometry, "backend": "ollama"}
     if not is_loopback(url):
         raise RuntimeError("Ollama must stay on loopback")
-    user = {
-        "task": "plan-blender-autopilot-scene",
-        "lockGeometry": lock_geometry,
-        "userPrompt": job.get("prompt") or "",
-        "avoid": job.get("avoid") or "",
-        "allowedPrimitives": sorted(ALLOWED_PRIMITIVES),
-        "baseSpec": spec if lock_geometry else {
-            "kind": "blender-autopilot-scene",
-            "preset": "from-prompt",
-            "allowedPrimitives": sorted(ALLOWED_PRIMITIVES),
-        },
-        "rules": [
-            "Return one JSON object only.",
-            "Use only allowlisted primitives: planet, moon, torus-halo, gothic-machine-cathedral, geodesic-biodome, ship, satellite, laser, camera-orbit, empty-rig.",
-            "If lockGeometry is true, keep objects, camera blocking, and world; rewrite appearancePrompt, identities.lock, and shot prompts.",
-            "Do not emit Python or file paths.",
-        ],
-    }
+    cwm_mode = "cwm" in model.lower()
+    system = (
+        CWM_SYSTEM_PROMPT + "\n\nAfter </think>, return only JSON for a blender-autopilot-scene. Never emit Python, bpy, or shell."
+        if cwm_mode
+        else "You are the local LTX Watch scene planner. Return only JSON for a blender-autopilot-scene. Never emit Python, bpy, or shell."
+    )
     payload = {
         "model": model,
         "stream": False,
@@ -301,47 +385,38 @@ def plan_with_ollama(job, spec):
         "keep_alive": 0,
         "options": {"temperature": 0.2},
         "messages": [
-            {
-                "role": "system",
-                "content": "You are the local LTX Watch scene planner. Return only JSON for a blender-autopilot-scene. Never emit Python, bpy, or shell.",
-            },
-            {"role": "user", "content": json.dumps(user)},
+            {"role": "system", "content": system},
+            {"role": "user", "content": json.dumps(planner_user_payload(job, spec, lock_geometry))},
         ],
     }
     try:
         response = http_json(f"{url}/api/chat", payload, timeout=180)
     except Exception as error:
         if lock_geometry or spec.get("objects"):
-            return spec, {"status": "degraded", "reason": f"Ollama planning failed; using the canned or seed spec ({error})", "geometryLocked": lock_geometry}
+            return spec, {"status": "degraded", "reason": f"Ollama planning failed; using the canned or seed spec ({error})", "geometryLocked": lock_geometry, "backend": "ollama"}
         raise RuntimeError(f"Local Ollama planning failed: {error}") from error
     message = ((response.get("message") or {}).get("content")) or response.get("response") or ""
+    if cwm_mode:
+        message = strip_think(message)
     try:
-        dump_path = resolved(job["runtimeRoot"]) / "planner-response.json"
-        write_json(dump_path, {"model": model, "content": str(message)[:20_000]})
+        write_json(resolved(job["runtimeRoot"]) / "planner-response.json", {"backend": "ollama-cwm" if cwm_mode else "ollama", "model": model, "content": str(message)[:20_000]})
     except Exception:
         pass
     try:
         planned = extract_json_object(message)
     except Exception as error:
         if lock_geometry or spec.get("objects"):
-            return spec, {"status": "degraded", "reason": f"Planner JSON was unusable; keeping seed spec ({error})", "geometryLocked": lock_geometry}
+            return spec, {"status": "degraded", "reason": f"Planner JSON was unusable; keeping seed spec ({error})", "geometryLocked": lock_geometry, "backend": "ollama"}
         raise
-    if lock_geometry:
-        return apply_appearance_overlay(spec, planned), {"status": "ok", "model": model, "geometryLocked": True}
-    objects = collect_planned_objects(planned)
-    if objects:
-        planned["objects"] = objects
-        planned["kind"] = "blender-autopilot-scene"
-        planned["preset"] = "from-prompt"
-        return planned, {"status": "ok", "model": model, "geometryLocked": False}
-    if spec.get("objects"):
-        return apply_appearance_overlay(spec, planned), {
-            "status": "degraded",
-            "reason": "Planner returned no allowlisted kits; keeping the seed scene objects.",
-            "geometryLocked": False,
-            "model": model,
-        }
-    raise RuntimeError("Local planner returned no allowlisted objects.")
+    return finish_plan(spec, planned, lock_geometry, {"status": "ok", "model": model, "backend": "ollama-cwm" if cwm_mode else "ollama"})
+
+
+def plan_scene(job, spec):
+    if job.get("cwmUrl"):
+        planned = plan_with_cwm(job, spec)
+        if planned is not None:
+            return planned
+    return plan_with_ollama(job, spec)
 
 
 def compose_cloth_prompt(spec, job):
@@ -541,7 +616,7 @@ def run_job(job):
     spec_path = resolved(job["specPath"])
     spec = json.loads(spec_path.read_text(encoding="utf-8"))
     progress(job, "Local AI is planning the Blender scene", 4)
-    spec, planner = plan_with_ollama(job, spec)
+    spec, planner = plan_scene(job, spec)
     write_json(spec_path, spec)
     unload_ollama(job)
     require_not_canceled(job)

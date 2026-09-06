@@ -93,6 +93,7 @@ Copy-InstallerFile (Join-Path $projectRoot 'lib\gpu-telemetry.mjs') (Join-Path $
 Copy-InstallerFile (Join-Path $projectRoot 'lib\browser-playback.mjs') (Join-Path $stageRoot 'lib\browser-playback.mjs')
 Copy-InstallerFile (Join-Path $projectRoot 'lib\physics-backbone.mjs') (Join-Path $stageRoot 'lib\physics-backbone.mjs')
 Copy-InstallerFile (Join-Path $projectRoot 'lib\blender-autopilot.mjs') (Join-Path $stageRoot 'lib\blender-autopilot.mjs')
+Copy-InstallerFile (Join-Path $projectRoot 'lib\cwm-setup.mjs') (Join-Path $stageRoot 'lib\cwm-setup.mjs')
 Copy-InstallerFile (Join-Path $projectRoot 'lib\final-override-intro-spec.mjs') (Join-Path $stageRoot 'lib\final-override-intro-spec.mjs')
 Copy-InstallerFile (Join-Path $projectRoot 'local.config.example.json') (Join-Path $stageRoot 'local.config.example.json')
 Copy-InstallerFile (Join-Path $projectRoot 'README.md') (Join-Path $stageRoot 'README.md')

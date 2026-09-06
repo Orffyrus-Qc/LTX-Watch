@@ -89,6 +89,10 @@ type Config = {
   comfyUrl: string;
   refreshSeconds: number;
   maxVideos: number;
+  ollamaUrl?: string;
+  ollamaModel?: string;
+  cwmUrl?: string;
+  cwmModel?: string;
 };
 
 type MonitorState = {
@@ -200,6 +204,22 @@ type EnvironmentState = {
       links: { model: string; license: string; guide: string };
     };
     ltxAdvanced: { installed: boolean; detail: string; url: string };
+    cwm?: {
+      huggingfaceConnected: boolean;
+      huggingfaceAccess: boolean;
+      huggingfaceUser: string | null;
+      serverOnline: boolean;
+      ollamaCwm: string | null;
+      weightsInstalled: boolean;
+      canLoadOfficial: boolean;
+      officialVramGb: number;
+      plannerReady: boolean;
+      planner: string | null;
+      blockedReason: string;
+      researchOnly: boolean;
+      detail?: string;
+      links: { github: string; huggingface: string; license: string; paper: string };
+    };
     comfyBlender?: {
       ready: boolean;
       state: 'ready' | 'blender-required' | 'unsupported' | 'install-required' | 'update-available' | 'configuration-required';
@@ -851,6 +871,7 @@ export default function Dashboard() {
                 <article className="tool-card"><span className="tool-icon"><Sparkles size={18} /></span><div><small>NATIVE COMFYUI</small><h4>SAM 3.1 masks & tracking</h4><p>{environment.tools.sam3.detail}</p><div className="tool-card-actions"><span className={`tool-state ${environment.tools.sam3.state}`}>{environment.tools.sam3.state.replaceAll('-', ' ')}</span><button className="tool-setup-button" onClick={setupSam3} disabled={maintenancePending || environment.render.changesLocked || !environment.tools.sam3.automatedSetupSupported} title={!environment.tools.sam3.nativeInstalled ? 'Update ComfyUI core before installing the model.' : environment.tools.sam3.modelInstalled ? 'The SAM 3.1 checkpoint is already installed.' : 'Downloads and verifies the official 1.63 GiB checkpoint.'}>{maintenancePending ? <LoaderCircle size={12} className="spinning" /> : environment.tools.sam3.modelInstalled ? <Check size={12} /> : <Download size={12} />}{environment.tools.sam3.modelInstalled ? 'Installed' : 'Install model'}</button><a href={environment.tools.sam3.links.license} target="_blank" rel="noreferrer">License <ExternalLink size={12} /></a><a href={environment.tools.sam3.links.guide} target="_blank" rel="noreferrer">Guide <ExternalLink size={12} /></a></div></div></article>
                 <article className="tool-card"><span className="tool-icon"><Film size={18} /></span><div><small>OFFICIAL LIGHTRICKS</small><h4>Advanced LTX nodes</h4><p>{environment.tools.ltxAdvanced.detail}</p><div><span className={`tool-state ${environment.tools.ltxAdvanced.installed ? 'ready' : 'optional'}`}>{environment.tools.ltxAdvanced.installed ? 'installed' : 'optional'}</span><a href={environment.tools.ltxAdvanced.url} target="_blank" rel="noreferrer">Review project <ExternalLink size={12} /></a></div></div></article>
                 {environment.tools.comfyBlender && <article className="tool-card comfy-blender-card"><span className="tool-icon"><PackageCheck size={18} /></span><div><small>BLENDER BRIDGE</small><h4>ComfyUI-Blender</h4><p>{environment.tools.comfyBlender.detail}</p><div className="tool-card-actions"><span className={`tool-state ${environment.tools.comfyBlender.ready ? 'ready' : environment.tools.comfyBlender.state}`}>{environment.tools.comfyBlender.state.replaceAll('-', ' ')}</span><button className="tool-setup-button" onClick={setupComfyBlender} disabled={maintenancePending || environment.render.changesLocked || !environment.tools.comfyBlender.blenderDetected || !environment.tools.comfyBlender.supported}>{maintenancePending ? <LoaderCircle size={12} className="spinning" /> : <Download size={12} />}{environment.tools.comfyBlender.updateAvailable ? 'Update & configure' : environment.tools.comfyBlender.ready ? 'Reconfigure' : environment.tools.comfyBlender.customNodesInstalled && environment.tools.comfyBlender.addonInstalled ? 'Verify & configure' : 'Install & configure'}</button><a href={environment.tools.comfyBlender.projectUrl} target="_blank" rel="noreferrer">Project <ExternalLink size={12} /></a></div></div></article>}
+                {environment.tools.cwm && <article className="tool-card"><span className="tool-icon"><WandSparkles size={18} /></span><div><small>CODE WORLD MODEL</small><h4>facebook/cwm planner</h4><p>{environment.tools.cwm.blockedReason}</p><div className="tool-card-actions"><span className={`tool-state ${environment.tools.cwm.plannerReady ? 'ready' : environment.tools.cwm.huggingfaceAccess ? 'attention' : 'optional'}`}>{environment.tools.cwm.plannerReady ? 'planner ready' : environment.tools.cwm.huggingfaceAccess ? (environment.tools.cwm.huggingfaceUser ? `HF ${environment.tools.cwm.huggingfaceUser}` : 'HF access granted') : environment.tools.cwm.huggingfaceConnected ? 'license required' : 'sign in'}</span><a href={environment.tools.cwm.links.huggingface} target="_blank" rel="noreferrer">Hugging Face <ExternalLink size={12} /></a><a href={environment.tools.cwm.links.github} target="_blank" rel="noreferrer">GitHub <ExternalLink size={12} /></a><a href={environment.tools.cwm.links.license} target="_blank" rel="noreferrer">License <ExternalLink size={12} /></a></div></div></article>}
               </div>
             </section>
 
@@ -874,7 +895,8 @@ export default function Dashboard() {
               ['modelLabel', 'Model label'], ['workerCommandFragment', 'Worker command match'], ['recoveryScript', 'Recovery restart script'], ['studioSourceRunner', 'Studio source runner'],
               ['comfyRoot', 'ComfyUI root'], ['finalsDirectory', 'Final videos folder'], ['clipsDirectory', 'Generated clips folder'],
               ['logFile', 'Progress log'], ['statusFile', 'Worker status JSON'], ['planFile', 'Queue plan JSON'], ['comfyUrl', 'ComfyUI address'],
-            ] as const).map(([key, label]) => <label key={key}><span>{label}</span><input value={settings[key]} onChange={(event) => setSettings({ ...settings, [key]: event.target.value })} /></label>)}
+              ['ollamaUrl', 'Ollama address'], ['ollamaModel', 'Ollama planner model'], ['cwmUrl', 'CWM OpenAI address'], ['cwmModel', 'CWM model id'],
+            ] as const).map(([key, label]) => <label key={key}><span>{label}</span><input value={settings[key] || ''} onChange={(event) => setSettings({ ...settings, [key]: event.target.value })} /></label>)}
             <div className="settings-row"><label><span>Studio GPU</span><input type="number" min="0" max="15" value={settings.studioGpu} onChange={(event) => setSettings({ ...settings, studioGpu: Number(event.target.value) })} /></label><label><span>Studio port</span><input type="number" min="1024" max="65535" value={settings.studioPort} onChange={(event) => setSettings({ ...settings, studioPort: Number(event.target.value) })} /></label></div>
             <div className="settings-row"><label><span>Refresh every</span><div className="input-unit"><input type="number" min="2" max="60" value={settings.refreshSeconds} onChange={(event) => setSettings({ ...settings, refreshSeconds: Number(event.target.value) })} /><i>seconds</i></div></label><label><span>Max videos</span><input type="number" min="20" max="500" value={settings.maxVideos} onChange={(event) => setSettings({ ...settings, maxVideos: Number(event.target.value) })} /></label></div>
           </div>

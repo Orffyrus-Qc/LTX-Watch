@@ -6,7 +6,7 @@ This is not remote generation. Ollama, Blender, ComfyUI, and LTX Watch stay on t
 
 ## Pipeline
 
-1. **Plan** — loopback Ollama emits a schema-validated scene spec. It cannot emit Python, `bpy`, shell, or file paths.
+1. **Plan** — loopback **Code World Model** (`facebook/cwm`) is preferred when a local OpenAI-compatible server or an Ollama model named `cwm` is online. Otherwise Ollama emits a schema-validated scene spec. The planner cannot emit Python, `bpy`, shell, or file paths. See [Code World Model](CWM.md).
 2. **Build** — `scripts/blender-autopilot.py` constructs only allowlisted kits (planet, halo, moon, cathedral, biodome, ships, lasers, camera).
 3. **Record** — Blender writes a private beauty PNG sequence, camera JSONL, and first/last anchors. Optional seed `.blend` files are copied; masters are never saved over.
 4. **Clothe** — official LTX 2.5 first/last-frame workflow interpolates appearance and smaller motion while Blender keeps camera and blocking.

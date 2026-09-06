@@ -11,6 +11,7 @@ All notable changes to LTX / Watch are documented here.
 - Loopback-only Ollama orchestration (`127.0.0.1:11434`), model unload before GPU work, and optional n8n/Docker sidecar that cannot receive the Watch control token.
 - Character/object identity cards in the scene spec, injected into every LTX clothing prompt.
 - Auto-Pilot treats Final Override intro wording as the canned Earth/halo/cathedral/biodome preset even if the planner dropdown was `from-prompt`, and keeps the seed scene if Ollama returns no allowlisted kits.
+- **Code World Model** (`facebook/cwm`) as the preferred Auto-Pilot planner: official GitHub/Hugging Face identity, required `<think>` system prompt, loopback OpenAI-compatible server, Hugging Face access probe, and Ollama `cwm` fallback. Research-only; official 32B weights need ~80 GB VRAM.
 
 ### Security
 

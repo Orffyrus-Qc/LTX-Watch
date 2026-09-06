@@ -40,6 +40,7 @@ projects.state.json
 create.state.json
 create.log
 .ltx-watch-create/
+.ltx-watch-cwm/
 
 # deployment and generated files
 .vercel

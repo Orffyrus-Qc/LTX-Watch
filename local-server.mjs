@@ -39,6 +39,15 @@ import {
   validateSceneSpec,
 } from './lib/blender-autopilot.mjs';
 import {
+  CWM_OFFICIAL,
+  cwmCapability,
+  isCwmModelName,
+  localCwmWeightsInstalled,
+  normalizeCwmUrl,
+  probeCwmOpenAiServer,
+  probeFacebookCwmAccess,
+} from './lib/cwm-setup.mjs';
+import {
   BROWSER_PLAYBACK_CACHE_LIMIT,
   browserPlaybackArguments,
   browserPlaybackKey,
@@ -129,6 +138,7 @@ const projectUploads = new Map();
 const createUploads = new Map();
 let blenderCache = { expiresAt: 0, value: null };
 let ollamaCache = { expiresAt: 0, value: null, promise: null };
+let cwmProbeCache = { expiresAt: 0, value: null, promise: null };
 let directorCache = { key: '', expiresAt: 0, value: null };
 let gpuTelemetryCache = { expiresAt: 0, value: null, promise: null };
 const browserPlaybackJobs = new Map();
@@ -153,6 +163,8 @@ function defaultConfig(comfyRoot) {
     maxVideos: 120,
     ollamaUrl: process.env.LTX_WATCH_OLLAMA_URL || 'http://127.0.0.1:11434',
     ollamaModel: process.env.LTX_WATCH_OLLAMA_MODEL || '',
+    cwmUrl: process.env.LTX_WATCH_CWM_URL || 'http://127.0.0.1:8000',
+    cwmModel: process.env.LTX_WATCH_CWM_MODEL || 'facebook/cwm',
   };
 }
 
@@ -181,7 +193,7 @@ async function getConfig() {
 
 function cleanConfig(input) {
   const next = {};
-  for (const key of ['displayName', 'modelLabel', 'workerCommandFragment', 'recoveryScript', 'studioSourceRunner', 'comfyRoot', 'finalsDirectory', 'clipsDirectory', 'logFile', 'statusFile', 'planFile', 'comfyUrl', 'ollamaUrl', 'ollamaModel']) {
+  for (const key of ['displayName', 'modelLabel', 'workerCommandFragment', 'recoveryScript', 'studioSourceRunner', 'comfyRoot', 'finalsDirectory', 'clipsDirectory', 'logFile', 'statusFile', 'planFile', 'comfyUrl', 'ollamaUrl', 'ollamaModel', 'cwmUrl', 'cwmModel']) {
     if (typeof input[key] === 'string') {
       const value = input[key].trim();
       if (key === 'workerCommandFragment' && value.length < 4) throw new Error('Worker command match must contain at least four characters.');
@@ -194,7 +206,9 @@ function cleanConfig(input) {
   next.studioGpu = Math.min(15, Math.max(0, Math.trunc(Number(input.studioGpu) || 0)));
   next.studioPort = Math.min(65_535, Math.max(1_024, Math.trunc(Number(input.studioPort) || 8188)));
   if (typeof next.ollamaUrl === 'string' && next.ollamaUrl) next.ollamaUrl = normalizeOllamaUrl(next.ollamaUrl);
-  if (typeof next.ollamaModel === 'string') next.ollamaModel = next.ollamaModel.replace(/[^a-zA-Z0-9._:-]/g, '').slice(0, 120);
+  if (typeof next.ollamaModel === 'string') next.ollamaModel = next.ollamaModel.replace(/[^a-zA-Z0-9._:-]/g, '').slice(0, 160);
+  if (typeof next.cwmUrl === 'string' && next.cwmUrl) next.cwmUrl = normalizeCwmUrl(next.cwmUrl);
+  if (typeof next.cwmModel === 'string') next.cwmModel = next.cwmModel.replace(/[^a-zA-Z0-9._/:-]/g, '').slice(0, 160);
   return next;
 }
 
@@ -1445,6 +1459,28 @@ async function probeOllama(config) {
   }
 }
 
+async function probeCwmPlanner(config, ollama) {
+  if (cwmProbeCache.expiresAt > Date.now() && cwmProbeCache.value) return cwmProbeCache.value;
+  if (cwmProbeCache.promise) return cwmProbeCache.promise;
+  cwmProbeCache.promise = (async () => {
+    const [hf, server, weightsInstalled] = await Promise.all([
+      probeFacebookCwmAccess(),
+      probeCwmOpenAiServer(config.cwmUrl || CWM_OFFICIAL.defaultServerUrl),
+      localCwmWeightsInstalled(APP_ROOT),
+    ]);
+    const ollamaCwm = isCwmModelName(ollama?.model) ? ollama.model : (ollama?.models || []).find((name) => isCwmModelName(name)) || null;
+    return { hf, server, weightsInstalled, ollamaCwm };
+  })();
+  try {
+    const value = await cwmProbeCache.promise;
+    cwmProbeCache = { expiresAt: Date.now() + 30_000, value, promise: null };
+    return value;
+  } catch {
+    cwmProbeCache = { expiresAt: Date.now() + 8_000, value: { hf: { connected: false, access: false, user: null }, server: { online: false, url: '', model: null }, weightsInstalled: false, ollamaCwm: null }, promise: null };
+    return cwmProbeCache.value;
+  }
+}
+
 async function publishCreateOutput(sourcePath, config, job) {
   const source = path.resolve(String(sourcePath || ''));
   if (!source || !existsSync(source) || !VIDEO_EXTENSIONS.has(path.extname(source).toLowerCase())) return null;
@@ -1654,6 +1690,7 @@ async function startAutopilotJob(record, job, config, backbone) {
     throw new Error('LTX clothing needs ComfyUI Python and the official first/last-frame LTX 2.5 template.');
   }
   const ollama = await probeOllama(config);
+  const cwm = await probeCwmPlanner(config, ollama);
   const introIntent = job.options.autopilotPreset === 'final-override-intro' || looksLikeFinalOverrideIntro(job.title, job.options.prompt);
   if (!introIntent && job.options.autopilotPreset === 'from-prompt' && (!ollama.online || !ollama.model)) {
     throw new Error('Prompt-driven Auto-Pilot needs a loopback Ollama model.');
@@ -1694,6 +1731,8 @@ async function startAutopilotJob(record, job, config, backbone) {
     avoid: job.options.avoid,
     ollamaUrl: ollama.online ? ollama.url : '',
     ollamaModel: ollama.model || '',
+    cwmUrl: cwm.server?.online ? cwm.server.url : '',
+    cwmModel: cwm.server?.model || config.cwmModel || CWM_OFFICIAL.modelId,
     blenderExecutable: blender.executable,
     blenderScriptPath: AUTOPILOT_SCRIPT_PATH,
     createRunnerPath: job.options.clothWithLtx ? CREATE_RUNNER_PATH : '',
@@ -1883,6 +1922,7 @@ async function buildCreateView({ sync = false } = {}) {
   const [status, comfy, record, studio, backbones, blender, director, ollama] = await Promise.all([
     readJson(config.statusFile, {}), getComfyQueue(config), getCreateRecord(), getStudioRecord(), getCreateBackbones(config), getCachedBlender(), resolveDirectorCapability(config), probeOllama(config),
   ]);
+  const cwm = await probeCwmPlanner(config, ollama);
   let changed = await syncCreateJob(record, config);
   if (sync && await maybeStartCreateJob(record, config)) changed = true;
   if (changed) await writeCreateRecord(record);
@@ -1898,6 +1938,8 @@ async function buildCreateView({ sync = false } = {}) {
     runnerInstalled: existsSync(AUTOPILOT_RUNNER_PATH),
     ollamaOnline: Boolean(ollama.online),
     ollamaModel: ollama.model,
+    cwmOnline: Boolean(cwm.server?.online || cwm.ollamaCwm),
+    cwmModel: cwm.server?.online ? cwm.server.model : cwm.ollamaCwm || null,
     clothTemplateInstalled: Boolean(launch?.templates.firstLast),
   });
   const launchIdle = Boolean(!activeJob && !studio.activeJob && !workerBusy && !comfy.online && !record.queuePaused);
@@ -2793,7 +2835,23 @@ async function getEnvironmentView(force = false) {
   }
   if (!force && environmentCache.promise && environmentCache.key === cacheKey) return decorate(await environmentCache.promise);
 
-  const promise = buildEnvironmentAudit(config, render, { comfyBlenderReceipt }).then((value) => {
+  const promise = buildEnvironmentAudit(config, render, { comfyBlenderReceipt }).then(async (value) => {
+    const ollama = await probeOllama(config);
+    const cwm = await probeCwmPlanner(config, ollama);
+    const maxVramGb = Math.max(0, ...(value.gpus || []).map((gpu) => Number(gpu.totalMemoryGb) || 0));
+    value.tools = {
+      ...value.tools,
+      cwm: cwmCapability({
+        huggingfaceConnected: Boolean(cwm.hf?.connected),
+        huggingfaceAccess: Boolean(cwm.hf?.access),
+        huggingfaceUser: cwm.hf?.user || null,
+        serverOnline: Boolean(cwm.server?.online),
+        serverModel: cwm.server?.model || null,
+        ollamaCwm: cwm.ollamaCwm,
+        weightsInstalled: Boolean(cwm.weightsInstalled),
+        maxVramGb,
+      }),
+    };
     environmentCache = { key: cacheKey, expiresAt: Date.now() + 90_000, value, promise: null };
     return value;
   }).catch((error) => {

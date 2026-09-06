@@ -34,7 +34,7 @@ The app runs entirely on your computer. It does not upload prompts, videos, logs
 - Unified private drag-and-drop context tray for images, videos, songs, and `.blend` scenes
 - Optional Blender-backed reference frames rendered from an immutable copy of a project backbone
 - Optional Blender-authoritative physics packages with beauty, depth, normal, motion-vector, and camera passes
-- **Blender Auto-Pilot**: local Ollama plans a schema-validated scene, Blender records the motion backbone, and LTX 2.5 clothes appearance plus smaller animation with character/object identity locks. Training preset: Final Override Introduction (Earth, halo, moon, cathedral, biodome)
+- **Blender Auto-Pilot**: local Code World Model (facebook/cwm) or Ollama plans a schema-validated scene, Blender records the motion backbone, and LTX 2.5 clothes appearance plus smaller animation with character/object identity locks. Training preset: Final Override Introduction (Earth, halo, moon, cathedral, biodome)
 - Private persistent Create drafts, variation queue, live progress, active-render cancellation, playback, recoverable output deletion, retry, pause-between-jobs, and **Move first** ordering
 - Per-attempt correction notes and preserved regeneration history
 - Selectable Studio scene queue with one-click **Move first** ordering
@@ -404,14 +404,15 @@ lib/
   studio-progress.mjs        Monotonic Studio/Projects render progress estimator
   browser-playback.mjs       Continuous assembled-final cache identity and FFmpeg contract
   physics-backbone.mjs       Versioned Blender-authority job and pass contract
-  blender-autopilot.mjs      Auto-Pilot spec, loopback Ollama rules, and job contract
+  blender-autopilot.mjs      Auto-Pilot spec, loopback Ollama/CWM rules, and job contract
+  cwm-setup.mjs              Official facebook/cwm identity, Hugging Face probe, loopback vLLM detection
 local-server.mjs             Local aggregation, streaming, and control API
 scripts/
   ltx-studio-runner.py       One-shot adapter for a compatible local runner
   ltx-create-runner.py       Official local LTX 2.5 workflow and Blender reference adapter
   blender-physics-backbone.py Fixed-purpose full-frame Blender pass adapter
   blender-autopilot.py       Allowlisted Auto-Pilot scene builder and recorder
-  ltx-autopilot-runner.py    Local Ollama → Blender → optional LTX clothing orchestrator
+  ltx-autopilot-runner.py    Local CWM/Ollama → Blender → optional LTX clothing orchestrator
   run-hidden-python.py       Recursive no-console launcher for trusted recovery runners
   install-comfyui-blender.ps1 Official release install, Blender setup, backup, and rollback
   install-sam3.ps1           Official checkpoint download, digest validation, backup, and rollback
