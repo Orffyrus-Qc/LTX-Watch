@@ -14,5 +14,7 @@
   "planFile": "C:\\ComfyUI\\dual_gpu_split.json",
   "comfyUrl": "http://127.0.0.1:8188",
   "refreshSeconds": 5,
-  "maxVideos": 120
+  "maxVideos": 120,
+  "ollamaUrl": "http://127.0.0.1:11434",
+  "ollamaModel": "qwen2.5-coder:14b-agent"
 }

@@ -154,7 +154,15 @@ The manifest must declare `animationAuthority: "blender"` and `refinementAuthori
 
 Strict LTX refinement is currently gated with `refinementReady: false`. The installed official LTX 2.5 T2V/I2V/FLF2V templates do not provide a verified full structural input contract for depth, normals, and motion vectors together. Do not pass only beauty anchors and call the result physics-preserving, silently substitute an older LTX control workflow, or change video backends. A future adapter must be versioned, consume the complete package, preserve frame count/timing/camera/geometry/trajectories, and fail on structural drift.
 
-Text, I2V, FLF2V, Physics preparation, Studio, and Projects regeneration share one in-process launch claim plus the upstream port lock. A Create job must wait while a worker PID is alive, the configured ComfyUI port responds, Studio/Projects has an active job, or another launch is being claimed.
+### Blender Auto-Pilot contract
+
+`blenderMode: "autopilot"` is a local orchestration path, not an arbitrary script runner. `lib/blender-autopilot.mjs` owns the scene spec and job contract. `scripts/ltx-autopilot-runner.py` may call loopback Ollama, spawn `scripts/blender-autopilot.py` through a detected `blender.exe`, and optionally reuse `scripts/ltx-create-runner.py` for official FLF2V clothing. The browser selects a preset, duration, optional seed `.blend`, and whether to clothe with LTX. It cannot choose Python, bpy, Ollama payloads, executables, or output paths.
+
+The Final Override Introduction preset locks Earth/halo/moon/cathedral/biodome geometry. Prompt-driven mode still rejects unknown primitives. LTX clothing is appearance-only from Blender first/last frames plus identity locks. Do not describe that path as physics-preserving. Ollama must remain on loopback; after planning the runner unloads the model before Blender or LTX uses the GPU.
+
+Optional n8n/Docker under `docker/local-orchestrator` is a visual planner only. It must never receive `X-LTX-Control-Token` or launch Blender/ComfyUI.
+
+Text, I2V, FLF2V, Physics preparation, Auto-Pilot, Studio, and Projects regeneration share one in-process launch claim plus the upstream port lock. A Create job must wait while a worker PID is alive, the configured ComfyUI port responds, Studio/Projects has an active job, or another launch is being claimed.
 
 ## Project manifest and Blender backbone contract
 

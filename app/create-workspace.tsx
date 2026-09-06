@@ -13,6 +13,7 @@ import {
   Layers3,
   LoaderCircle,
   Music2,
+  Orbit,
   PackageCheck,
   Pause,
   Pencil,
@@ -52,11 +53,13 @@ type CreateDraft = {
   contextVideoPath: string;
   soundtrackPath: string;
   useBlender: boolean;
-  blenderMode: 'anchors' | 'physics';
+  blenderMode: 'anchors' | 'physics' | 'autopilot';
   blenderProjectId: string;
   blenderUploadPath: string;
   blenderFirstFrame: number;
   blenderLastFrame: number;
+  autopilotPreset: 'final-override-intro' | 'from-prompt';
+  clothWithLtx: boolean;
   directorMode: boolean;
   directorSegments: { id: string; duration: number; prompt: string }[];
   directorTransition: number;
@@ -72,7 +75,7 @@ type CreateJob = {
   id: string;
   title: string;
   status: 'queued' | 'generating' | 'complete' | 'backbone-ready' | 'failed' | 'canceled';
-  kind: 'video' | 'physics-backbone';
+  kind: 'video' | 'physics-backbone' | 'blender-autopilot';
   stage: string | null;
   progress: number;
   seed: number;
@@ -118,6 +121,19 @@ type CreateView = {
     blockedReason: string;
     passes: { id: string; label: string; format: string; pattern: string }[];
   };
+  autopilot?: {
+    schemaVersion: number;
+    preparationReady: boolean;
+    planningReady: boolean;
+    clothReady: boolean;
+    canPrepare: boolean;
+    animationAuthority: 'blender';
+    refinementAuthority: 'appearance-only';
+    blockedReason: string;
+    ollamaModel: string | null;
+    presets: string[];
+    preferredModels?: string[];
+  };
   blender: { installed: boolean; version: string | null; backbones: { projectId: string; projectName: string; assetName: string }[] };
   jobs: CreateJob[];
 };
@@ -148,6 +164,8 @@ function withDirectorDefaults(draft: CreateDraft) {
     continuityProjectId: draft.continuityProjectId || '',
     continuitySceneId: draft.continuitySceneId || '',
     continuityClipId: draft.continuityClipId || '',
+    autopilotPreset: draft.autopilotPreset === 'from-prompt' ? 'from-prompt' : 'final-override-intro',
+    clothWithLtx: draft.clothWithLtx !== false,
   };
 }
 
@@ -216,9 +234,27 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
     setDraft((current) => current ? { ...current, [key]: value } : current);
   }
 
-  function selectSourceMode(mode: 'text' | 'first-frame' | 'first-last' | 'blender-anchors' | 'blender-animation') {
+  function selectSourceMode(mode: 'text' | 'first-frame' | 'first-last' | 'blender-anchors' | 'blender-animation' | 'blender-autopilot') {
     setDraft((current) => {
       if (!current) return current;
+      if (mode === 'blender-autopilot') {
+        return {
+          ...current,
+          useBlender: true,
+          blenderMode: 'autopilot',
+          referenceMode: 'first-last',
+          camera: 'locked',
+          motion: 'subtle',
+          variations: 1,
+          promptEnhance: false,
+          directorMode: false,
+          autopilotPreset: current.autopilotPreset || 'final-override-intro',
+          clothWithLtx: current.clothWithLtx !== false,
+          title: current.title || (current.autopilotPreset === 'from-prompt' ? current.title : 'Final Override Introduction'),
+          prompt: current.prompt || 'Final Override introduction: cinematic orbit of Earth inside a black-metal halo with gothic machine-datacenter cathedrals, glass biodomes, a watching moon, and drifting ships.',
+          duration: current.duration < 5 ? 8 : current.duration,
+        };
+      }
       if (mode === 'blender-animation') {
         return {
           ...current,
@@ -385,7 +421,9 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
   function cancelRender(job: CreateJob) {
     const detail = job.kind === 'physics-backbone'
       ? 'Current pass progress will be discarded after Blender finishes its current frame. The master .blend remains untouched.'
-      : 'Current render progress will be discarded. The isolated ComfyUI server will stop and this job can be retried.';
+      : job.kind === 'blender-autopilot'
+        ? 'Planning, Blender recording, or LTX clothing will stop after the current stage. Generated working copies stay private; any seed .blend remains untouched.'
+        : 'Current render progress will be discarded. The isolated ComfyUI server will stop and this job can be retried.';
     if (!window.confirm(`Cancel “${job.title}”?\n\n${detail}`)) return;
     void action('cancel', { jobId: job.id }, 'Cancel requested · stopping safely');
   }
@@ -409,6 +447,8 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
   const completed = useMemo(() => view?.jobs.filter((job) => job.status === 'complete') || [], [view]);
   const packages = useMemo(() => view?.jobs.filter((job) => job.status === 'backbone-ready') || [], [view]);
   const strictPhysics = Boolean(draft?.useBlender && draft.blenderMode === 'physics');
+  const autoPilot = Boolean(draft?.useBlender && draft.blenderMode === 'autopilot');
+  const blenderLocked = strictPhysics || autoPilot;
   const directorCapability = view?.director || {
     ready: false,
     promptRelayInstalled: false,
@@ -426,14 +466,28 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
   const directorSegmentsReady = Boolean(draft?.directorSegments.length && draft.directorSegments.length >= 2 && draft.directorSegments.every((segment) => segment.prompt.trim() && segment.duration >= 1 && segment.duration <= 10) && directorDuration >= 3 && directorDuration <= 20);
   const referenceReady = draft?.directorMode
     ? Boolean(draft.ingredientsReferencePath)
+    : autoPilot
+    ? Boolean(view?.blender.installed && (draft?.autopilotPreset === 'final-override-intro' || view?.autopilot?.planningReady || draft?.blenderProjectId || draft?.blenderUploadPath))
     : draft?.useBlender
     ? Boolean(view?.blender.installed && (draft.blenderProjectId || draft.blenderUploadPath))
     : draft?.referenceMode === 'text' || Boolean((draft?.firstFramePath || draft?.contextVideoPath) && (draft.referenceMode !== 'first-last' || draft.lastFramePath || draft.contextVideoPath));
-  const templateReady = draft?.directorMode ? directorCapability.ready : strictPhysics ? view?.physics?.preparationReady : draft?.referenceMode === 'text' ? view?.templates.text : draft?.referenceMode === 'first-last' ? view?.templates.firstLast : view?.templates.firstFrame;
+  const templateReady = draft?.directorMode
+    ? directorCapability.ready
+    : autoPilot
+      ? Boolean(view?.autopilot?.preparationReady && (!draft.clothWithLtx || view?.autopilot?.clothReady || view?.templates.firstLast))
+      : strictPhysics ? view?.physics?.preparationReady : draft?.referenceMode === 'text' ? view?.templates.text : draft?.referenceMode === 'first-last' ? view?.templates.firstLast : view?.templates.firstFrame;
   const enqueueReady = Boolean(draft?.prompt.trim() && referenceReady && templateReady && (!draft.directorMode || directorSegmentsReady) && !pending);
-  const readyNow = draft?.directorMode ? Boolean(directorCapability.ready && view?.canStart) : strictPhysics ? Boolean(view?.physics?.canPrepare) : Boolean(view?.canStart);
+  const readyNow = draft?.directorMode ? Boolean(directorCapability.ready && view?.canStart) : autoPilot ? Boolean(view?.autopilot?.canPrepare) : strictPhysics ? Boolean(view?.physics?.canPrepare) : Boolean(view?.canStart);
   const readinessMessage = draft?.directorMode
     ? directorCapability.ready ? view?.canStart ? 'Director timeline and Ingredients workflow are ready' : view?.blockedReason || 'Waiting safely for the local generation adapter' : directorCapability.blockedReason || 'Checking Director dependencies'
+    : autoPilot
+    ? view?.autopilot?.canPrepare
+      ? draft.clothWithLtx
+        ? view?.autopilot?.planningReady
+          ? `Local Ollama (${view.autopilot.ollamaModel || 'planner'}) will auto-pilot Blender, then LTX will clothe the backbone`
+          : 'Final Override intro preset can build without Ollama · prompt-driven planning needs Ollama'
+        : 'Blender Auto-Pilot can record a local backbone'
+      : view?.blockedReason || view?.autopilot?.blockedReason || 'Checking Blender Auto-Pilot'
     : strictPhysics
     ? active || (!view?.physics?.canPrepare && view?.blockedReason && !view.blockedReason.includes('official ComfyUI'))
       ? view?.blockedReason || 'Waiting for the shared local generation lock.'
@@ -457,10 +511,10 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
   return (
     <section className="create-workspace" id="create">
       <div className="create-heading">
-        <div><p className="kicker">LOCAL TEXT-TO-VIDEO LAB</p><h2>Imagine it. Direct it. Render it.</h2><p>Use timed Prompt Relay direction, create freely with LTX, or make Blender the authority for camera and object motion.</p></div>
+        <div><p className="kicker">LOCAL TEXT-TO-VIDEO LAB</p><h2>Imagine it. Direct it. Render it.</h2><p>Use timed Prompt Relay direction, create freely with LTX, or let local AI auto-pilot Blender and record a backbone for LTX to clothe.</p></div>
         <div className={`studio-readiness ${readyNow ? 'ready' : ''}`}>
-          {readyNow ? strictPhysics ? <PackageCheck size={17} /> : <WandSparkles size={17} /> : active ? <LoaderCircle className="spinning" size={17} /> : <Clock3 size={17} />}
-          <span><small>{active ? active.kind === 'physics-backbone' ? 'ANIMATION EVALUATING' : 'CREATE RENDERING' : readyNow ? strictPhysics ? 'BACKBONE PREP READY' : 'CREATE READY' : view.queued ? `${view.queued} WAITING` : 'SAFE WAIT'}</small><b>{readinessMessage}</b></span>
+          {readyNow ? blenderLocked ? <PackageCheck size={17} /> : <WandSparkles size={17} /> : active ? <LoaderCircle className="spinning" size={17} /> : <Clock3 size={17} />}
+          <span><small>{active ? active.kind === 'blender-autopilot' ? 'AUTO-PILOT RUNNING' : active.kind === 'physics-backbone' ? 'ANIMATION EVALUATING' : 'CREATE RENDERING' : readyNow ? autoPilot ? 'AUTO-PILOT READY' : strictPhysics ? 'BACKBONE PREP READY' : 'CREATE READY' : view.queued ? `${view.queued} WAITING` : 'SAFE WAIT'}</small><b>{readinessMessage}</b></span>
         </div>
       </div>
 
@@ -470,7 +524,7 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
 
       {active && <div className="create-active">
         <span className="create-active-icon"><LoaderCircle className="spinning" size={19} /></span>
-        <div><small>{active.kind === 'physics-backbone' ? 'PREPARING BLENDER ANIMATION BACKBONE' : 'GENERATING NOW'}</small><b>{active.title}{active.variations > 1 ? ` · variation ${active.variation}/${active.variations}` : ''}</b><span>{active.stage || 'Sampling frames'}</span></div>
+        <div><small>{active.kind === 'blender-autopilot' ? 'LOCAL AI IS AUTO-PILOTING BLENDER' : active.kind === 'physics-backbone' ? 'PREPARING BLENDER ANIMATION BACKBONE' : 'GENERATING NOW'}</small><b>{active.title}{active.variations > 1 ? ` · variation ${active.variation}/${active.variations}` : ''}</b><span>{active.stage || 'Sampling frames'}</span></div>
         <div className="create-active-progress"><div><span>{active.mode} · seed {active.seed}</span><b>{Math.round(active.progress)}%</b></div><div><span style={{ width: `${active.progress}%` }} /></div></div>
         {view.capabilities?.cancel && <button className="create-cancel-button" disabled={pending === 'cancel'} onClick={() => cancelRender(active)}><Square size={12} fill="currentColor" /> {pending === 'cancel' ? 'Canceling…' : 'Cancel render'}</button>}
       </div>}
@@ -483,7 +537,7 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
               <label><span>PROJECT TITLE <small>optional</small></span><input value={draft.title} maxLength={120} placeholder="Neon harbor arrival" onChange={(event) => update('title', event.target.value)} /></label>
               <label><span>{draft.directorMode ? 'GLOBAL CONTINUITY PROMPT' : 'WHAT SHOULD HAPPEN?'}</span><textarea value={draft.prompt} maxLength={8000} placeholder={draft.directorMode ? 'Describe the subject, wardrobe, environment, lighting, lens, and style that must persist through every segment…' : 'A lone astronaut walks through a flooded greenhouse at sunrise…'} onChange={(event) => update('prompt', event.target.value)} /></label>
               <label><span>AVOID <small>production constraints, not spoken dialogue</small></span><textarea className="compact" value={draft.avoid} maxLength={1000} placeholder="logos, captions, deformed hands, camera shake…" onChange={(event) => update('avoid', event.target.value)} /></label>
-              <label className="create-check"><input type="checkbox" checked={draft.promptEnhance} disabled={strictPhysics || draft.directorMode} onChange={(event) => update('promptEnhance', event.target.checked)} /><span><b>Enhance prompt locally</b><small>{draft.directorMode ? 'Director keeps your global and timed prompts literal; enhancement is disabled.' : strictPhysics ? 'Disabled while preparing structural passes; the prompt is retained as future appearance intent.' : 'Uses the dedicated Gemma e2b-it enhancer and adds startup time. Leave off when you want the most literal wording.'}</small></span></label>
+              <label className="create-check"><input type="checkbox" checked={draft.promptEnhance} disabled={blenderLocked || draft.directorMode} onChange={(event) => update('promptEnhance', event.target.checked)} /><span><b>Enhance prompt locally</b><small>{draft.directorMode ? 'Director keeps your global and timed prompts literal; enhancement is disabled.' : autoPilot ? 'Disabled; local Ollama plans a schema-validated Blender spec instead of rewriting the prompt for LTX.' : strictPhysics ? 'Disabled while preparing structural passes; the prompt is retained as future appearance intent.' : 'Uses the dedicated Gemma e2b-it enhancer and adds startup time. Leave off when you want the most literal wording.'}</small></span></label>
             </div>
           </div>
 
@@ -539,30 +593,42 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
               <label><span>RESOLUTION</span><select value={draft.resolution} disabled={draft.directorMode} onChange={(event) => update('resolution', event.target.value)}>{view.resolutions.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
               <label><span>DURATION</span>{draft.directorMode ? <input value={`${directorDuration} seconds from timeline`} disabled readOnly /> : <select value={draft.duration} disabled={strictPhysics} onChange={(event) => update('duration', Number(event.target.value))}>{[3, 5, 8, 10, 12, 15, 20].map((value) => <option key={value} value={value}>{value} seconds</option>)}</select>}</label>
               <label><span>FRAME RATE</span><select value={draft.frameRate} onChange={(event) => update('frameRate', Number(event.target.value))}>{[16, 24, 25, 30].map((value) => <option key={value} value={value}>{value} fps</option>)}</select></label>
-              <label><span>VARIATIONS</span><select value={strictPhysics || draft.directorMode ? 1 : draft.variations} disabled={strictPhysics || draft.directorMode} onChange={(event) => update('variations', Number(event.target.value))}>{[1, 2, 3, 4].map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
+              <label><span>VARIATIONS</span><select value={blenderLocked || draft.directorMode ? 1 : draft.variations} disabled={blenderLocked || draft.directorMode} onChange={(event) => update('variations', Number(event.target.value))}>{[1, 2, 3, 4].map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
               <label><span>SEED</span><select value={draft.seedMode} onChange={(event) => update('seedMode', event.target.value as CreateDraft['seedMode'])}><option value="random">Random each batch</option><option value="fixed">Fixed / repeatable</option></select></label>
               <label><span>SEED VALUE</span><input type="number" min={0} max={2147483647} disabled={draft.seedMode !== 'fixed'} value={draft.seed} onChange={(event) => update('seed', Number(event.target.value))} /></label>
             </div>
           </div>
 
           <div className="create-card">
-            <div className="create-card-head"><span><ImagePlus size={14} /> VISUAL BACKBONE</span><small>{strictPhysics ? 'Complete Blender animation' : draft.useBlender ? 'Selected Blender frames' : 'Optional'}</small></div>
+            <div className="create-card-head"><span><ImagePlus size={14} /> VISUAL BACKBONE</span><small>{autoPilot ? 'Local AI auto-pilots Blender' : strictPhysics ? 'Complete Blender animation' : draft.useBlender ? 'Selected Blender frames' : 'Optional'}</small></div>
             <div className="create-source-tabs">
               {(['text', 'first-frame', 'first-last'] as const).map((mode) => <button key={mode} className={!draft.useBlender && draft.referenceMode === mode ? 'selected' : ''} onClick={() => selectSourceMode(mode)} disabled={mode === 'text' ? !view.templates.text : mode === 'first-last' ? !view.templates.firstLast : !view.templates.firstFrame}>{mode === 'text' ? 'Text only' : mode === 'first-frame' ? 'Start frame' : 'Start + end'}</button>)}
               <button className={draft.useBlender && draft.blenderMode === 'anchors' ? 'selected' : ''} onClick={() => selectSourceMode('blender-anchors')}><Box size={13} /> Blender frames</button>
               <button className={strictPhysics ? 'selected backbone' : 'backbone'} onClick={() => selectSourceMode('blender-animation')}><PackageCheck size={13} /> Blender animation</button>
+              <button className={autoPilot ? 'selected backbone' : 'backbone'} onClick={() => selectSourceMode('blender-autopilot')}><Orbit size={13} /> Blender Auto-Pilot</button>
             </div>
             {draft.useBlender ? <div className="create-blender">
               <div className={`create-capability ${view.blender.installed ? 'ready' : ''}`}><Box size={17} /><span><b>{view.blender.installed ? `Blender ${view.blender.version || ''} detected` : 'Blender is not detected'}</b><small>The master scene is copied before background rendering; LTX Watch never saves over it.</small></span></div>
+              {autoPilot && <div className="physics-authority-card autopilot-card">
+                <div><Orbit size={17} /><span><b>Local AI orchestrates Blender, then LTX clothes the backbone</b><small>Ollama plans a schema-validated scene. The bundled adapter builds it. Blender records camera and blocking. LTX may only change appearance and add smaller animation. Character and object identity stay locked in the spec.</small></span></div>
+                <div className="physics-pass-list"><span>Ollama plan</span><span>Blender build</span><span>Backbone record</span><span>LTX clothing</span><span>Identity lock</span></div>
+                <label><span>TRAINING PRESET</span><select value={draft.autopilotPreset} onChange={(event) => {
+                  const preset = event.target.value as CreateDraft['autopilotPreset'];
+                  update('autopilotPreset', preset);
+                  if (preset === 'final-override-intro' && (!draft.title || draft.title === 'Final Override Introduction')) update('title', 'Final Override Introduction');
+                }}><option value="final-override-intro">Final Override Introduction · Earth / halo / moon / cathedral / biodome</option><option value="from-prompt">From prompt · local Ollama must invent an allowlisted spec</option></select></label>
+                <label className="create-check"><input type="checkbox" checked={draft.clothWithLtx} onChange={(event) => update('clothWithLtx', event.target.checked)} /><span><b>Clothe the backbone with LTX 2.5</b><small>Uses official first/last Blender frames. LTX interpolates appearance and smaller motion; it must not invent a new camera path.</small></span></label>
+                <p>{view.autopilot?.planningReady ? `Planner: ${view.autopilot.ollamaModel}` : 'Ollama is optional for the intro preset and required for prompt-driven scenes.'} {view.autopilot?.blockedReason || ''}</p>
+              </div>}
               {strictPhysics && <div className="physics-authority-card">
                 <div><PackageCheck size={17} /><span><b>Blender animation backbone enabled</b><small>Camera, rigid bodies, collisions, cloth, deformation, and timing come only from every evaluated frame of the Blender scene.</small></span></div>
                 <div className="physics-pass-list">{(view.physics?.passes || []).map((item) => <span key={item.id}>{item.label}</span>)}</div>
                 <p>{view.physics?.blockedReason || 'Restart this branch’s local bridge to load the physics-backbone capability.'}</p>
               </div>}
-              {!strictPhysics && <div className="create-anchor-warning"><Sparkles size={14} /><span><b>Blender frame anchors</b><small>Only the selected first/end frames guide LTX. Choose <strong>Blender animation</strong> above when Blender must own the complete camera and object motion.</small></span></div>}
-              <label><span>PROJECT BACKBONE</span><select value={draft.blenderProjectId} disabled={Boolean(draft.blenderUploadPath)} onChange={(event) => { update('blenderProjectId', event.target.value); update('blenderUploadPath', ''); }}><option value="">{draft.blenderUploadPath ? 'Using dropped .blend context' : 'Choose a .blend assigned in Projects'}</option>{view.blender.backbones.map((item) => <option key={item.projectId} value={item.projectId}>{item.projectName} · {item.assetName}</option>)}</select></label>
-              <div className="create-frame-grid"><label><span>FIRST FRAME</span><input type="number" min={1} value={draft.blenderFirstFrame} onChange={(event) => update('blenderFirstFrame', Number(event.target.value))} /></label>{(strictPhysics || draft.referenceMode === 'first-last') && <label><span>LAST FRAME</span><input type="number" min={1} value={draft.blenderLastFrame} onChange={(event) => update('blenderLastFrame', Number(event.target.value))} /></label>}</div>
-              {!strictPhysics && <label className="create-check"><input type="checkbox" checked={draft.referenceMode === 'first-last'} onChange={(event) => update('referenceMode', event.target.checked ? 'first-last' : 'first-frame')} /><span><b>Anchor the final frame too</b><small>Renders both timeline frames and uses the official first/last-frame LTX workflow.</small></span></label>}
+              {!blenderLocked && <div className="create-anchor-warning"><Sparkles size={14} /><span><b>Blender frame anchors</b><small>Only the selected first/end frames guide LTX. Choose <strong>Blender animation</strong> or <strong>Blender Auto-Pilot</strong> when Blender must own camera and object motion.</small></span></div>}
+              <label><span>{autoPilot ? 'OPTIONAL SEED SCENE' : 'PROJECT BACKBONE'}</span><select value={draft.blenderProjectId} disabled={Boolean(draft.blenderUploadPath)} onChange={(event) => { update('blenderProjectId', event.target.value); update('blenderUploadPath', ''); }}><option value="">{draft.blenderUploadPath ? 'Using dropped .blend context' : autoPilot ? 'Build from the allowlisted kit (no seed required)' : 'Choose a .blend assigned in Projects'}</option>{view.blender.backbones.map((item) => <option key={item.projectId} value={item.projectId}>{item.projectName} · {item.assetName}</option>)}</select></label>
+              {!autoPilot && <div className="create-frame-grid"><label><span>FIRST FRAME</span><input type="number" min={1} value={draft.blenderFirstFrame} onChange={(event) => update('blenderFirstFrame', Number(event.target.value))} /></label>{(strictPhysics || draft.referenceMode === 'first-last') && <label><span>LAST FRAME</span><input type="number" min={1} value={draft.blenderLastFrame} onChange={(event) => update('blenderLastFrame', Number(event.target.value))} /></label>}</div>}
+              {!blenderLocked && <label className="create-check"><input type="checkbox" checked={draft.referenceMode === 'first-last'} onChange={(event) => update('referenceMode', event.target.checked ? 'first-last' : 'first-frame')} /><span><b>Anchor the final frame too</b><small>Renders both timeline frames and uses the official first/last-frame LTX workflow.</small></span></label>}
             </div> : draft.referenceMode !== 'text' ? <div className="create-reference-grid">
               <label className={draft.firstFramePath ? 'uploaded' : ''}><input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void uploadContext([file], 'firstFramePath'); }} /><Upload size={18} /><b>{pending === 'firstFramePath' ? 'Uploading…' : draft.firstFramePath ? 'First frame ready' : 'Upload first frame'}</b><small>PNG, JPEG, or WebP · private local copy</small></label>
               {draft.referenceMode === 'first-last' && <label className={draft.lastFramePath ? 'uploaded' : ''}><input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void uploadContext([file], 'lastFramePath'); }} /><Upload size={18} /><b>{pending === 'lastFramePath' ? 'Uploading…' : draft.lastFramePath ? 'Last frame ready' : 'Upload last frame'}</b><small>Controls where the motion should finish</small></label>}
@@ -572,8 +638,8 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
           <div className="create-card">
             <button className="create-card-head create-advanced-toggle" onClick={() => setAdvanced((value) => !value)}><span><WandSparkles size={14} /> CREATIVE CONTROLS</span><small>{advanced ? 'Hide' : 'Show'} options</small></button>
             {advanced && <div className="create-option-grid create-creative-grid">
-              <label><span>CAMERA</span><select value={draft.camera} disabled={strictPhysics} onChange={(event) => update('camera', event.target.value)}><option value="none">Let LTX decide</option><option value="locked">{strictPhysics ? 'From Blender scene' : 'Locked tripod'}</option><option value="dolly_in">Dolly in</option><option value="dolly_out">Dolly out</option><option value="orbit">Orbit subject</option><option value="tracking">Tracking shot</option><option value="handheld">Subtle handheld</option><option value="aerial">Aerial glide</option></select></label>
-              <label><span>MOTION</span><select value={draft.motion} disabled={strictPhysics} onChange={(event) => update('motion', event.target.value)}><option value="subtle">{strictPhysics ? 'From Blender simulation' : 'Subtle'}</option><option value="balanced">Balanced</option><option value="dynamic">Dynamic</option></select></label>
+              <label><span>CAMERA</span><select value={draft.camera} disabled={blenderLocked} onChange={(event) => update('camera', event.target.value)}><option value="none">Let LTX decide</option><option value="locked">{blenderLocked ? 'From Blender scene' : 'Locked tripod'}</option><option value="dolly_in">Dolly in</option><option value="dolly_out">Dolly out</option><option value="orbit">Orbit subject</option><option value="tracking">Tracking shot</option><option value="handheld">Subtle handheld</option><option value="aerial">Aerial glide</option></select></label>
+              <label><span>MOTION</span><select value={draft.motion} disabled={blenderLocked} onChange={(event) => update('motion', event.target.value)}><option value="subtle">{blenderLocked ? 'From Blender simulation' : 'Subtle'}</option><option value="balanced">Balanced</option><option value="dynamic">Dynamic</option></select></label>
               <label><span>VISUAL STYLE</span><select value={draft.style} onChange={(event) => update('style', event.target.value)}><option value="cinematic">Cinematic</option><option value="documentary">Documentary realism</option><option value="animation">Animated film</option><option value="product">Product film</option><option value="custom">Custom</option></select></label>
               <label><span>AUDIO</span><select value={draft.audio} onChange={(event) => update('audio', event.target.value)}><option value="generate">Synchronized scene audio</option><option value="ambient">Ambience / effects only</option>{draft.soundtrackPath && <option value="soundtrack">Use dropped soundtrack</option>}<option value="silent">Strip audio from result</option></select></label>
               {draft.style === 'custom' && <label className="span-two"><span>CUSTOM STYLE</span><input value={draft.customStyle} maxLength={600} placeholder="Describe lighting, lenses, color palette, materials…" onChange={(event) => update('customStyle', event.target.value)} /></label>}
@@ -581,8 +647,8 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
           </div>
 
           <div className="create-submit">
-            <div><b>{draft.directorMode ? 'One timed Director render will join the private queue' : strictPhysics ? 'One versioned Blender animation backbone will join the private queue' : `${draft.variations} ${draft.variations === 1 ? 'video' : 'variations'} will join the private Create queue`}</b><span>{draft.directorMode ? 'Ingredients aspect' : draft.resolution} · {draft.directorMode ? `${directorDuration}s in ${draft.directorSegments.length} segments` : strictPhysics ? `frames ${draft.blenderFirstFrame}–${draft.blenderLastFrame}` : `${draft.duration}s`} · {draft.frameRate} fps · {draft.directorMode ? 'Prompt Relay Director' : strictPhysics ? 'Full Blender animation owns motion' : draft.useBlender ? 'Blender frame anchors' : draft.referenceMode}</span></div>
-            <div className="create-submit-actions"><button className="secondary-button" disabled={Boolean(pending)} onClick={() => void action('save-draft', { draft }, 'Create draft saved locally')}>Save draft</button><button className="project-primary" disabled={!enqueueReady} onClick={() => void action('enqueue', { draft }, draft.directorMode ? 'Director timeline queued safely' : strictPhysics ? 'Blender animation backbone queued safely' : `${draft.variations} Create ${draft.variations === 1 ? 'job' : 'jobs'} queued safely`)}>{pending === 'enqueue' ? <LoaderCircle className="spinning" size={15} /> : strictPhysics ? <PackageCheck size={15} /> : <Plus size={15} />} {draft.directorMode ? 'Queue Director render' : strictPhysics ? 'Prepare animation backbone' : 'Queue creation'}</button></div>
+            <div><b>{draft.directorMode ? 'One timed Director render will join the private queue' : autoPilot ? 'One local Auto-Pilot job will plan, record, and optionally clothe a Blender backbone' : strictPhysics ? 'One versioned Blender animation backbone will join the private queue' : `${draft.variations} ${draft.variations === 1 ? 'video' : 'variations'} will join the private Create queue`}</b><span>{draft.directorMode ? 'Ingredients aspect' : draft.resolution} · {draft.directorMode ? `${directorDuration}s in ${draft.directorSegments.length} segments` : blenderLocked ? `${draft.duration}s · Blender frames ${draft.blenderFirstFrame}–${draft.blenderFirstFrame + draft.duration * draft.frameRate - 1}` : `${draft.duration}s`} · {draft.frameRate} fps · {draft.directorMode ? 'Prompt Relay Director' : autoPilot ? draft.clothWithLtx ? 'Auto-Pilot + LTX clothing' : 'Auto-Pilot backbone only' : strictPhysics ? 'Full Blender animation owns motion' : draft.useBlender ? 'Blender frame anchors' : draft.referenceMode}</span></div>
+            <div className="create-submit-actions"><button className="secondary-button" disabled={Boolean(pending)} onClick={() => void action('save-draft', { draft }, 'Create draft saved locally')}>Save draft</button><button className="project-primary" disabled={!enqueueReady} onClick={() => void action('enqueue', { draft }, draft.directorMode ? 'Director timeline queued safely' : autoPilot ? 'Blender Auto-Pilot queued safely' : strictPhysics ? 'Blender animation backbone queued safely' : `${draft.variations} Create ${draft.variations === 1 ? 'job' : 'jobs'} queued safely`)}>{pending === 'enqueue' ? <LoaderCircle className="spinning" size={15} /> : autoPilot ? <Orbit size={15} /> : strictPhysics ? <PackageCheck size={15} /> : <Plus size={15} />} {draft.directorMode ? 'Queue Director render' : autoPilot ? 'Queue Auto-Pilot' : strictPhysics ? 'Prepare animation backbone' : 'Queue creation'}</button></div>
           </div>
         </div>
 
@@ -598,7 +664,7 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
               {!view.jobs.some((job) => !['complete', 'backbone-ready'].includes(job.status)) && <div className="project-empty-small"><Check size={20} /><b>Queue is clear</b><span>New video and backbone jobs appear here.</span></div>}
             </div>
           </div>
-          <div className="create-card create-safety-card"><div className="create-card-head"><span><Box size={14} /> LOCAL SAFETY</span></div><ul><li>Uses official local ComfyUI workflows and the public Prompt Relay node.</li><li>Director refuses to queue when a required component is missing; it never silently falls back.</li><li>Never launches beside Studio, the album worker, or an occupied port.</li><li>Prompts and job files stay in git-ignored local state.</li><li>Blender renders a working copy of the master scene.</li></ul></div>
+          <div className="create-card create-safety-card"><div className="create-card-head"><span><Box size={14} /> LOCAL SAFETY</span></div><ul><li>Uses official local ComfyUI workflows and the public Prompt Relay node.</li><li>Director refuses to queue when a required component is missing; it never silently falls back.</li><li>Never launches beside Studio, the album worker, or an occupied port.</li><li>Prompts and job files stay in git-ignored local state.</li><li>Blender renders a working copy of the master scene.</li><li>Auto-Pilot never executes model-generated Python; Ollama may only emit a schema-validated scene spec.</li></ul></div>
         </aside>
       </div>
 

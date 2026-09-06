@@ -29,6 +29,15 @@ import {
   physicsBackboneCapability,
 } from './lib/physics-backbone.mjs';
 import {
+  AUTOPILOT_PREFERRED_MODELS,
+  autopilotCapability,
+  buildAutopilotJob,
+  chooseOllamaModel,
+  loadPresetSpec,
+  normalizeOllamaUrl,
+  validateSceneSpec,
+} from './lib/blender-autopilot.mjs';
+import {
   BROWSER_PLAYBACK_CACHE_LIMIT,
   browserPlaybackArguments,
   browserPlaybackKey,
@@ -84,6 +93,8 @@ const DIRECTOR_LINKS = {
   ingredients: 'https://huggingface.co/Lightricks/LTX-2.3-22b-IC-LoRA-Ingredients',
 };
 const PHYSICS_BACKBONE_SCRIPT_PATH = path.join(APP_ROOT, 'scripts', 'blender-physics-backbone.py');
+const AUTOPILOT_RUNNER_PATH = path.join(APP_ROOT, 'scripts', 'ltx-autopilot-runner.py');
+const AUTOPILOT_SCRIPT_PATH = path.join(APP_ROOT, 'scripts', 'blender-autopilot.py');
 const HIDDEN_PYTHON_TREE_PATH = path.join(APP_ROOT, 'scripts', 'run-hidden-python.py');
 const CREATE_UPLOAD_CHUNK_LIMIT = 4 * 1024 * 1024;
 const CREATE_CONTEXT_EXTENSIONS = new Map([
@@ -116,6 +127,7 @@ let sourcePlanCache = { key: '', expiresAt: 0, value: [], promise: null };
 const projectUploads = new Map();
 const createUploads = new Map();
 let blenderCache = { expiresAt: 0, value: null };
+let ollamaCache = { expiresAt: 0, value: null, promise: null };
 let directorCache = { key: '', expiresAt: 0, value: null };
 let gpuTelemetryCache = { expiresAt: 0, value: null, promise: null };
 const browserPlaybackJobs = new Map();
@@ -138,6 +150,8 @@ function defaultConfig(comfyRoot) {
     comfyUrl: process.env.LTX_WATCH_COMFY_URL || 'http://127.0.0.1:8188',
     refreshSeconds: 5,
     maxVideos: 120,
+    ollamaUrl: process.env.LTX_WATCH_OLLAMA_URL || 'http://127.0.0.1:11434',
+    ollamaModel: process.env.LTX_WATCH_OLLAMA_MODEL || '',
   };
 }
 
@@ -166,7 +180,7 @@ async function getConfig() {
 
 function cleanConfig(input) {
   const next = {};
-  for (const key of ['displayName', 'modelLabel', 'workerCommandFragment', 'recoveryScript', 'studioSourceRunner', 'comfyRoot', 'finalsDirectory', 'clipsDirectory', 'logFile', 'statusFile', 'planFile', 'comfyUrl']) {
+  for (const key of ['displayName', 'modelLabel', 'workerCommandFragment', 'recoveryScript', 'studioSourceRunner', 'comfyRoot', 'finalsDirectory', 'clipsDirectory', 'logFile', 'statusFile', 'planFile', 'comfyUrl', 'ollamaUrl', 'ollamaModel']) {
     if (typeof input[key] === 'string') {
       const value = input[key].trim();
       if (key === 'workerCommandFragment' && value.length < 4) throw new Error('Worker command match must contain at least four characters.');
@@ -178,6 +192,8 @@ function cleanConfig(input) {
   next.maxVideos = Math.min(500, Math.max(20, Number(input.maxVideos) || 120));
   next.studioGpu = Math.min(15, Math.max(0, Math.trunc(Number(input.studioGpu) || 0)));
   next.studioPort = Math.min(65_535, Math.max(1_024, Math.trunc(Number(input.studioPort) || 8188)));
+  if (typeof next.ollamaUrl === 'string' && next.ollamaUrl) next.ollamaUrl = normalizeOllamaUrl(next.ollamaUrl);
+  if (typeof next.ollamaModel === 'string') next.ollamaModel = next.ollamaModel.replace(/[^a-zA-Z0-9._:-]/g, '').slice(0, 120);
   return next;
 }
 
@@ -1401,6 +1417,46 @@ async function getCachedBlender() {
   return found;
 }
 
+async function probeOllama(config) {
+  if (ollamaCache.expiresAt > Date.now() && ollamaCache.value) return ollamaCache.value;
+  if (ollamaCache.promise) return ollamaCache.promise;
+  ollamaCache.promise = (async () => {
+    let url = 'http://127.0.0.1:11434';
+    try { url = normalizeOllamaUrl(config.ollamaUrl || url); } catch { url = 'http://127.0.0.1:11434'; }
+    const empty = { online: false, url, model: null, models: [] };
+    try {
+      const response = await fetch(`${url}/api/tags`, { signal: AbortSignal.timeout(1500) });
+      if (!response.ok) return empty;
+      const payload = await response.json();
+      const models = (payload.models || []).map((item) => String(item.name || '').trim()).filter(Boolean);
+      return { online: true, url, model: chooseOllamaModel(models, config.ollamaModel), models };
+    } catch {
+      return empty;
+    }
+  })();
+  try {
+    const value = await ollamaCache.promise;
+    ollamaCache = { expiresAt: Date.now() + 30_000, value, promise: null };
+    return value;
+  } catch {
+    ollamaCache = { expiresAt: Date.now() + 8_000, value: { online: false, url: 'http://127.0.0.1:11434', model: null, models: [] }, promise: null };
+    return ollamaCache.value;
+  }
+}
+
+async function publishCreateOutput(sourcePath, config, job) {
+  const source = path.resolve(String(sourcePath || ''));
+  if (!source || !existsSync(source) || !VIDEO_EXTENSIONS.has(path.extname(source).toLowerCase())) return null;
+  if (isInside(source, [config.clipsDirectory])) return source;
+  if (!isInside(source, [CREATE_RUNTIME_ROOT])) return null;
+  const destDir = path.join(config.clipsDirectory, 'ltx-watch-create');
+  await mkdir(destDir, { recursive: true });
+  const dest = path.join(destDir, `${job.id}${path.extname(source).toLowerCase()}`);
+  if (!isInside(dest, [config.clipsDirectory])) return null;
+  await copyFile(source, dest);
+  return dest;
+}
+
 async function createVideo(filePath, config, title) {
   return studioVideo(filePath, config, title);
 }
@@ -1473,6 +1529,35 @@ async function syncCreateJob(record, config) {
       job.completedAt = result.completedAt || new Date().toISOString();
       job.cancelRequestedAt = null;
       record.activeJobId = null;
+      return true;
+    }
+  }
+  if (result?.status === 'complete' && result?.kind === 'blender-autopilot') {
+    const packagePath = typeof result.packagePath === 'string' ? path.resolve(result.packagePath) : '';
+    const manifestPath = typeof result.manifestPath === 'string' ? path.resolve(result.manifestPath) : '';
+    const published = await publishCreateOutput(result.outputPath || result.backboneVideoPath, config, job);
+    const packageInfo = packagePath ? await stat(packagePath).catch(() => null) : null;
+    const manifestInfo = manifestPath ? await stat(manifestPath).catch(() => null) : null;
+    job.packagePath = packageInfo?.isDirectory() && isInside(packagePath, [CREATE_RUNTIME_ROOT]) ? packagePath : null;
+    job.manifestPath = manifestInfo?.isFile() && isInside(manifestPath, [CREATE_RUNTIME_ROOT]) ? manifestPath : null;
+    job.completedAt = result.completedAt || new Date().toISOString();
+    job.cancelRequestedAt = null;
+    record.activeJobId = null;
+    if (published) {
+      const output = await createVideo(published, config, job.title);
+      if (output) {
+        job.status = 'complete';
+        job.stage = 'Complete';
+        job.progress = 100;
+        job.outputPath = published;
+        await updateContinuityClipForCreateJob(job, 'review', { outputPath: published });
+        return true;
+      }
+    }
+    if (job.packagePath) {
+      job.status = 'backbone-ready';
+      job.stage = 'Blender Auto-Pilot backbone ready';
+      job.progress = 100;
       return true;
     }
   }
@@ -1549,6 +1634,107 @@ async function startPhysicsBackboneJob(record, job, config, backbone) {
     const startedAt = new Date().toISOString();
     Object.assign(job, {
       kind: 'physics-backbone', status: 'generating', stage: 'Starting Blender physics evaluation', progress: 1,
+      pid: child.pid, jobPath, resultPath, startedAt, completedAt: null, cancelRequestedAt: null, error: null,
+    });
+    record.activeJobId = job.id;
+    child.unref();
+  } finally {
+    await logHandle.close();
+  }
+}
+
+async function startAutopilotJob(record, job, config, backbone) {
+  const blender = await getCachedBlender();
+  if (!blender?.executable || !existsSync(AUTOPILOT_SCRIPT_PATH) || !existsSync(AUTOPILOT_RUNNER_PATH)) {
+    throw new Error('Blender Auto-Pilot needs Blender and the bundled planner/adapter scripts.');
+  }
+  const launch = resolveCreatePlan(config);
+  if (job.options.clothWithLtx && (!launch?.executable || !launch.templates.firstLast)) {
+    throw new Error('LTX clothing needs ComfyUI Python and the official first/last-frame LTX 2.5 template.');
+  }
+  const ollama = await probeOllama(config);
+  if (job.options.autopilotPreset === 'from-prompt' && (!ollama.online || !ollama.model)) {
+    throw new Error('Prompt-driven Auto-Pilot needs a loopback Ollama model.');
+  }
+  const python = launch?.executable || (process.platform === 'win32' ? 'python.exe' : 'python3');
+  const jobsDirectory = path.join(CREATE_RUNTIME_ROOT, 'jobs', job.id);
+  const specPath = path.join(jobsDirectory, 'scene-spec.json');
+  const workingCopyPath = path.join(jobsDirectory, 'generated.blend');
+  const outputRoot = path.join(jobsDirectory, 'backbone-v1');
+  const jobPath = path.join(jobsDirectory, 'job.json');
+  const resultPath = path.join(jobsDirectory, 'result.json');
+  const cancelPath = path.join(jobsDirectory, 'cancel.requested.json');
+  await mkdir(jobsDirectory, { recursive: true });
+  await rm(cancelPath, { force: true });
+  const presetSpec = job.options.autopilotPreset === 'from-prompt'
+    ? validateSceneSpec({
+      preset: 'from-prompt',
+      title: job.title,
+      logline: job.options.prompt.slice(0, 400),
+      appearancePrompt: composeCreatePrompt(job.options),
+      avoid: job.options.avoid,
+      objects: [{ id: 'earth', primitive: 'planet', role: 'planet', location: [0, 0, 0], scale: [1, 1, 1] }],
+      camera: { type: 'orbit', lookAt: 'earth' },
+    })
+    : loadPresetSpec('final-override-intro');
+  const plannedAppearance = composeCreatePrompt(job.options);
+  presetSpec.appearancePrompt = [presetSpec.appearancePrompt, plannedAppearance].filter(Boolean).join('\n\n');
+  if (job.options.avoid) presetSpec.avoid = [presetSpec.avoid, job.options.avoid].filter(Boolean).join('. ');
+  await writeFile(specPath, `${JSON.stringify(presetSpec, null, 2)}\n`, 'utf8');
+  const soundtrackPath = job.options.soundtrackPath && isInside(job.options.soundtrackPath, [CREATE_RUNTIME_ROOT]) && existsSync(job.options.soundtrackPath)
+    ? path.join(jobsDirectory, `soundtrack${path.extname(job.options.soundtrackPath).toLowerCase()}`)
+    : '';
+  if (soundtrackPath) await copyFile(job.options.soundtrackPath, soundtrackPath);
+  const payload = buildAutopilotJob({
+    id: job.id,
+    preset: job.options.autopilotPreset,
+    prompt: job.options.prompt,
+    avoid: job.options.avoid,
+    ollamaUrl: ollama.online ? ollama.url : '',
+    ollamaModel: ollama.model || '',
+    blenderExecutable: blender.executable,
+    blenderScriptPath: AUTOPILOT_SCRIPT_PATH,
+    createRunnerPath: job.options.clothWithLtx ? CREATE_RUNNER_PATH : '',
+    sourcePath: backbone?.fullPath || '',
+    allowedSourceRoots: backbone ? [backbone.rootPath] : [],
+    runtimeRoot: jobsDirectory,
+    specPath,
+    workingCopyPath,
+    outputRoot,
+    resultPath,
+    cancelPath,
+    frameStart: job.options.blenderFirstFrame,
+    frameEnd: job.options.blenderLastFrame,
+    frameRate: job.options.frameRate,
+    width: job.options.width,
+    height: job.options.height,
+    clothWithLtx: job.options.clothWithLtx === true,
+    seed: job.seed,
+    audio: job.options.audio,
+    soundtrackPath,
+    sourceRunner: launch?.sourceRunner || '',
+    comfyRoot: path.resolve(config.comfyRoot),
+    outputPrefix: `video/ltx-watch-create/${job.id}`,
+    port: config.studioPort,
+    cudaDevice: config.studioGpu,
+  });
+  await writeFile(jobPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  await writeFile(resultPath, `${JSON.stringify({ status: 'generating', kind: 'blender-autopilot', stage: 'Starting local Auto-Pilot orchestrator', progress: 0 }, null, 2)}\n`, 'utf8');
+  const logHandle = await open(path.join(jobsDirectory, 'autopilot.log'), 'a');
+  try {
+    const child = spawn(python, [AUTOPILOT_RUNNER_PATH, '--job', jobPath], {
+      cwd: jobsDirectory,
+      detached: true,
+      stdio: ['ignore', logHandle.fd, logHandle.fd],
+      windowsHide: true,
+    });
+    await new Promise((resolveSpawn, rejectSpawn) => {
+      child.once('spawn', resolveSpawn);
+      child.once('error', rejectSpawn);
+    });
+    const startedAt = new Date().toISOString();
+    Object.assign(job, {
+      kind: 'blender-autopilot', status: 'generating', stage: 'Starting local Auto-Pilot orchestrator', progress: 1,
       pid: child.pid, jobPath, resultPath, startedAt, completedAt: null, cancelRequestedAt: null, error: null,
     });
     record.activeJobId = job.id;
@@ -1674,7 +1860,8 @@ async function maybeStartCreateJob(record, config) {
       : null;
     const backbone = uploadedBackbone || backbones.find((item) => item.projectId === job.options.blenderProjectId) || null;
     try {
-      if (job.options.useBlender && job.options.blenderMode === 'physics') await startPhysicsBackboneJob(record, job, config, backbone);
+      if (job.options.useBlender && job.options.blenderMode === 'autopilot') await startAutopilotJob(record, job, config, backbone);
+      else if (job.options.useBlender && job.options.blenderMode === 'physics') await startPhysicsBackboneJob(record, job, config, backbone);
       else await startCreateJob(record, job, config, backbone);
     } catch (error) {
       job.status = 'failed';
@@ -1691,8 +1878,8 @@ async function maybeStartCreateJob(record, config) {
 
 async function buildCreateView({ sync = false } = {}) {
   const config = await getConfig();
-  const [status, comfy, record, studio, backbones, blender, director] = await Promise.all([
-    readJson(config.statusFile, {}), getComfyQueue(config), getCreateRecord(), getStudioRecord(), getCreateBackbones(config), getCachedBlender(), resolveDirectorCapability(config),
+  const [status, comfy, record, studio, backbones, blender, director, ollama] = await Promise.all([
+    readJson(config.statusFile, {}), getComfyQueue(config), getCreateRecord(), getStudioRecord(), getCreateBackbones(config), getCachedBlender(), resolveDirectorCapability(config), probeOllama(config),
   ]);
   let changed = await syncCreateJob(record, config);
   if (sync && await maybeStartCreateJob(record, config)) changed = true;
@@ -1703,9 +1890,18 @@ async function buildCreateView({ sync = false } = {}) {
   const queued = record.queue.filter((id) => record.jobs[id]?.status === 'queued').length;
   const adapterReady = Boolean(launch?.templates.text);
   const physicsCapability = physicsBackboneCapability({ blenderInstalled: Boolean(blender?.executable), adapterInstalled: existsSync(PHYSICS_BACKBONE_SCRIPT_PATH) });
+  const autopilotCapabilityView = autopilotCapability({
+    blenderInstalled: Boolean(blender?.executable),
+    adapterInstalled: existsSync(AUTOPILOT_SCRIPT_PATH),
+    runnerInstalled: existsSync(AUTOPILOT_RUNNER_PATH),
+    ollamaOnline: Boolean(ollama.online),
+    ollamaModel: ollama.model,
+    clothTemplateInstalled: Boolean(launch?.templates.firstLast),
+  });
   const launchIdle = Boolean(!activeJob && !studio.activeJob && !workerBusy && !comfy.online && !record.queuePaused);
   const canStart = Boolean(adapterReady && launchIdle);
   const physics = { ...physicsCapability, canPrepare: Boolean(physicsCapability.preparationReady && launchIdle) };
+  const autopilot = { ...autopilotCapabilityView, canPrepare: Boolean(autopilotCapabilityView.preparationReady && launchIdle), preferredModels: AUTOPILOT_PREFERRED_MODELS.slice() };
   const blockedReason = activeJob
     ? `Creating ${activeJob.title}.`
     : studio.activeJob
@@ -1725,15 +1921,18 @@ async function buildCreateView({ sync = false } = {}) {
     if (!job) continue;
     const video = job.outputPath ? await createVideo(job.outputPath, config, job.title) : null;
     const physicsJob = job.options.useBlender && job.options.blenderMode === 'physics';
+    const autopilotJob = job.options.useBlender && job.options.blenderMode === 'autopilot';
     jobs.push({
       id: job.id, title: job.title, status: job.status, stage: job.stage || null, progress: Number(job.progress || 0),
       seed: job.seed, variation: job.variation, variations: job.variations, createdAt: job.createdAt,
       startedAt: job.startedAt || null, completedAt: job.completedAt || null, error: job.error || null,
-      summary: physicsJob
+      summary: physicsJob || autopilotJob
         ? `${job.options.width}×${job.options.height} · frames ${job.options.blenderFirstFrame}–${job.options.blenderLastFrame} · ${job.options.frameRate} fps`
         : `${job.options.width}×${job.options.height} · ${job.options.duration}s · ${job.options.frameRate} fps`,
-      mode: physicsJob ? 'Blender animation backbone' : job.options.directorMode ? `Director timeline · ${job.options.directorSegments.length} segments` : job.options.useBlender ? 'Blender frame anchors' : job.options.referenceMode === 'text' ? 'Text' : job.options.referenceMode === 'first-last' ? 'First + last frame' : 'First frame',
-      kind: physicsJob ? 'physics-backbone' : 'video',
+      mode: autopilotJob
+        ? job.options.clothWithLtx ? 'Blender Auto-Pilot + LTX clothing' : 'Blender Auto-Pilot backbone'
+        : physicsJob ? 'Blender animation backbone' : job.options.directorMode ? `Director timeline · ${job.options.directorSegments.length} segments` : job.options.useBlender ? 'Blender frame anchors' : job.options.referenceMode === 'text' ? 'Text' : job.options.referenceMode === 'first-last' ? 'First + last frame' : 'First frame',
+      kind: autopilotJob ? 'blender-autopilot' : physicsJob ? 'physics-backbone' : 'video',
       packagePath: job.packagePath && isInside(job.packagePath, [CREATE_RUNTIME_ROOT]) ? job.packagePath : null,
       manifestPath: job.manifestPath && isInside(job.manifestPath, [CREATE_RUNTIME_ROOT]) ? job.manifestPath : null,
       video,
@@ -1762,6 +1961,7 @@ async function buildCreateView({ sync = false } = {}) {
       links: director.links,
     },
     physics,
+    autopilot,
     blender: { installed: Boolean(blender?.executable), version: blender?.version?.text || null, backbones: backbones.map((item) => ({ projectId: item.projectId, projectName: item.projectName, assetName: item.assetName })) },
     jobs,
   };
@@ -1810,7 +2010,9 @@ async function controlCreate(body) {
       }
       const relevantPrivatePaths = options.directorMode
         ? [options.soundtrackPath, options.ingredientsReferencePath]
-        : [options.firstFramePath, options.lastFramePath, options.contextVideoPath, options.soundtrackPath, options.blenderUploadPath];
+        : options.blenderMode === 'autopilot'
+          ? [options.soundtrackPath, options.blenderUploadPath]
+          : [options.firstFramePath, options.lastFramePath, options.contextVideoPath, options.soundtrackPath, options.blenderUploadPath];
       for (const privatePath of relevantPrivatePaths.filter(Boolean)) {
         if (!isInside(privatePath, [CREATE_RUNTIME_ROOT]) || !existsSync(privatePath)) throw new Error('Upload Create context through the local interface before queuing.');
       }
@@ -1820,9 +2022,17 @@ async function controlCreate(body) {
         if (!director.ready) throw new Error(director.blockedReason || 'Director dependencies are unavailable.');
       }
       const backbones = options.useBlender ? await getCreateBackbones(config) : [];
-      if (options.useBlender && !options.blenderUploadPath && !backbones.some((item) => item.projectId === options.blenderProjectId)) throw new Error('Choose a project with an assigned .blend backbone or drop a .blend file.');
+      if (options.useBlender && options.blenderMode !== 'autopilot' && !options.blenderUploadPath && !backbones.some((item) => item.projectId === options.blenderProjectId)) throw new Error('Choose a project with an assigned .blend backbone or drop a .blend file.');
       if (options.useBlender && !(await getCachedBlender())?.executable) throw new Error('Blender is not detected. Install Blender or switch to a non-Blender creation mode.');
       if (options.blenderMode === 'physics' && !existsSync(PHYSICS_BACKBONE_SCRIPT_PATH)) throw new Error('The bundled physics-backbone adapter is missing. Repair or reinstall LTX Watch.');
+      if (options.blenderMode === 'autopilot') {
+        if (!existsSync(AUTOPILOT_RUNNER_PATH) || !existsSync(AUTOPILOT_SCRIPT_PATH)) throw new Error('The bundled Blender Auto-Pilot adapter is missing. Repair or reinstall LTX Watch.');
+        if (options.autopilotPreset === 'from-prompt') {
+          const ollama = await probeOllama(config);
+          if (!ollama.online || !ollama.model) throw new Error('Prompt-driven Auto-Pilot needs a loopback Ollama model.');
+        }
+        if (options.clothWithLtx && !resolveCreatePlan(config)?.templates.firstLast) throw new Error('LTX clothing needs the official first/last-frame LTX 2.5 template.');
+      }
       const seeds = createJobSeeds(options);
       const groupId = randomBytes(8).toString('hex');
       for (const [index, seed] of seeds.entries()) {
@@ -1835,9 +2045,11 @@ async function controlCreate(body) {
           seed,
           variation: index + 1,
           variations: seeds.length,
-          kind: options.useBlender && options.blenderMode === 'physics' ? 'physics-backbone' : 'video',
+          kind: options.useBlender && options.blenderMode === 'autopilot' ? 'blender-autopilot' : options.useBlender && options.blenderMode === 'physics' ? 'physics-backbone' : 'video',
           status: 'queued',
-          stage: options.useBlender && options.blenderMode === 'physics' ? 'Waiting safely to evaluate the Blender animation' : 'Waiting safely for the GPU',
+          stage: options.useBlender && options.blenderMode === 'autopilot'
+            ? 'Waiting safely to auto-pilot Blender'
+            : options.useBlender && options.blenderMode === 'physics' ? 'Waiting safely to evaluate the Blender animation' : 'Waiting safely for the GPU',
           progress: 0,
           createdAt: new Date().toISOString(),
           startedAt: null,

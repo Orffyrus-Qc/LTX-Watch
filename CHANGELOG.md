@@ -2,6 +2,19 @@
 
 All notable changes to LTX / Watch are documented here.
 
+## Unreleased — `feature/blender-autopilot`
+
+### Added
+
+- **Blender Auto-Pilot** in Create → Visual Backbone. Local Ollama plans a schema-validated scene spec, the bundled Blender adapter builds only allowlisted kits, Blender records a beauty/camera backbone, and official LTX 2.5 first/last-frame clothing may restyle appearance and add smaller animation without taking camera authority.
+- Training preset **Final Override Introduction**: Earth, black-metal halo, moon, upright and inverted gothic machine-datacenter cathedrals, and separate glass biodomes, with identity locks for later clothing consistency.
+- Loopback-only Ollama orchestration (`127.0.0.1:11434`), model unload before GPU work, and optional n8n/Docker sidecar that cannot receive the Watch control token.
+- Character/object identity cards in the scene spec, injected into every LTX clothing prompt.
+
+### Security
+
+- Auto-Pilot never executes model-generated Python. The planner may emit JSON only. Seed `.blend` files are copied; masters are never overwritten. Ollama URLs that are not loopback are rejected.
+
 ## Unreleased — `feature/continuity-memory`
 
 ### Added

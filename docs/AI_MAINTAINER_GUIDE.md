@@ -134,6 +134,15 @@ The first active implementation is Create's **Physics authority** package builde
 6. `refinementReady` stays false until an official LTX 2.5 adapter has been verified to consume all required structure without inventing or retiming motion. Sparse tracks or first/last images alone are not sufficient. Never silently substitute older LTX controls or another backend.
 7. Tests use pure job fixtures and `blender-physics-backbone.py --validate-job`. Do not open Blender, render a frame, enqueue through the live bridge, or inspect a private production `.blend` during automated validation.
 
+Create **Blender Auto-Pilot** is a separate local orchestration adapter:
+
+1. `lib/blender-autopilot.mjs` owns the scene spec, loopback Ollama URL rules, and job contract. `scripts/ltx-autopilot-runner.py` is the only process allowed to call Ollama, spawn Blender, and optionally reuse `ltx-create-runner.py` for official FLF2V clothing.
+2. The planner may emit JSON only. `scripts/blender-autopilot.py` builds allowlisted kits and must never `exec`/`eval` model text or accept `--python-expr`.
+3. Keep Ollama on loopback, unload it before GPU recording/clothing, and never save over a seed `.blend`.
+4. LTX clothing is appearance-only from Blender first/last frames plus identity locks. Do not describe it as the gated physics-pass consumer.
+5. The Final Override Introduction preset may lock Earth/halo/moon/cathedral/biodome geometry while still allowing appearance rewrites.
+6. Tests use the spec/job contract and `--validate-job`. Never call live Ollama, open Blender, start n8n/Docker, or enqueue Auto-Pilot during automated validation.
+
 When adding a paid AI provider, keep credentials in OS-backed local storage, send only files explicitly selected for that request, show the destination/provider and estimated cost before submission, normalize provider jobs behind one adapter contract, and import results as new shot versions. Do not put provider payload shapes or keys in the project manifest or React tree.
 
 ### Project Continuity and long-scene evolution

@@ -103,6 +103,8 @@ export function createDefaultDraft() {
     blenderUploadPath: '',
     blenderFirstFrame: 1,
     blenderLastFrame: 120,
+    autopilotPreset: 'final-override-intro',
+    clothWithLtx: true,
     directorMode: false,
     directorSegments: createDefaultDirectorSegments(),
     directorTransition: 0.001,
@@ -117,7 +119,7 @@ export function createDefaultDraft() {
 
 export function cleanCreateDraft(input = {}) {
   const fallback = createDefaultDraft();
-  const limits = { title: 120, prompt: CREATE_PROMPT_LIMIT, avoid: 1_000, customStyle: 600, firstFramePath: 1_000, lastFramePath: 1_000, contextVideoPath: 1_000, soundtrackPath: 1_000, blenderProjectId: 160, blenderUploadPath: 1_000, ingredientsReferencePath: 1_000, continuityProjectId: 100, continuitySceneId: 100, continuityClipId: 100 };
+  const limits = { title: 120, prompt: CREATE_PROMPT_LIMIT, avoid: 1_000, customStyle: 600, firstFramePath: 1_000, lastFramePath: 1_000, contextVideoPath: 1_000, soundtrackPath: 1_000, blenderProjectId: 160, blenderUploadPath: 1_000, autopilotPreset: 40, ingredientsReferencePath: 1_000, continuityProjectId: 100, continuitySceneId: 100, continuityClipId: 100 };
   const draft = {};
   for (const [key, defaultValue] of Object.entries(fallback)) {
     const value = input && typeof input === 'object' ? input[key] : undefined;
@@ -146,8 +148,10 @@ export function normalizeCreateOptions(input = {}) {
   const motion = Object.hasOwn(MOTION_GUIDANCE, input.motion) ? input.motion : fallback.motion;
   const style = Object.hasOwn(STYLE_GUIDANCE, input.style) ? input.style : fallback.style;
   const audio = ['generate', 'ambient', 'silent', 'soundtrack'].includes(input.audio) ? input.audio : fallback.audio;
-  const blenderMode = input.blenderMode === 'physics' ? 'physics' : 'anchors';
+  const blenderMode = input.blenderMode === 'physics' ? 'physics' : input.blenderMode === 'autopilot' ? 'autopilot' : 'anchors';
   const directorMode = input.directorMode === true;
+  const autopilotPreset = input.autopilotPreset === 'from-prompt' ? 'from-prompt' : 'final-override-intro';
+  const clothWithLtx = blenderMode === 'autopilot' ? input.clothWithLtx !== false : false;
   const directorSegments = cleanDirectorSegments(input.directorSegments);
   const directorDuration = directorSegments.reduce((total, segment) => total + segment.duration, 0);
   const result = {
@@ -160,10 +164,10 @@ export function normalizeCreateOptions(input = {}) {
     frameRate: boundedInteger(input.frameRate, 12, 30, fallback.frameRate, 'Frame rate'),
     seedMode,
     seed: boundedInteger(input.seed, 0, 2_147_483_647, fallback.seed, 'Seed'),
-    variations: blenderMode === 'physics' || directorMode ? 1 : boundedInteger(input.variations, 1, CREATE_BATCH_LIMIT, fallback.variations, 'Variations'),
-    promptEnhance: blenderMode === 'physics' || directorMode ? false : input.promptEnhance === true,
-    camera: blenderMode === 'physics' ? 'locked' : camera,
-    motion: blenderMode === 'physics' ? 'subtle' : motion,
+    variations: blenderMode === 'physics' || blenderMode === 'autopilot' || directorMode ? 1 : boundedInteger(input.variations, 1, CREATE_BATCH_LIMIT, fallback.variations, 'Variations'),
+    promptEnhance: blenderMode === 'physics' || blenderMode === 'autopilot' || directorMode ? false : input.promptEnhance === true,
+    camera: blenderMode === 'physics' || blenderMode === 'autopilot' ? 'locked' : camera,
+    motion: blenderMode === 'physics' || blenderMode === 'autopilot' ? 'subtle' : motion,
     style,
     customStyle: text(input.customStyle, 600, 'Custom style'),
     audio,
@@ -178,6 +182,8 @@ export function normalizeCreateOptions(input = {}) {
     blenderUploadPath: text(input.blenderUploadPath, 1_000, 'Uploaded Blender path'),
     blenderFirstFrame: boundedInteger(input.blenderFirstFrame, 1, 1_000_000, fallback.blenderFirstFrame, 'Blender first frame'),
     blenderLastFrame: boundedInteger(input.blenderLastFrame, 1, 1_000_000, fallback.blenderLastFrame, 'Blender last frame'),
+    autopilotPreset: blenderMode === 'autopilot' ? autopilotPreset : 'final-override-intro',
+    clothWithLtx,
     directorMode,
     directorSegments,
     directorTransition: boundedNumber(input.directorTransition, 0.000001, 0.99, fallback.directorTransition, 'Director transition softness'),
@@ -192,10 +198,15 @@ export function normalizeCreateOptions(input = {}) {
   if (result.style === 'custom' && !result.customStyle) throw new Error('Add a custom visual style or choose a preset.');
   if (!result.useBlender && result.referenceMode !== 'text' && !result.firstFramePath && !result.contextVideoPath) throw new Error('A first reference image or context video is required for this mode.');
   if (!result.useBlender && result.referenceMode === 'first-last' && !result.lastFramePath && !result.contextVideoPath) throw new Error('A last reference image or context video is required for first/last-frame mode.');
-  if (result.useBlender && !result.blenderProjectId && !result.blenderUploadPath) throw new Error('Choose a project backbone or drop a .blend file.');
+  if (result.useBlender && result.blenderMode !== 'autopilot' && !result.blenderProjectId && !result.blenderUploadPath) throw new Error('Choose a project backbone or drop a .blend file.');
   if (result.audio === 'soundtrack' && !result.soundtrackPath) throw new Error('Drop an audio file before selecting the context soundtrack.');
   if (result.useBlender && result.blenderLastFrame < result.blenderFirstFrame) throw new Error('The Blender last frame must be after the first frame.');
   if (result.blenderMode === 'physics' && !result.useBlender) throw new Error('Physics-authority mode requires a Blender backbone.');
+  if (result.blenderMode === 'autopilot') {
+    if (!result.useBlender) throw new Error('Blender Auto-Pilot requires Blender mode.');
+    result.blenderLastFrame = result.blenderFirstFrame + result.duration * result.frameRate - 1;
+    if (result.blenderLastFrame < result.blenderFirstFrame) throw new Error('Auto-Pilot frame range is invalid.');
+  }
   if (result.directorMode) {
     if (result.directorSegments.length < 2) throw new Error('Director mode needs at least two timed segments.');
     if (result.directorSegments.some((segment) => !segment.prompt.trim())) throw new Error('Every Director segment needs an action prompt.');
@@ -222,6 +233,8 @@ export function composeCreatePrompt(options) {
   const parts = [options.prompt];
   if (options.useBlender && options.blenderMode === 'physics') {
     parts.push('Authority: Blender owns every camera transform, object trajectory, collision, deformation, timing, and frame-to-frame motion. Visual refinement may change only appearance, lighting, materials, and surface detail. Do not invent, remove, retime, smooth, or reinterpret motion or geometry. Structural drift is a failed result.');
+  } else if (options.useBlender && options.blenderMode === 'autopilot') {
+    parts.push('Authority: Local Auto-Pilot planned a schema-validated Blender scene. Blender owns camera, blocking, landmark placement, and large motion. LTX may only clothe appearance and add smaller secondary animation. Keep character and object identity locked.');
   } else {
     if (CAMERA_GUIDANCE[options.camera]) parts.push(CAMERA_GUIDANCE[options.camera]);
     if (MOTION_GUIDANCE[options.motion]) parts.push(MOTION_GUIDANCE[options.motion]);

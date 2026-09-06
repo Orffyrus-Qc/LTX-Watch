@@ -1,0 +1,46 @@
+{
+  "name": "LTX Watch Blender Auto-Pilot planner",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## LTX Watch Blender Auto-Pilot\nLocal planner only. This workflow talks to loopback Ollama and never receives the LTX Watch control token.\nPaste the JSON into Create → Blender Auto-Pilot, or let Watch orchestrate Ollama itself.",
+        "height": 240,
+        "width": 420
+      },
+      "id": "note",
+      "name": "Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [180, 120]
+    },
+    {
+      "parameters": {},
+      "id": "manual",
+      "name": "Manual trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [180, 420]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:11434/api/chat",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'qwen2.5-coder:14b-agent', stream: false, format: 'json', keep_alive: 0, messages: [{ role: 'system', content: 'Return only JSON for kind blender-autopilot-scene. Allowed primitives: planet, moon, torus-halo, gothic-machine-cathedral, geodesic-biodome, ship, satellite, laser, camera-orbit, empty-rig. No Python.' }, { role: 'user', content: $json.prompt || 'Final Override introduction: Earth, halo, moon, gothic machine-datacenter cathedral, biodome.' }] }) }}",
+        "options": {}
+      },
+      "id": "ollama",
+      "name": "Ollama scene spec",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [460, 420]
+    }
+  ],
+  "connections": {
+    "Manual trigger": {
+      "main": [[{ "node": "Ollama scene spec", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": { "executionOrder": "v1" }
+}

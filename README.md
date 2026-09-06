@@ -34,6 +34,7 @@ The app runs entirely on your computer. It does not upload prompts, videos, logs
 - Unified private drag-and-drop context tray for images, videos, songs, and `.blend` scenes
 - Optional Blender-backed reference frames rendered from an immutable copy of a project backbone
 - Optional Blender-authoritative physics packages with beauty, depth, normal, motion-vector, and camera passes
+- **Blender Auto-Pilot**: local Ollama plans a schema-validated scene, Blender records the motion backbone, and LTX 2.5 clothes appearance plus smaller animation with character/object identity locks. Training preset: Final Override Introduction (Earth, halo, moon, cathedral, biodome)
 - Private persistent Create drafts, variation queue, live progress, active-render cancellation, playback, recoverable output deletion, retry, pause-between-jobs, and **Move first** ordering
 - Per-attempt correction notes and preserved regeneration history
 - Selectable Studio scene queue with one-click **Move first** ordering
@@ -170,7 +171,8 @@ Saved dashboard settings in `local.config.json` take precedence over auto-detect
 4. Drop images, video, a song, or a `.blend` into **Context Drop**, or start from text alone. The first two images become start/end anchors; a video supplies extracted first/end frames; audio replaces the finished video's soundtrack; and a `.blend` becomes the private Blender backbone.
 5. Blender mode can use either a `.blend` backbone assigned in **Projects** or a dropped `.blend`. **Creative anchors** copies the scene, renders selected timeline frame(s), and passes those PNGs to the official local I2V or FLF2V workflow. It never saves over the source scene.
 6. Choose **Blender animation** directly in **Visual Backbone** when Blender must own the complete shot. Select a frame range and LTX Watch evaluates the copied scene sequentially into a versioned package containing RGBA beauty frames, linear depth, surface normals, motion vectors, and per-frame camera transforms. Camera and motion controls are locked because Blender—not LTX—owns animation. **Blender frames** remains the creative alternative that sends only first/end frames to LTX.
-7. Press **Queue creation** for LTX output or **Prepare backbone** for strict physics passes. Jobs run one at a time only after the album worker, Studio, Projects regeneration, and the configured ComfyUI port are idle.
+7. Choose **Blender Auto-Pilot** to let local Ollama plan a scene from allowlisted kits, have Blender build and record it, then optionally clothe that backbone with official LTX 2.5 first/last-frame interpolation. The bundled training preset is **Final Override Introduction** (Earth inside a black-metal halo, moon, gothic machine-datacenter cathedrals, glass biodomes). Ollama never emits Python; identity locks keep characters and landmarks consistent. See [Blender Auto-Pilot](docs/BLENDER_AUTOPILOT.md).
+8. Press **Queue creation** for LTX output, **Prepare animation backbone** for strict physics passes, or **Queue Auto-Pilot** for the local plan/build/record/clothe pipeline. Jobs run one at a time only after the album worker, Studio, Projects regeneration, and the configured ComfyUI port are idle.
 
 ### Director timeline and Ingredients continuity
 
@@ -402,11 +404,14 @@ lib/
   studio-progress.mjs        Monotonic Studio/Projects render progress estimator
   browser-playback.mjs       Continuous assembled-final cache identity and FFmpeg contract
   physics-backbone.mjs       Versioned Blender-authority job and pass contract
+  blender-autopilot.mjs      Auto-Pilot spec, loopback Ollama rules, and job contract
 local-server.mjs             Local aggregation, streaming, and control API
 scripts/
   ltx-studio-runner.py       One-shot adapter for a compatible local runner
   ltx-create-runner.py       Official local LTX 2.5 workflow and Blender reference adapter
   blender-physics-backbone.py Fixed-purpose full-frame Blender pass adapter
+  blender-autopilot.py       Allowlisted Auto-Pilot scene builder and recorder
+  ltx-autopilot-runner.py    Local Ollama → Blender → optional LTX clothing orchestrator
   run-hidden-python.py       Recursive no-console launcher for trusted recovery runners
   install-comfyui-blender.ps1 Official release install, Blender setup, backup, and rollback
   install-sam3.ps1           Official checkpoint download, digest validation, backup, and rollback
@@ -419,6 +424,7 @@ create-core.mjs              Create option, prompt, seed, draft, and queue invar
 docs/
   AI_MAINTAINER_GUIDE.md     Safe workflow for coding agents
   LTX_COMPATIBILITY.md       Adapter contract and upgrade checklist
+  BLENDER_AUTOPILOT.md       Auto-Pilot pipeline, training preset, and n8n sidecar notes
 local.config.example.json    Shareable configuration template
 Start LTX Watch.bat          Windows launcher
 ```

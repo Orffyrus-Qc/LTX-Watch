@@ -43,6 +43,31 @@ test('dropped video, soundtrack, and Blender context satisfy their explicit mode
   assert.equal(blender.blenderUploadPath, 'private/scene.blend');
 });
 
+test('Blender Auto-Pilot does not require a seed .blend and keeps Blender authoritative', () => {
+  const options = normalizeCreateOptions({
+    ...createDefaultDraft(),
+    prompt: 'Orbit the halo cathedral and keep the biodome identity locked.',
+    useBlender: true,
+    blenderMode: 'autopilot',
+    autopilotPreset: 'final-override-intro',
+    clothWithLtx: true,
+    camera: 'orbit',
+    motion: 'dynamic',
+    variations: 4,
+    promptEnhance: true,
+    duration: 8,
+    frameRate: 24,
+  });
+  assert.equal(options.blenderMode, 'autopilot');
+  assert.equal(options.camera, 'locked');
+  assert.equal(options.motion, 'subtle');
+  assert.equal(options.variations, 1);
+  assert.equal(options.promptEnhance, false);
+  assert.equal(options.blenderLastFrame, options.blenderFirstFrame + 8 * 24 - 1);
+  assert.match(composeCreatePrompt(options), /schema-validated Blender scene/i);
+  assert.doesNotMatch(composeCreatePrompt(options), /cinematic orbit|energetic but coherent/i);
+});
+
 test('physics-authority mode removes creative motion instructions and keeps Blender authoritative', () => {
   const options = normalizeCreateOptions({
     ...createDefaultDraft(),
