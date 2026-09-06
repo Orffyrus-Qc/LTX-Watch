@@ -2,7 +2,7 @@
 
 All notable changes to LTX / Watch are documented here.
 
-## Unreleased — `feature/blender-autopilot`
+## 1.5.0 — 2026-09-06
 
 ### Added
 
@@ -12,15 +12,6 @@ All notable changes to LTX / Watch are documented here.
 - Character/object identity cards in the scene spec, injected into every LTX clothing prompt.
 - Auto-Pilot treats Final Override intro wording as the canned Earth/halo/cathedral/biodome preset even if the planner dropdown was `from-prompt`, and keeps the seed scene if Ollama returns no allowlisted kits.
 - **Code World Model** (`facebook/cwm`) as the preferred Auto-Pilot planner: official GitHub/Hugging Face identity, required `<think>` system prompt, loopback OpenAI-compatible server, Hugging Face access probe, and Ollama `cwm` fallback. Research-only; official 32B weights need ~80 GB VRAM.
-
-### Security
-
-- Auto-Pilot never executes model-generated Python. The planner may emit JSON only. Seed `.blend` files are copied; masters are never overwritten. Ollama URLs that are not loopback are rejected.
-
-## Unreleased — `feature/continuity-memory`
-
-### Added
-
 - Overview **Pause after current** control. It keeps the existing immediate **Pause render** behavior and, when armed, lets the active album job finish, then suspends the worker so the next queued job does not start.
 - Pause controls stay available while the album worker process is still alive, even if the supervisor status timestamp is stale.
 - Starting LTX Watch now waits for the local bridge to become healthy before opening the UI, and keeps the bridge running if the UI is already open.
@@ -47,6 +38,7 @@ All notable changes to LTX / Watch are documented here.
 
 ### Security
 
+- Auto-Pilot never executes model-generated Python. The planner may emit JSON only. Seed `.blend` files are copied; masters are never overwritten. Ollama URLs that are not loopback are rejected.
 - Create prompts and local paths live only in ignored state/runtime JSON; process arguments contain only the private job path.
 - The browser cannot supply workflow graphs, workflow paths, output prefixes, model files, Python/Blender scripts, executables, or arbitrary command arguments.
 - Blender automation validates a registered or privately uploaded `.blend`, copies it before rendering, disables auto-execution, and uses fixed background-render arguments without touching the source.
@@ -54,6 +46,7 @@ All notable changes to LTX / Watch are documented here.
 
 ### Fixed
 
+- The Create compiler now skips leftover ResizeImageMaskNode width/height widgets and coerces COMBO values, so official first/last-frame clothing cannot fail ComfyUI validation with `resize_type.crop: 640`.
 - The development server no longer watches private Create, Projects, or Studio runtime files, preventing Windows `EBUSY` crashes when an uploaded Ingredients image is still locked during generation setup.
 - Director now compiles the current official Ingredients workflow's UI reroutes, notes, and obsolete unconsumed subgraph inputs; reconciles transformer, projected text-encoder, and prompt-enhancer model roles independently; preserves native LTX audio/video conditioning metadata while Prompt Relay patches the sampler model; and reports incompatible Kornia installations before queueing. A private idle-GPU smoke render completed successfully against the verified public dependency set.
 - Long-scene plans now split 13–20 second Director actions into valid bounded segments, and stale browser saves preserve newer queued, generating, review, accepted, failed, output, and anchor state.
