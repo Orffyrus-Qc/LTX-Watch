@@ -140,11 +140,83 @@ def _filename_tokens(value):
     return re.findall(r"[a-z]+\d+[a-z0-9]*|\d+[a-z]+|[a-z]+", filename)
 
 
+def combo_choices(definition):
+    """Read COMBO options from list-first and COMFY dict schemas."""
+    if not isinstance(definition, list) or not definition:
+        return []
+    if isinstance(definition[0], list):
+        return [item for item in definition[0] if isinstance(item, str)]
+    if definition[0] == "COMBO" and len(definition) > 1 and isinstance(definition[1], dict):
+        options = definition[1].get("options") or []
+        return [item for item in options if isinstance(item, str)]
+    return []
+
+
+def combo_default(definition, choices=None):
+    choices = list(choices) if choices is not None else combo_choices(definition)
+    if isinstance(definition, list) and len(definition) > 1 and isinstance(definition[1], dict):
+        default = definition[1].get("default")
+        if default in choices:
+            return default
+    return choices[0] if choices else None
+
+
+def widget_matches_definition(value, definition):
+    if isinstance(value, list):
+        return False
+    choices = combo_choices(definition)
+    if choices:
+        return value in choices
+    parameter_type = definition[0] if isinstance(definition, list) else definition
+    if parameter_type in {"INT", "FLOAT"}:
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if parameter_type == "BOOLEAN":
+        return isinstance(value, bool)
+    if parameter_type == "STRING":
+        return isinstance(value, str)
+    return True
+
+
+def take_matching_widget(widgets, definition):
+    """Pop the next type-matching widget; leave leftover mismatched values in place."""
+    skipped = []
+    while widgets:
+        value = widgets.pop(0)
+        if widget_matches_definition(value, definition):
+            widgets[:0] = skipped
+            return value
+        skipped.append(value)
+    widgets[:0] = skipped
+    return None
+
+
+def coerce_combo_value(value, definition, semantic_role=None):
+    """Never submit a COMBO value ComfyUI would reject."""
+    if isinstance(value, list):
+        return value
+    choices = combo_choices(definition)
+    if not choices:
+        return reconcile_widget_value(value, definition, semantic_role)
+    if value in choices:
+        return value
+    if isinstance(value, str):
+        reconciled = reconcile_combo_value(value, definition, semantic_role)
+        if reconciled in choices:
+            return reconciled
+    default = combo_default(definition, choices)
+    return default if default is not None else value
+
+
+def take_widget_or_default(widgets, definition, semantic_role=None):
+    taken = take_matching_widget(widgets, definition)
+    if taken is not None:
+        return coerce_combo_value(taken, definition, semantic_role)
+    return combo_default(definition)
+
+
 def reconcile_combo_value(value, definition, semantic_role=None):
     """Reconcile a renamed template enum only when the live match is unambiguous."""
-    if not isinstance(definition, list) or not definition or not isinstance(definition[0], list):
-        return value
-    choices = [item for item in definition[0] if isinstance(item, str)]
+    choices = combo_choices(definition)
     if not isinstance(value, str) or not choices:
         return value
 
@@ -522,6 +594,7 @@ class WorkflowCompiler:
                 linked_roles = {name: resolution[3] for name, resolution in linked_resolutions.items()}
                 widgets = list(node.get("widgets_values", []))
                 compiled_inputs = {}
+                input_defs = {}
                 for name, definition in parameters:
                     parameter_type = definition[0] if isinstance(definition, list) else definition
                     is_connection = isinstance(parameter_type, str) and parameter_type in CONNECTION_TYPES
@@ -533,31 +606,45 @@ class WorkflowCompiler:
                     if parameter_type == "COMFY_AUTOGROW_V3":
                         continue
                     if parameter_type == "COMFY_DYNAMICCOMBO_V3":
-                        mode = linked[name] if name in linked else widgets.pop(0) if widgets else None
-                        compiled_inputs[name] = mode
-                        if name in linked and widgets:
-                            widgets.pop(0)
                         options = definition[1].get("options", []) if isinstance(definition, list) and len(definition) > 1 else []
-                        selected = next((option for option in options if option.get("key") == mode), None)
+                        mode_keys = [option.get("key") for option in options if isinstance(option, dict) and option.get("key") is not None]
+                        mode_def = ["COMBO", {"options": mode_keys}] if mode_keys else definition
+                        input_defs[name] = mode_def
+                        if name in linked:
+                            compiled_inputs[name] = coerce_combo_value(linked[name], mode_def)
+                            take_matching_widget(widgets, mode_def)
+                        else:
+                            mode = take_widget_or_default(widgets, mode_def)
+                            if mode is not None:
+                                compiled_inputs[name] = mode
+                        selected = next((option for option in options if option.get("key") == compiled_inputs.get(name)), None)
                         required_subs = (selected or {}).get("inputs", {}).get("required", {})
                         optional_subs = (selected or {}).get("inputs", {}).get("optional", {})
-                        for sub_name in {**required_subs, **optional_subs}:
+                        for sub_name, sub_def in {**required_subs, **optional_subs}.items():
                             dotted = f"{name}.{sub_name}"
+                            input_defs[dotted] = sub_def
                             if dotted in linked:
                                 compiled_inputs[dotted] = linked[dotted]
-                                if widgets:
-                                    widgets.pop(0)
-                            elif widgets:
-                                compiled_inputs[dotted] = widgets.pop(0)
+                                take_matching_widget(widgets, sub_def)
+                            else:
+                                taken = take_widget_or_default(widgets, sub_def)
+                                if taken is not None:
+                                    compiled_inputs[dotted] = taken
                         continue
+                    input_defs[name] = definition
                     if name in linked:
-                        compiled_inputs[name] = linked[name] if is_connection else reconcile_widget_value(linked[name], definition, semantic_role)
-                        if not is_connection and widgets:
-                            widgets.pop(0)
-                    elif not is_connection and widgets:
-                        compiled_inputs[name] = reconcile_widget_value(widgets.pop(0), definition, semantic_role)
+                        compiled_inputs[name] = linked[name] if is_connection else coerce_combo_value(linked[name], definition, semantic_role)
+                        if not is_connection:
+                            take_matching_widget(widgets, definition)
+                    elif not is_connection:
+                        taken = take_widget_or_default(widgets, definition, semantic_role)
+                        if taken is not None:
+                            compiled_inputs[name] = taken
                 for name, value in linked.items():
                     compiled_inputs.setdefault(name, value)
+                for input_name, input_def in input_defs.items():
+                    if input_name in compiled_inputs:
+                        compiled_inputs[input_name] = coerce_combo_value(compiled_inputs[input_name], input_def, linked_roles.get(input_name))
                 if class_type == "SaveVideo":
                     compiled_inputs["filename_prefix"] = output_prefix
                 prompt[ordinary_keys[node.get("id")]] = {"class_type": class_type, "inputs": compiled_inputs}
