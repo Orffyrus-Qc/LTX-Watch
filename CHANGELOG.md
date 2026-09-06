@@ -2,6 +2,12 @@
 
 All notable changes to LTX / Watch are documented here.
 
+## Unreleased
+
+### Changed
+
+- README now lists Auto-Pilot planner requirements (loopback Code World Model or Ollama), documents `cwmUrl` / `cwmModel` / `ollamaUrl` / `ollamaModel`, names CWM as the preferred planner in the Create steps, and includes an Auto-Pilot screenshot.
+
 ## 1.5.0 — 2026-09-06
 
 ### Added

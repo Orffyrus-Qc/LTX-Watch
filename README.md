@@ -55,6 +55,10 @@ The app runs entirely on your computer. It does not upload prompts, videos, logs
 
 ![Create context drop, format, visual backbone, and creative controls](docs/images/ltx-watch-create-context.png)
 
+**Create · Auto-Pilot** — Visual Backbone Auto-Pilot, Final Override Introduction preset, Code World Model / Ollama planner, and LTX clothing.
+
+![Create workspace with Blender Auto-Pilot selected](docs/images/ltx-watch-create-autopilot.png)
+
 **Projects** — shot library, LTX mapping, and selective regeneration.
 
 ![Projects workspace with indexed shots, LTX mapping, and regeneration controls](docs/images/ltx-watch-projects.png)
@@ -70,7 +74,8 @@ The app runs entirely on your computer. It does not upload prompts, videos, logs
 - Optional Director mode: [`ComfyUI-PromptRelay`](https://github.com/kijai/ComfyUI-PromptRelay), Lightricks' official `ComfyUI-LTXVideo` node and `LTX-2.5_ICLoRA_Ingredients_Single_Stage_Distilled.json` workflow, `ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors`, and a compatible Kornia runtime (the currently verified node revision uses Kornia 0.8.2)
 - Optional: `ffprobe.exe` in the ComfyUI root for duration and resolution metadata
 - FFmpeg in the ComfyUI root or system path for dropped video/audio context and assembled-final browser compatibility copies
-- Optional: Blender 4.5 or Blender 5 for the ComfyUI-Blender integration
+- Optional: Blender 4.5 or Blender 5 for the ComfyUI-Blender integration, Blender animation backbones, and Blender Auto-Pilot
+- Optional Blender Auto-Pilot planner: a loopback [Code World Model](https://github.com/facebookresearch/cwm) (`facebook/cwm`) OpenAI-compatible server on `http://127.0.0.1:8000`, or an Ollama model named `cwm`. Otherwise [Ollama](https://ollama.com) on `http://127.0.0.1:11434` with a local coder model such as `qwen2.5-coder:14b-agent`. Official 32B CWM needs about 80 GB VRAM; 16 GB-class GPUs use Ollama. See [Code World Model](docs/CWM.md) and [Blender Auto-Pilot](docs/BLENDER_AUTOPILOT.md).
 
 The history and standard queue features work with ordinary ComfyUI output folders. The richest track/shot progression view uses the optional supervisor files described in [LTX compatibility](docs/LTX_COMPATIBILITY.md).
 
@@ -146,6 +151,10 @@ The generated MSI is not code-signed. Windows may show an unknown-publisher warn
 | `statusFile` | Optional supervisor/GPU status JSON | `C:\ComfyUI\dual_gpu_status.json` |
 | `planFile` | Optional planned-track queue JSON | `C:\ComfyUI\dual_gpu_split.json` |
 | `comfyUrl` | Local ComfyUI HTTP address | `http://127.0.0.1:8188` |
+| `ollamaUrl` | Loopback Ollama Auto-Pilot planner | `http://127.0.0.1:11434` |
+| `ollamaModel` | Preferred Ollama model when CWM is not serving | `qwen2.5-coder:14b-agent` |
+| `cwmUrl` | Loopback OpenAI-compatible Code World Model server | `http://127.0.0.1:8000` |
+| `cwmModel` | Official CWM model id | `facebook/cwm` |
 | `refreshSeconds` | Dashboard polling interval | `5` |
 | `maxVideos` | Maximum indexed videos returned to the UI | `120` |
 
@@ -171,7 +180,7 @@ Saved dashboard settings in `local.config.json` take precedence over auto-detect
 4. Drop images, video, a song, or a `.blend` into **Context Drop**, or start from text alone. The first two images become start/end anchors; a video supplies extracted first/end frames; audio replaces the finished video's soundtrack; and a `.blend` becomes the private Blender backbone.
 5. Blender mode can use either a `.blend` backbone assigned in **Projects** or a dropped `.blend`. **Creative anchors** copies the scene, renders selected timeline frame(s), and passes those PNGs to the official local I2V or FLF2V workflow. It never saves over the source scene.
 6. Choose **Blender animation** directly in **Visual Backbone** when Blender must own the complete shot. Select a frame range and LTX Watch evaluates the copied scene sequentially into a versioned package containing RGBA beauty frames, linear depth, surface normals, motion vectors, and per-frame camera transforms. Camera and motion controls are locked because Blender—not LTX—owns animation. **Blender frames** remains the creative alternative that sends only first/end frames to LTX.
-7. Choose **Blender Auto-Pilot** to let local Ollama plan a scene from allowlisted kits, have Blender build and record it, then optionally clothe that backbone with official LTX 2.5 first/last-frame interpolation. The bundled training preset is **Final Override Introduction** (Earth inside a black-metal halo, moon, gothic machine-datacenter cathedrals, glass biodomes). Ollama never emits Python; identity locks keep characters and landmarks consistent. See [Blender Auto-Pilot](docs/BLENDER_AUTOPILOT.md).
+7. Choose **Blender Auto-Pilot** to let local **Code World Model** (preferred) or Ollama plan a scene from allowlisted kits, have Blender build and record it, then optionally clothe that backbone with official LTX 2.5 first/last-frame interpolation. Auto-Pilot prefers a loopback CWM server, then an Ollama model named `cwm`, then other local Ollama coder models. The bundled training preset is **Final Override Introduction** (Earth inside a black-metal halo, moon, gothic machine-datacenter cathedrals, glass biodomes). The planner never emits Python; identity locks keep characters and landmarks consistent. See [Blender Auto-Pilot](docs/BLENDER_AUTOPILOT.md) and [Code World Model](docs/CWM.md).
 8. Press **Queue creation** for LTX output, **Prepare animation backbone** for strict physics passes, or **Queue Auto-Pilot** for the local plan/build/record/clothe pipeline. Jobs run one at a time only after the album worker, Studio, Projects regeneration, and the configured ComfyUI port are idle.
 
 ### Director timeline and Ingredients continuity
