@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -537,7 +538,7 @@ def run_cloth(job, spec, blender_result):
         "comfyRoot": job["comfyRoot"],
         "runtimeRoot": str(cloth_root),
         "resultPath": str(cloth_root / "result.json"),
-        "cancelPath": job["cancelPath"],
+        "cancelPath": str(cloth_root / "cancel.requested.json"),
         "prompt": compose_cloth_prompt(spec, job),
         "promptEnhance": False,
         "duration": max(3, int(round((int(job["frameEnd"]) - int(job["frameStart"]) + 1) / float(job["frameRate"])))),
@@ -562,7 +563,25 @@ def run_cloth(job, spec, blender_result):
     write_json(cloth_job_path, cloth_job)
     write_json(Path(cloth_job["resultPath"]), {"status": "generating", "stage": "Starting LTX clothing", "progress": 0})
     require_not_canceled(job)
-    completed = subprocess.run([sys.executable, str(create_runner), "--job", str(cloth_job_path)], timeout=14_400)
+    parent_cancel = Path(str(job.get("cancelPath") or ""))
+    child_cancel = Path(cloth_job["cancelPath"])
+    if parent_cancel.is_file():
+        child_cancel.write_text("{}\n", encoding="utf-8")
+        raise AutopilotCancelled("Auto-Pilot canceled by user.")
+    stop_relay = threading.Event()
+
+    def relay_parent_cancel():
+        while not stop_relay.wait(0.5):
+            if parent_cancel.is_file():
+                child_cancel.write_text("{}\n", encoding="utf-8")
+                return
+
+    relay = threading.Thread(target=relay_parent_cancel, daemon=True)
+    relay.start()
+    try:
+        completed = subprocess.run([sys.executable, str(create_runner), "--job", str(cloth_job_path)], timeout=14_400)
+    finally:
+        stop_relay.set()
     payload = {}
     if Path(cloth_job["resultPath"]).is_file():
         payload = json.loads(Path(cloth_job["resultPath"]).read_text(encoding="utf-8"))

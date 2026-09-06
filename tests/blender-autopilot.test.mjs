@@ -132,6 +132,7 @@ test('bundled adapters refuse generated Python and validate without opening Blen
   assert.match(runner, /PRIMITIVE_ALIASES/);
   assert.match(runner, /v1\/chat\/completions/);
   assert.match(runner, /CWM_SYSTEM_PROMPT/);
+  assert.match(runner, /cloth_root \/ "cancel.requested.json"/);
   assert.doesNotMatch(runner, /exec\(|eval\(/);
   const python = process.env.LTX_STUDIO_TEST_PYTHON || (process.platform === 'win32' ? 'python.exe' : 'python3');
   const root = await mkdtemp(path.join(tmpdir(), 'ltx-watch-autopilot-validate-'));
