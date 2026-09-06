@@ -10,6 +10,7 @@ All notable changes to LTX / Watch are documented here.
 - Training preset **Final Override Introduction**: Earth, black-metal halo, moon, upright and inverted gothic machine-datacenter cathedrals, and separate glass biodomes, with identity locks for later clothing consistency.
 - Loopback-only Ollama orchestration (`127.0.0.1:11434`), model unload before GPU work, and optional n8n/Docker sidecar that cannot receive the Watch control token.
 - Character/object identity cards in the scene spec, injected into every LTX clothing prompt.
+- Auto-Pilot treats Final Override intro wording as the canned Earth/halo/cathedral/biodome preset even if the planner dropdown was `from-prompt`, and keeps the seed scene if Ollama returns no allowlisted kits.
 
 ### Security
 

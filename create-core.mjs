@@ -1,3 +1,5 @@
+import { looksLikeFinalOverrideIntro } from './lib/blender-autopilot.mjs';
+
 export const CREATE_SCHEMA_VERSION = 3;
 export const CREATE_PROMPT_LIMIT = 8_000;
 export const CREATE_BATCH_LIMIT = 4;
@@ -150,7 +152,7 @@ export function normalizeCreateOptions(input = {}) {
   const audio = ['generate', 'ambient', 'silent', 'soundtrack'].includes(input.audio) ? input.audio : fallback.audio;
   const blenderMode = input.blenderMode === 'physics' ? 'physics' : input.blenderMode === 'autopilot' ? 'autopilot' : 'anchors';
   const directorMode = input.directorMode === true;
-  const autopilotPreset = input.autopilotPreset === 'from-prompt' ? 'from-prompt' : 'final-override-intro';
+  let autopilotPreset = input.autopilotPreset === 'from-prompt' ? 'from-prompt' : 'final-override-intro';
   const clothWithLtx = blenderMode === 'autopilot' ? input.clothWithLtx !== false : false;
   const directorSegments = cleanDirectorSegments(input.directorSegments);
   const directorDuration = directorSegments.reduce((total, segment) => total + segment.duration, 0);
@@ -204,6 +206,8 @@ export function normalizeCreateOptions(input = {}) {
   if (result.blenderMode === 'physics' && !result.useBlender) throw new Error('Physics-authority mode requires a Blender backbone.');
   if (result.blenderMode === 'autopilot') {
     if (!result.useBlender) throw new Error('Blender Auto-Pilot requires Blender mode.');
+    if (looksLikeFinalOverrideIntro(result.title, result.prompt)) result.autopilotPreset = 'final-override-intro';
+    else result.autopilotPreset = autopilotPreset;
     result.blenderLastFrame = result.blenderFirstFrame + result.duration * result.frameRate - 1;
     if (result.blenderLastFrame < result.blenderFirstFrame) throw new Error('Auto-Pilot frame range is invalid.');
   }

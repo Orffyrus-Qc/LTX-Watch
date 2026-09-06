@@ -12,12 +12,18 @@ import {
   chooseOllamaModel,
   composeClothPrompt,
   loadPresetSpec,
+  looksLikeFinalOverrideIntro,
   mergePlannedSpec,
   normalizeOllamaUrl,
   validateSceneSpec,
 } from '../lib/blender-autopilot.mjs';
 
 const appRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+
+test('Final Override intro wording is recognized even if the dropdown said from-prompt', () => {
+  assert.equal(looksLikeFinalOverrideIntro('Final Override Introduction', 'cinematic orbit of Earth inside a black-metal halo with gothic machine-datacenter cathedrals and glass biodomes'), true);
+  assert.equal(looksLikeFinalOverrideIntro('A red bicycle in rain'), false);
+});
 
 test('Final Override intro preset locks earth, halo, moon, cathedral, and biodome', () => {
   const spec = loadPresetSpec('final-override-intro');
@@ -122,6 +128,8 @@ test('bundled adapters refuse generated Python and validate without opening Blen
   assert.doesNotMatch(adapter, /exec\(|eval\(|python-expr/);
   assert.match(runner, /api\/chat/);
   assert.match(runner, /keep_alive/);
+  assert.match(runner, /keeping the seed scene objects/);
+  assert.match(runner, /PRIMITIVE_ALIASES/);
   assert.doesNotMatch(runner, /exec\(|eval\(/);
   const python = process.env.LTX_STUDIO_TEST_PYTHON || (process.platform === 'win32' ? 'python.exe' : 'python3');
   const root = await mkdtemp(path.join(tmpdir(), 'ltx-watch-autopilot-validate-'));

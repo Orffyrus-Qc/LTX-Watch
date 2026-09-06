@@ -43,6 +43,18 @@ test('dropped video, soundtrack, and Blender context satisfy their explicit mode
   assert.equal(blender.blenderUploadPath, 'private/scene.blend');
 });
 
+test('intro-like Auto-Pilot prompts keep the Final Override geometry preset', () => {
+  const options = normalizeCreateOptions({
+    ...createDefaultDraft(),
+    title: 'Final Override Introduction',
+    prompt: 'Final Override introduction: cinematic orbit of Earth inside a black-metal halo with gothic machine-datacenter cathedrals, glass biodomes, a watching moon, and drifting ships.',
+    useBlender: true,
+    blenderMode: 'autopilot',
+    autopilotPreset: 'from-prompt',
+  });
+  assert.equal(options.autopilotPreset, 'final-override-intro');
+});
+
 test('Blender Auto-Pilot does not require a seed .blend and keeps Blender authoritative', () => {
   const options = normalizeCreateOptions({
     ...createDefaultDraft(),

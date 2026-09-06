@@ -24,6 +24,19 @@ ALLOWED_PRIMITIVES = {
     "planet", "moon", "torus-halo", "gothic-machine-cathedral", "geodesic-biodome",
     "ship", "satellite", "laser", "camera-orbit", "empty-rig",
 }
+PRIMITIVE_ALIASES = {
+    "earth": "planet", "planet": "planet", "globe": "planet", "sphere": "planet", "world": "planet",
+    "moon": "moon", "luna": "moon",
+    "halo": "torus-halo", "ring": "torus-halo", "torus": "torus-halo", "torus-halo": "torus-halo",
+    "cathedral": "gothic-machine-cathedral", "gothic-machine-cathedral": "gothic-machine-cathedral",
+    "church": "gothic-machine-cathedral", "fortress": "gothic-machine-cathedral", "datacenter": "gothic-machine-cathedral",
+    "biodome": "geodesic-biodome", "bio-dome": "geodesic-biodome", "dome": "geodesic-biodome",
+    "geodesic-biodome": "geodesic-biodome", "greenhouse": "geodesic-biodome",
+    "ship": "ship", "spaceship": "ship", "vessel": "ship",
+    "satellite": "satellite", "sat": "satellite",
+    "laser": "laser", "beam": "laser",
+    "camera": "camera-orbit", "camera-orbit": "camera-orbit", "rig": "empty-rig", "empty-rig": "empty-rig",
+}
 
 
 class AutopilotCancelled(RuntimeError):
@@ -184,19 +197,91 @@ def unload_ollama(job):
         return
 
 
+def intro_intent(job, spec):
+    if spec.get("preset") == "final-override-intro" or job.get("preset") == "final-override-intro":
+        return True
+    text = f"{job.get('prompt') or ''} {spec.get('title') or ''} {spec.get('logline') or ''} {spec.get('appearancePrompt') or ''}".lower()
+    if "final override" in text and ("earth" in text or "halo" in text or "cathedral" in text):
+        return True
+    return "earth" in text and "halo" in text and "cathedral" in text
+
+
+def normalize_primitive(value):
+    token = str(value or "").strip().lower().replace("_", "-").replace(" ", "-")
+    return PRIMITIVE_ALIASES.get(token, token)
+
+
+def as_object_list(value):
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if isinstance(value, dict):
+        rows = []
+        for key, item in value.items():
+            if isinstance(item, dict):
+                row = dict(item)
+                row.setdefault("id", key)
+                rows.append(row)
+        return rows
+    return []
+
+
+def collect_planned_objects(planned):
+    if not isinstance(planned, dict):
+        return []
+    blocks = [planned]
+    for key in ("scene", "spec", "data", "result", "blender-autopilot-scene"):
+        nested = planned.get(key)
+        if isinstance(nested, dict):
+            blocks.append(nested)
+    objects = []
+    for block in blocks:
+        for item in as_object_list(block.get("objects")):
+            primitive = normalize_primitive(item.get("primitive") or item.get("type") or item.get("kind") or item.get("id"))
+            if primitive not in ALLOWED_PRIMITIVES:
+                continue
+            row = dict(item)
+            row["primitive"] = primitive
+            objects.append(row)
+        if objects:
+            break
+    return objects[:24]
+
+
+def apply_appearance_overlay(spec, planned):
+    merged = json.loads(json.dumps(spec))
+    if not isinstance(planned, dict):
+        return merged
+    if planned.get("appearancePrompt"):
+        merged["appearancePrompt"] = str(planned["appearancePrompt"])[:4000]
+    if planned.get("logline"):
+        merged["logline"] = str(planned["logline"])[:400]
+    planned_identities = {str(item.get("id")): item for item in as_object_list(planned.get("identities"))}
+    for identity in merged.get("identities") or []:
+        overlay = planned_identities.get(str(identity.get("id")))
+        if overlay and overlay.get("lock"):
+            identity["lock"] = str(overlay["lock"])[:800]
+    planned_shots = {str(item.get("id")): item for item in as_object_list(planned.get("shots"))}
+    for shot in merged.get("shots") or []:
+        overlay = planned_shots.get(str(shot.get("id")))
+        if overlay and overlay.get("prompt"):
+            shot["prompt"] = str(overlay["prompt"])[:2000]
+    return merged
+
+
 def plan_with_ollama(job, spec):
     url = str(job.get("ollamaUrl") or "").rstrip("/")
     model = str(job.get("ollamaModel") or "")
+    lock_geometry = intro_intent(job, spec)
     if not url or not model:
-        return spec, {"status": "skipped", "reason": "Ollama was not configured"}
+        return spec, {"status": "skipped", "reason": "Ollama was not configured", "geometryLocked": lock_geometry}
     if not is_loopback(url):
         raise RuntimeError("Ollama must stay on loopback")
-    lock_geometry = spec.get("preset") == "final-override-intro"
     user = {
         "task": "plan-blender-autopilot-scene",
         "lockGeometry": lock_geometry,
         "userPrompt": job.get("prompt") or "",
         "avoid": job.get("avoid") or "",
+        "allowedPrimitives": sorted(ALLOWED_PRIMITIVES),
         "baseSpec": spec if lock_geometry else {
             "kind": "blender-autopilot-scene",
             "preset": "from-prompt",
@@ -204,7 +289,7 @@ def plan_with_ollama(job, spec):
         },
         "rules": [
             "Return one JSON object only.",
-            "Use only allowlisted primitives.",
+            "Use only allowlisted primitives: planet, moon, torus-halo, gothic-machine-cathedral, geodesic-biodome, ship, satellite, laser, camera-orbit, empty-rig.",
             "If lockGeometry is true, keep objects, camera blocking, and world; rewrite appearancePrompt, identities.lock, and shot prompts.",
             "Do not emit Python or file paths.",
         ],
@@ -226,35 +311,37 @@ def plan_with_ollama(job, spec):
     try:
         response = http_json(f"{url}/api/chat", payload, timeout=180)
     except Exception as error:
-        if lock_geometry:
-            return spec, {"status": "degraded", "reason": f"Ollama planning failed; using canned intro spec ({error})"}
+        if lock_geometry or spec.get("objects"):
+            return spec, {"status": "degraded", "reason": f"Ollama planning failed; using the canned or seed spec ({error})", "geometryLocked": lock_geometry}
         raise RuntimeError(f"Local Ollama planning failed: {error}") from error
     message = ((response.get("message") or {}).get("content")) or response.get("response") or ""
-    planned = extract_json_object(message)
+    try:
+        dump_path = resolved(job["runtimeRoot"]) / "planner-response.json"
+        write_json(dump_path, {"model": model, "content": str(message)[:20_000]})
+    except Exception:
+        pass
+    try:
+        planned = extract_json_object(message)
+    except Exception as error:
+        if lock_geometry or spec.get("objects"):
+            return spec, {"status": "degraded", "reason": f"Planner JSON was unusable; keeping seed spec ({error})", "geometryLocked": lock_geometry}
+        raise
     if lock_geometry:
-        merged = json.loads(json.dumps(spec))
-        if planned.get("appearancePrompt"):
-            merged["appearancePrompt"] = str(planned["appearancePrompt"])[:4000]
-        if planned.get("logline"):
-            merged["logline"] = str(planned["logline"])[:400]
-        planned_identities = {str(item.get("id")): item for item in (planned.get("identities") or []) if isinstance(item, dict)}
-        for identity in merged.get("identities") or []:
-            overlay = planned_identities.get(str(identity.get("id")))
-            if overlay and overlay.get("lock"):
-                identity["lock"] = str(overlay["lock"])[:800]
-        planned_shots = {str(item.get("id")): item for item in (planned.get("shots") or []) if isinstance(item, dict)}
-        for shot in merged.get("shots") or []:
-            overlay = planned_shots.get(str(shot.get("id")))
-            if overlay and overlay.get("prompt"):
-                shot["prompt"] = str(overlay["prompt"])[:2000]
-        return merged, {"status": "ok", "model": model, "geometryLocked": True}
-    objects = [item for item in (planned.get("objects") or []) if isinstance(item, dict) and item.get("primitive") in ALLOWED_PRIMITIVES]
-    if not objects:
-        raise RuntimeError("Local planner returned no allowlisted objects.")
-    planned["objects"] = objects[:24]
-    planned["kind"] = "blender-autopilot-scene"
-    planned["preset"] = "from-prompt"
-    return planned, {"status": "ok", "model": model, "geometryLocked": False}
+        return apply_appearance_overlay(spec, planned), {"status": "ok", "model": model, "geometryLocked": True}
+    objects = collect_planned_objects(planned)
+    if objects:
+        planned["objects"] = objects
+        planned["kind"] = "blender-autopilot-scene"
+        planned["preset"] = "from-prompt"
+        return planned, {"status": "ok", "model": model, "geometryLocked": False}
+    if spec.get("objects"):
+        return apply_appearance_overlay(spec, planned), {
+            "status": "degraded",
+            "reason": "Planner returned no allowlisted kits; keeping the seed scene objects.",
+            "geometryLocked": False,
+            "model": model,
+        }
+    raise RuntimeError("Local planner returned no allowlisted objects.")
 
 
 def compose_cloth_prompt(spec, job):

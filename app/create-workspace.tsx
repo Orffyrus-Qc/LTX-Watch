@@ -248,9 +248,9 @@ export default function CreateWorkspace({ token, apiBase, refreshSeconds = 5, on
           variations: 1,
           promptEnhance: false,
           directorMode: false,
-          autopilotPreset: current.autopilotPreset || 'final-override-intro',
+          autopilotPreset: 'final-override-intro',
           clothWithLtx: current.clothWithLtx !== false,
-          title: current.title || (current.autopilotPreset === 'from-prompt' ? current.title : 'Final Override Introduction'),
+          title: current.title || 'Final Override Introduction',
           prompt: current.prompt || 'Final Override introduction: cinematic orbit of Earth inside a black-metal halo with gothic machine-datacenter cathedrals, glass biodomes, a watching moon, and drifting ships.',
           duration: current.duration < 5 ? 8 : current.duration,
         };

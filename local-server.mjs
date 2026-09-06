@@ -34,6 +34,7 @@ import {
   buildAutopilotJob,
   chooseOllamaModel,
   loadPresetSpec,
+  looksLikeFinalOverrideIntro,
   normalizeOllamaUrl,
   validateSceneSpec,
 } from './lib/blender-autopilot.mjs';
@@ -1653,7 +1654,8 @@ async function startAutopilotJob(record, job, config, backbone) {
     throw new Error('LTX clothing needs ComfyUI Python and the official first/last-frame LTX 2.5 template.');
   }
   const ollama = await probeOllama(config);
-  if (job.options.autopilotPreset === 'from-prompt' && (!ollama.online || !ollama.model)) {
+  const introIntent = job.options.autopilotPreset === 'final-override-intro' || looksLikeFinalOverrideIntro(job.title, job.options.prompt);
+  if (!introIntent && job.options.autopilotPreset === 'from-prompt' && (!ollama.online || !ollama.model)) {
     throw new Error('Prompt-driven Auto-Pilot needs a loopback Ollama model.');
   }
   const python = launch?.executable || (process.platform === 'win32' ? 'python.exe' : 'python3');
@@ -1666,8 +1668,9 @@ async function startAutopilotJob(record, job, config, backbone) {
   const cancelPath = path.join(jobsDirectory, 'cancel.requested.json');
   await mkdir(jobsDirectory, { recursive: true });
   await rm(cancelPath, { force: true });
-  const presetSpec = job.options.autopilotPreset === 'from-prompt'
-    ? validateSceneSpec({
+  const presetSpec = introIntent
+    ? loadPresetSpec('final-override-intro')
+    : validateSceneSpec({
       preset: 'from-prompt',
       title: job.title,
       logline: job.options.prompt.slice(0, 400),
@@ -1675,8 +1678,7 @@ async function startAutopilotJob(record, job, config, backbone) {
       avoid: job.options.avoid,
       objects: [{ id: 'earth', primitive: 'planet', role: 'planet', location: [0, 0, 0], scale: [1, 1, 1] }],
       camera: { type: 'orbit', lookAt: 'earth' },
-    })
-    : loadPresetSpec('final-override-intro');
+    });
   const plannedAppearance = composeCreatePrompt(job.options);
   presetSpec.appearancePrompt = [presetSpec.appearancePrompt, plannedAppearance].filter(Boolean).join('\n\n');
   if (job.options.avoid) presetSpec.avoid = [presetSpec.avoid, job.options.avoid].filter(Boolean).join('. ');
@@ -1687,7 +1689,7 @@ async function startAutopilotJob(record, job, config, backbone) {
   if (soundtrackPath) await copyFile(job.options.soundtrackPath, soundtrackPath);
   const payload = buildAutopilotJob({
     id: job.id,
-    preset: job.options.autopilotPreset,
+    preset: introIntent ? 'final-override-intro' : job.options.autopilotPreset,
     prompt: job.options.prompt,
     avoid: job.options.avoid,
     ollamaUrl: ollama.online ? ollama.url : '',
