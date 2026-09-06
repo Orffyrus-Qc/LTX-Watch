@@ -338,6 +338,59 @@ test('Create compiler ignores obsolete unconsumed subgraph settings', (context) 
   assert.deepEqual(target.inputs.value, ['1', 0]);
 });
 
+test('Create compiler keeps linked ResizeImageMaskNode dimensions off crop and scale widgets', (context) => {
+  const python = process.env.LTX_STUDIO_TEST_PYTHON || (process.platform === 'win32' ? 'python.exe' : 'python3');
+  const runner = path.join(appRoot, 'scripts', 'ltx-create-runner.py');
+  const code = [
+    'import importlib.util, json, os',
+    'spec = importlib.util.spec_from_file_location("ltx_create_resize_test", os.environ["LTX_CREATE_RUNNER"])',
+    'module = importlib.util.module_from_spec(spec)',
+    'spec.loader.exec_module(module)',
+    'workflow = {',
+    '  "nodes": [',
+    '    {"id": 1, "type": "ConstInt", "inputs": [], "widgets_values": [1280]},',
+    '    {"id": 2, "type": "ConstInt", "inputs": [], "widgets_values": [736]},',
+    '    {"id": 3, "type": "LoadImage", "inputs": [], "widgets_values": ["first.png"]},',
+    '    {"id": 213, "type": "ResizeImageMaskNode", "inputs": [',
+    '      {"name": "input", "type": "IMAGE,MASK", "link": 10},',
+    '      {"name": "resize_type.width", "type": "INT", "link": 11},',
+    '      {"name": "resize_type.height", "type": "INT", "link": 12}',
+    '    ], "widgets_values": ["scale dimensions", 640, 360, "center", "nearest-exact"]}',
+    '  ],',
+    '  "links": [[10, 3, 0, 213, 0, "IMAGE"], [11, 1, 0, 213, 1, "INT"], [12, 2, 0, 213, 2, "INT"]]',
+    '}',
+    'def info(class_type):',
+    '  if class_type != "ResizeImageMaskNode":',
+    '    return {"input": {"required": {}}}',
+    '  return {"input": {"required": {',
+    '    "input": ["IMAGE,MASK", {}],',
+    '    "resize_type": ["COMFY_DYNAMICCOMBO_V3", {"options": [{"key": "scale dimensions", "inputs": {"required": {"width": ["INT", {}], "height": ["INT", {}], "crop": ["COMBO", {"options": ["disabled", "center"]}]}}}]}],',
+    '    "scale_method": ["COMBO", {"options": ["nearest-exact", "bilinear", "area", "bicubic", "lanczos"]}]',
+    '  }}}',
+    'compiler = module.WorkflowCompiler("http://127.0.0.1:1")',
+    'compiler.object_info = info',
+    'compiled = compiler.compile(workflow, {}, [], "video/ltx-watch-create/test")',
+    'print(json.dumps(compiled["213"]["inputs"]))',
+  ].join('\n');
+  const run = spawnSync(python, ['-c', code], {
+    cwd: appRoot,
+    encoding: 'utf8',
+    windowsHide: true,
+    env: { ...process.env, LTX_CREATE_RUNNER: runner },
+  });
+  if (run.error?.code === 'ENOENT') {
+    context.skip(`Python executable not available: ${python}`);
+    return;
+  }
+  assert.equal(run.status, 0, run.stderr || run.stdout);
+  const inputs = JSON.parse(run.stdout);
+  assert.equal(inputs.resize_type, 'scale dimensions');
+  assert.deepEqual(inputs['resize_type.width'], ['1', 0]);
+  assert.deepEqual(inputs['resize_type.height'], ['2', 0]);
+  assert.equal(inputs['resize_type.crop'], 'center');
+  assert.equal(inputs.scale_method, 'nearest-exact');
+});
+
 test('Create retry replaces a stale result before the new runner is spawned', async () => {
   const server = await readFile(path.join(appRoot, 'local-server.mjs'), 'utf8');
   const resultReset = server.indexOf("await writeFile(resultPath, `${JSON.stringify({ status: 'generating'");

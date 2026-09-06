@@ -535,11 +535,20 @@ class WorkflowCompiler:
                     if parameter_type == "COMFY_DYNAMICCOMBO_V3":
                         mode = linked[name] if name in linked else widgets.pop(0) if widgets else None
                         compiled_inputs[name] = mode
+                        if name in linked and widgets:
+                            widgets.pop(0)
                         options = definition[1].get("options", []) if isinstance(definition, list) and len(definition) > 1 else []
                         selected = next((option for option in options if option.get("key") == mode), None)
-                        for sub_name in (selected or {}).get("inputs", {}).get("required", {}):
+                        required_subs = (selected or {}).get("inputs", {}).get("required", {})
+                        optional_subs = (selected or {}).get("inputs", {}).get("optional", {})
+                        for sub_name in {**required_subs, **optional_subs}:
                             dotted = f"{name}.{sub_name}"
-                            compiled_inputs[dotted] = linked[dotted] if dotted in linked else widgets.pop(0) if widgets else None
+                            if dotted in linked:
+                                compiled_inputs[dotted] = linked[dotted]
+                                if widgets:
+                                    widgets.pop(0)
+                            elif widgets:
+                                compiled_inputs[dotted] = widgets.pop(0)
                         continue
                     if name in linked:
                         compiled_inputs[name] = linked[name] if is_connection else reconcile_widget_value(linked[name], definition, semantic_role)
